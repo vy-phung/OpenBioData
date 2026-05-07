@@ -87,10 +87,18 @@ def store_feedback_to_google_sheets(accession, answer1, answer2, contact=""):
 
 import re
 
-ACCESSION_REGEX = re.compile(r'^[A-Z]{1,4}_?\d{6}(\.\d+)?$')
-
 def is_valid_accession(acc):
-    return bool(ACCESSION_REGEX.match(acc))
+    """
+    Accept any NCBI identifier that ncbi_resolver can handle.
+    Falls back to the original GenBank regex for unrecognised strings so
+    existing file-upload behaviour is unchanged.
+    """
+    try:
+        from ncbi_resolver import detect_accession_type
+        return detect_accession_type(str(acc).strip()) != 'unknown'
+    except Exception:
+        # Legacy fallback regex if ncbi_resolver is unavailable
+        return bool(re.match(r'^[A-Z]{1,4}_?\d{5,}(\.\d+)?$', str(acc).strip()))
 
 # helper function to extract accessions
 def extract_accessions_from_input(file=None, raw_text=""):
@@ -154,10 +162,28 @@ def get_incomplete_accessions(file_path):
 
 # GOOGLE_SHEET_NAME = "known_samples"
 # USAGE_DRIVE_FILENAME = "user_usage_log.json"
-def truncate_cell(value, max_len=49000): 
-    """Ensure cell content never exceeds Google Sheets 50k char limit."""
+def truncate_cell(value, max_len=49000):
+    """
+    Coerce value to a clean string for Excel/Sheets output.
+
+    Guarantees:
+      - None  -> ""  (never "None")
+      - NaN   -> ""  (never "nan")
+      - float -> str without trailing .0 where possible
+      - Cells longer than max_len are truncated with a marker
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if pd.isna(value):
+            return ""
+        # e.g. 3.0 -> "3", 3.5 -> "3.5"
+        return str(int(value)) if value == int(value) else str(value)
     if not isinstance(value, str):
         value = str(value)
+    # Catch string representations of null
+    if value.strip().lower() in ("none", "nan", "nat", "null"):
+        return ""
     return value[:max_len] + ("... [TRUNCATED]" if len(value) > max_len else "")
 
 # Helper functions to load google sheet
@@ -316,19 +342,24 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         # Collect Pass 2 additional fields for this accession
         additional_fields = outputs[key].get("_additional_fields", {}) or {}
 
+        # ── spec 5.3: field names lowercase with spaces, not title-case ─────────
+        _niche_display = (
+            niche_cases[0].lower().replace("_", " ") if niche_cases else ""
+        )
+
         if niche_cases:
             row = {
                 "Sample ID": truncate_cell(label or "unknown"),
-                "Predicted Country": truncate_cell(pred_country or "unknown"),
-                "Country Explanation": truncate_cell(country_explanation or "unknown"),
-                "Predicted Sample Type": truncate_cell(pred_sample or "unknown"),
-                "Sample Type Explanation": truncate_cell(sample_explanation or "unknown"),
-                "Predicted " + niche_cases[0]: truncate_cell(pred_niche or "unknown"),
-                niche_cases[0] + " Explanation": truncate_cell(niche_explanation or "unknown"),
+                "Predicted country": truncate_cell(pred_country or "unknown"),
+                "country explanation": truncate_cell(country_explanation or "unknown"),
+                "Predicted sample type": truncate_cell(pred_sample or "unknown"),
+                "sample type explanation": truncate_cell(sample_explanation or "unknown"),
+                f"Predicted {_niche_display}": truncate_cell(pred_niche or "unknown"),
+                f"{_niche_display} explanation": truncate_cell(niche_explanation or "unknown"),
                 "Sources": truncate_cell("\n".join(outputs[key]["source"]) or "No Links"),
                 "Time cost": truncate_cell(outputs[key]["time_cost"]),
                 "Confidence Score": confidence_values,
-                "_additional_fields": additional_fields,  # Pass 2 extras — used by Sheet 2
+                "_additional_fields": additional_fields,
             }
             rows.append(row)
 
@@ -338,8 +369,8 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
                 "Country Explanation": truncate_cell(country_explanation or "unknown"),
                 "Predicted Sample Type": truncate_cell(pred_sample or "unknown"),
                 "Sample Type Explanation": truncate_cell(sample_explanation or "unknown"),
-                "Predicted " + niche_cases[0]: truncate_cell(pred_niche or "unknown"),
-                niche_cases[0] + " Explanation": truncate_cell(niche_explanation or "unknown"),
+                f"Predicted {_niche_display}": truncate_cell(pred_niche or "unknown"),
+                f"{_niche_display} explanation": truncate_cell(niche_explanation or "unknown"),
                 "Sources": truncate_cell("\n".join(outputs[key]["source"]) or "No Links"),
                 "Query_cost": outputs[key]["query_cost"] or "",
                 "Time cost": outputs[key]["time_cost"] or "",
@@ -351,14 +382,14 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         else:
             row = {
                 "Sample ID": truncate_cell(label or "unknown"),
-                "Predicted Country": truncate_cell(pred_country or "unknown"),
-                "Country Explanation": truncate_cell(country_explanation or "unknown"),
-                "Predicted Sample Type": truncate_cell(pred_sample or "unknown"),
-                "Sample Type Explanation": truncate_cell(sample_explanation or "unknown"),
+                "Predicted country": truncate_cell(pred_country or "unknown"),
+                "country explanation": truncate_cell(country_explanation or "unknown"),
+                "Predicted sample type": truncate_cell(pred_sample or "unknown"),
+                "sample type explanation": truncate_cell(sample_explanation or "unknown"),
                 "Sources": truncate_cell("\n".join(outputs[key]["source"]) or "No Links"),
                 "Time cost": truncate_cell(outputs[key]["time_cost"]),
                 "Confidence Score": confidence_values,
-                "_additional_fields": additional_fields,  # Pass 2 extras — used by Sheet 2
+                "_additional_fields": additional_fields,
             }
             rows.append(row)
 

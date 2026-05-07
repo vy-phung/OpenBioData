@@ -141,7 +141,14 @@ with gr.Blocks(css=css) as interface:
     
         usage_display = gr.Markdown("", visible=False)
     
-        raw_text = gr.Textbox(label="🧚 Input Accession Number(s) (single (KU131308) or comma-separated (e.g., MF362736.1,MF362738.1,KU131308,MW291678))")
+        raw_text = gr.Textbox(
+            label="Accession ID(s)",
+            placeholder=(
+                "Enter accession IDs (one per line or comma-separated).\n"
+                "Accepts BioProject, BioSample, GenBank accession, or SRR/SRX.\n"
+                "Examples: PRJNA976261   SAMN23469632   OL757400   SRR17084312"
+            ),
+        )
         #niche_input = gr.Textbox(visible=False, elem_id="niche-input-box")
         niche_input = gr.Textbox(visible=True, elem_id="niche-input-box", interactive=False)
 
@@ -283,7 +290,7 @@ with gr.Blocks(css=css) as interface:
         processed_info = gr.Markdown(visible=False)  # new placeholder for processed list
         
         with gr.Row():
-            run_button = gr.Button("🔍 Submit and Classify", elem_id="run-btn")
+            run_button = gr.Button("▶ Run Audit", elem_id="run-btn")
             stop_button = gr.Button("❌ Stop Batch", visible=False, elem_id="stop-btn")
             reset_button = gr.Button("🔄 Reset", elem_id="reset-btn")
 
@@ -569,6 +576,59 @@ with gr.Blocks(css=css) as interface:
             
             # Step 1: Parse input
             accessions, invalid_accessions, error = extract_accessions_from_input(file, text)
+
+            # Step 1b: Resolve NCBI identifiers — expand BioProjects into
+            # BioSamples, map SRR/SAMN back to GenBank accessions.
+            # This runs only when there are valid accessions and no hard error.
+            if accessions and not error:
+                try:
+                    from input_handler import build_pipeline_input, get_pipeline_accession
+                    yield (
+                        make_html_table(all_rows),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        "",
+                        "🔍 Resolving accessions...",
+                        "Resolving accessions — querying NCBI...",
+                        gr.update(visible=False),
+                        gr.update(visible=True),
+                        gr.update(visible=True),
+                        gr.update(visible=True),
+                        gr.update(visible=True),
+                        gr.update(value=processed_info, visible=True),
+                        gr.update(visible=False),
+                    )
+                    raw_joined = ", ".join(accessions)
+                    resolved_dict, skipped_msgs = build_pipeline_input(raw_joined)
+
+                    if skipped_msgs:
+                        for msg in skipped_msgs:
+                            log_lines.append(f"⚠️ {msg}")
+                        invalid_accessions = list(invalid_accessions or []) + skipped_msgs
+
+                    if resolved_dict:
+                        # Build ordered list of pipeline accessions from resolved entries
+                        pipeline_accs = []
+                        for samn_key, entry in resolved_dict.items():
+                            pa = get_pipeline_accession(entry, samn_key)
+                            if pa and pa not in pipeline_accs:
+                                pipeline_accs.append(pa)
+                        if pipeline_accs:
+                            accessions = pipeline_accs
+                            total = len(accessions)
+                            log_lines.append(
+                                f"✅ Resolved to {total} sample(s). Running pipeline..."
+                            )
+                    elif not resolved_dict and not any(
+                        a for a in (accessions or [])
+                    ):
+                        error = "Could not resolve any accessions. Please check your input."
+                except Exception as _resolve_err:
+                    # Resolution failure is non-fatal — fall back to original list
+                    log_lines.append(
+                        f"⚠️ NCBI resolution step failed ({_resolve_err}); "
+                        f"proceeding with original accessions."
+                    )
             total = len(accessions)
             print("total len original accessions: ", total)
             if total > 0:
@@ -679,7 +739,7 @@ with gr.Blocks(css=css) as interface:
     
                         return
             
-                    log_lines.append(f"[{i+1}/{total}] Processing {acc}")
+                    log_lines.append(f"Running pipeline on {total} sample(s)... [{i+1}/{total}] Processing {acc}")
                     
                     # Hide inputs, show processed_info at start
                     yield (

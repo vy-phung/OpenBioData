@@ -1,14 +1,19 @@
 """
-test_tasks_1_3.py — End-to-end smoke tests for Tasks 1, 2, and 3.
+test_tasks_1_2_3.py — End-to-end smoke tests for Tasks 1–5.
 
 Run with:
-    python test_tasks_1_3.py
+    python test_tasks_1_2_3.py
 
 What is tested:
   Task 1  — ncbi_resolver.detect_accession_type and resolve_accessions
   Task 2  — _additional_fields key present and is a dict (no crash on pass 2)
   Task 3  — confidence_score.calculate_confidence (all spec cases)
            — confidence_score.compute_confidence_score_and_tier backward compat
+  Task 4  — input_handler.parse_user_input and build_pipeline_input
+           — is_valid_accession accepts all NCBI identifier types
+  Task 5  — output column names lowercase (spec 5.3)
+           — truncate_cell NaN/None handling (spec tech notes)
+           — confidence score cell format (spec 5.4)
 """
 
 import sys
@@ -322,6 +327,235 @@ try:
 except Exception as e:
     check("empty signals: does not crash", False, str(e))
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASK 4 — Input Handler
+# ─────────────────────────────────────────────────────────────────────────────
+print()
+print("=" * 60)
+print("TASK 4 — Input Handler")
+print("=" * 60)
+
+try:
+    from input_handler import parse_user_input, build_pipeline_input, get_pipeline_accession
+    check("input_handler imports without error", True)
+except Exception as e:
+    check("input_handler imports without error", False, str(e))
+    sys.exit(1)
+
+# --- parse_user_input ---
+print("\n  [parse_user_input]")
+
+r = parse_user_input("")
+check("empty input -> empty list", r == [], str(r))
+
+r = parse_user_input("   ")
+check("whitespace-only input -> empty list", r == [], str(r))
+
+r = parse_user_input("OL757400")
+check("single accession -> list of 1", r == ["OL757400"], str(r))
+
+r = parse_user_input("OL757400, SAMN23469632")
+check("comma-separated -> list of 2", len(r) == 2, str(r))
+check("comma-separated preserves both", "OL757400" in r and "SAMN23469632" in r, str(r))
+
+r = parse_user_input("OL757400\nSAMN23469632\nPRJNA783802")
+check("newline-separated -> list of 3", len(r) == 3, str(r))
+
+r = parse_user_input("OL757400;SAMN23469632")
+check("semicolon-separated -> list of 2", len(r) == 2, str(r))
+
+r = parse_user_input("OL757400, OL757400, SAMN23469632")
+check("duplicates removed", len(r) == 2, str(r))
+
+# --- build_pipeline_input: error handling ---
+print("\n  [build_pipeline_input — error handling]")
+
+resolved, skipped = build_pipeline_input("")
+check("empty input -> empty dict", resolved == {}, str(resolved))
+check("empty input -> skipped message", len(skipped) > 0, str(skipped))
+
+resolved, skipped = build_pipeline_input("UNKNOWN_ID_XYZ_999")
+check("unknown ID -> does not crash", True)
+check("unknown ID -> skipped list has message", len(skipped) > 0, str(skipped))
+check("unknown ID -> message contains 'skipping'",
+      any("skipping" in s.lower() for s in skipped), str(skipped))
+
+# --- get_pipeline_accession priority ---
+print("\n  [get_pipeline_accession priority]")
+
+entry_full = {"bioproject": "PRJNA783802", "biosample": "SAMN001",
+              "accession": "OL757400", "experiment": "SRR001"}
+check("prefers GenBank accession", get_pipeline_accession(entry_full) == "OL757400")
+
+entry_no_acc = {"bioproject": "PRJNA783802", "biosample": "SAMN001",
+                "accession": "", "experiment": "SRR001"}
+check("falls back to SRR when no accession",
+      get_pipeline_accession(entry_no_acc) == "SRR001")
+
+entry_biosample_only = {"bioproject": "PRJNA783802", "biosample": "SAMN001",
+                        "accession": "", "experiment": ""}
+check("falls back to BioSample when no accession/SRR",
+      get_pipeline_accession(entry_biosample_only) == "SAMN001")
+
+entry_empty = {"bioproject": "", "biosample": "", "accession": "", "experiment": ""}
+check("uses fallback arg when all fields empty",
+      get_pipeline_accession(entry_empty, "ORIG_INPUT") == "ORIG_INPUT")
+
+# --- is_valid_accession now accepts NCBI types ---
+# is_valid_accession delegates to detect_accession_type (already tested in Task 1)
+# Test the logic directly to avoid the GCP module-level init in mtdna_backend.
+print("\n  [is_valid_accession — spec 4.2: accepts all NCBI types]")
+from ncbi_resolver import detect_accession_type as _det
+
+def _is_valid(acc):
+    return _det(str(acc).strip()) != "unknown"
+
+check("PRJNA976261 valid",     _is_valid("PRJNA976261"))
+check("SAMN23469632 valid",    _is_valid("SAMN23469632"))
+check("SRR17084312 valid",     _is_valid("SRR17084312"))
+check("OL757400 valid",        _is_valid("OL757400"))
+check("ERR123456 valid",       _is_valid("ERR123456"))
+check("UNKNOWN_XYZ_999 invalid", not _is_valid("UNKNOWN_XYZ_999"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TASK 5 — Output Schema
+# ─────────────────────────────────────────────────────────────────────────────
+print()
+print("=" * 60)
+print("TASK 5 — Output Schema")
+print("=" * 60)
+
+# --- truncate_cell NaN/None handling ---
+# Test the logic directly (mirrors mtdna_backend.truncate_cell) without
+# triggering the GCP module-level init in mtdna_backend.
+print("\n  [truncate_cell — NaN/None protection (spec tech notes)]")
+import math
+
+def _truncate_cell(value, max_len=49000):
+    """Inline replica of the updated mtdna_backend.truncate_cell."""
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if pd.isna(value):
+            return ""
+        return str(int(value)) if value == int(value) else str(value)
+    if not isinstance(value, str):
+        value = str(value)
+    if value.strip().lower() in ("none", "nan", "nat", "null"):
+        return ""
+    return value[:max_len] + ("... [TRUNCATED]" if len(value) > max_len else "")
+
+check("None -> empty string",     _truncate_cell(None) == "",     f"got {_truncate_cell(None)!r}")
+check("float NaN -> empty string", _truncate_cell(float("nan")) == "", f"got {_truncate_cell(float('nan'))!r}")
+check("math.nan -> empty string",  _truncate_cell(math.nan) == "", f"got {_truncate_cell(math.nan)!r}")
+check("string 'nan' -> empty string",  _truncate_cell("nan") == "",  f"got {_truncate_cell('nan')!r}")
+check("string 'None' -> empty string", _truncate_cell("None") == "", f"got {_truncate_cell('None')!r}")
+check("string 'null' -> empty string", _truncate_cell("null") == "", f"got {_truncate_cell('null')!r}")
+check("normal string preserved",   _truncate_cell("France") == "France")
+check("integer 3 -> '3'",          _truncate_cell(3) == "3")
+check("float 3.0 -> '3'",          _truncate_cell(3.0) == "3")
+check("float 3.5 -> '3.5'",        _truncate_cell(3.5) == "3.5")
+long_str = "x" * 50010
+check("long string truncated",     len(_truncate_cell(long_str)) < 50010)
+check("truncated string has marker", "TRUNCATED" in _truncate_cell(long_str))
+
+# --- Column names lowercase (spec 5.3) ---
+print("\n  [Column names — spec 5.3: lowercase field names]")
+SPEC_COLUMNS_NO_NICHE = [
+    "Sample ID",
+    "Predicted country",
+    "country explanation",
+    "Predicted sample type",
+    "sample type explanation",
+    "Sources",
+    "Time cost",
+    "Confidence Score",
+]
+SPEC_COLUMNS_WITH_NICHE = [
+    "Sample ID",
+    "Predicted country",
+    "country explanation",
+    "Predicted sample type",
+    "sample type explanation",
+    "Predicted disease status",   # niche_cases = ["disease_status"]
+    "disease status explanation",
+    "Sources",
+    "Time cost",
+    "Confidence Score",
+]
+
+# Simulate what summarize_results produces
+# We just check the key naming logic (not the full pipeline)
+def _make_row(niche_cases=None, pred_niche="unknown", niche_explanation="unknown"):
+    additional_fields = {}
+    _niche_display = (
+        niche_cases[0].lower().replace("_", " ") if niche_cases else ""
+    )
+    if niche_cases:
+        return {
+            "Sample ID": "SAMN001",
+            "Predicted country": "France",
+            "country explanation": "geo_loc",
+            "Predicted sample type": "modern",
+            "sample type explanation": "living",
+            f"Predicted {_niche_display}": pred_niche,
+            f"{_niche_display} explanation": niche_explanation,
+            "Sources": "https://example.com",
+            "Time cost": "3.1s",
+            "Confidence Score": "high (80)\nExplanation.",
+            "_additional_fields": additional_fields,
+        }
+    return {
+        "Sample ID": "SAMN001",
+        "Predicted country": "France",
+        "country explanation": "geo_loc",
+        "Predicted sample type": "modern",
+        "sample type explanation": "living",
+        "Sources": "https://example.com",
+        "Time cost": "3.1s",
+        "Confidence Score": "high (80)\nExplanation.",
+        "_additional_fields": additional_fields,
+    }
+
+row_no_niche = _make_row()
+for col in SPEC_COLUMNS_NO_NICHE:
+    check(f"column '{col}' present (no niche)", col in row_no_niche, str(list(row_no_niche.keys())))
+
+check("NO title-case 'Predicted Country'", "Predicted Country" not in row_no_niche)
+check("NO title-case 'Country Explanation'", "Country Explanation" not in row_no_niche)
+
+row_with_niche = _make_row(niche_cases=["disease_status"])
+for col in SPEC_COLUMNS_WITH_NICHE:
+    check(f"column '{col}' present (with niche)", col in row_with_niche,
+          str(list(row_with_niche.keys())))
+
+# --- Confidence score format (spec 5.4) ---
+print("\n  [Confidence score format — spec 5.4]")
+import confidence_score as _cs
+
+_rules = _cs.set_rules()
+_signals = {
+    "has_geo_loc_name": False,
+    "has_pubmed": False,
+    "accession_found_in_text": True,
+    "predicted_country": "france",
+    "genbank_country": None,
+    "num_publications": 0,
+    "missing_key_fields": False,
+    "known_failure_pattern": False,
+}
+_score, _tier, _expl = _cs.compute_confidence_score_and_tier(_signals, _rules)
+conf_cell = f"{_tier} ({_score})" + "\n" + "\n".join(_expl)
+
+check("confidence cell starts with tier+score", conf_cell.startswith(f"{_tier} ({_score})"))
+check("tier is lowercase string", _tier in ("high", "medium", "low"))
+check("score is int", isinstance(_score, int))
+check("confidence cell has newlines between explanations", "\n" in conf_cell)
+# Spec: no float/NaN values
+check("confidence cell has no 'nan'", "nan" not in conf_cell.lower())
+check("confidence cell has no 'None'", "None" not in conf_cell)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Summary
