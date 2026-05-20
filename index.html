@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BioMetadataAudit — AI-Powered NCBI Metadata Extraction</title>
+<meta name="description" content="Instantly extract and standardize biosample metadata from NCBI BioProject, BioSample, SRR and GenBank accessions using AI. Export to Excel with confidence scores.">
+<meta name="keywords" content="bioinformatics, NCBI, BioProject, BioSample, metadata extraction, metagenomics, cMD, sequencing, AI, biosample, SRR, GenBank">
+<meta name="robots" content="index, follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="BioMetadataAudit — AI-Powered NCBI Metadata Extraction">
+<meta property="og:description" content="Extract disease status, organism, body site, country, sequencing platform and more from any NCBI accession in seconds. Free to try.">
+<meta property="og:image" content="/og-preview.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="BioMetadataAudit — AI-Powered NCBI Metadata Extraction">
+<meta name="twitter:description" content="Extract and standardize biosample metadata from NCBI accessions instantly.">
+<style>
+  :root {
+    --primary: #0F6E56;
+    --primary-dark: #0a5040;
+    --primary-light: #e6f4f0;
+    --high: #0F6E56;
+    --medium: #e6a817;
+    --low: #d63c3c;
+    --bg: #f7f9f8;
+    --sidebar-bg: #1a2e28;
+    --sidebar-text: #c8ddd8;
+    --border: #d0e0da;
+    --text: #1a2420;
+    --muted: #6b8880;
+    --surface: #ffffff;
+    --shadow: 0 2px 8px rgba(15,110,86,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden}
+
+  /* ── Sidebar ── */
+  #sidebar{width:260px;min-width:260px;background:var(--sidebar-bg);display:flex;flex-direction:column;overflow:hidden}
+  #sidebar header{padding:18px 16px 12px;border-bottom:1px solid #2d4a40}
+  #sidebar header h2{color:#fff;font-size:15px;font-weight:600;letter-spacing:.3px}
+  #sidebar header p{color:var(--sidebar-text);font-size:12px;margin-top:3px}
+  #history-list{flex:1;overflow-y:auto;padding:8px 0}
+  .history-item{padding:10px 16px;cursor:pointer;border-bottom:1px solid #253d35;transition:background .15s}
+  .history-item:hover{background:#253d35}
+  .history-item .acc{color:#a8d5c6;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .history-item .ts{color:var(--sidebar-text);font-size:11px;margin-top:2px;opacity:.7}
+  #history-empty{padding:16px;color:var(--sidebar-text);font-size:12px;text-align:center;opacity:.6}
+  #clear-history{margin:8px;padding:7px;background:transparent;border:1px solid #3d6055;color:var(--sidebar-text);border-radius:5px;cursor:pointer;font-size:12px;text-align:center;transition:background .15s}
+  #clear-history:hover{background:#253d35}
+  #share-workspace-btn{margin:0 8px 8px;padding:7px;background:transparent;border:1px solid #3d6055;color:var(--sidebar-text);border-radius:5px;cursor:pointer;font-size:12px;text-align:center;transition:background .15s;display:none}
+  #share-workspace-btn:hover{background:#253d35}
+
+  /* ── Main ── */
+  #main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  #topbar{background:var(--primary);color:#fff;padding:10px 24px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 6px rgba(0,0,0,.15)}
+  #topbar h1{font-size:16px;font-weight:700;letter-spacing:.4px}
+  #topbar .badge{background:rgba(255,255,255,.18);border-radius:4px;padding:2px 8px;font-size:11px}
+  #topbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  #free-counter{background:rgba(255,255,255,.15);border-radius:20px;padding:4px 12px;font-size:12px;color:#fff;font-weight:600;white-space:nowrap}
+  #free-counter.warn{background:rgba(255,200,0,.25)}
+  #free-counter.full{background:rgba(220,80,80,.3)}
+  #auth-btn{background:#fff;color:var(--primary-dark);border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:background .15s;white-space:nowrap}
+  #auth-btn:hover{background:#e8f4f0}
+  #auth-btn.logged-in{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3)}
+  #auth-btn.logged-in:hover{background:rgba(255,255,255,.25)}
+
+  #content{flex:1;overflow-y:auto;padding:24px}
+
+  /* ── Input card ── */
+  .card{background:var(--surface);border-radius:10px;box-shadow:var(--shadow);padding:20px;margin-bottom:20px}
+  .card h3{font-size:14px;font-weight:600;color:var(--primary-dark);margin-bottom:14px}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+  .field textarea,.field input[type=text]{width:100%;border:1px solid var(--border);border-radius:6px;padding:9px 11px;font-size:13px;font-family:inherit;resize:vertical;transition:border-color .2s;background:#fafcfb}
+  .field textarea:focus,.field input[type=text]:focus{outline:none;border-color:var(--primary)}
+  .btn-group{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  #submit-btn{background:var(--primary);color:#fff;border:none;border-radius:7px;padding:11px 28px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s;letter-spacing:.2px}
+  #submit-btn:hover{background:var(--primary-dark)}
+  #submit-btn:disabled{opacity:.55;cursor:not-allowed}
+  #stop-btn{background:#d63c3c;color:#fff;border:none;border-radius:7px;padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s;display:none}
+  #stop-btn:hover{background:#b83030}
+  #reset-btn{background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:7px;padding:11px 16px;font-size:14px;cursor:pointer;transition:background .2s,color .2s,border-color .2s}
+  #reset-btn:hover{background:#f5f5f5;color:var(--text);border-color:var(--muted)}
+
+  /* ── Free tier banner ── */
+  #free-banner{background:linear-gradient(90deg,#fff8e8,#fff3d0);border:1px solid #f0d060;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:13px}
+  #free-banner.hidden{display:none}
+  #free-banner .banner-icon{font-size:20px}
+  #free-banner .banner-text{flex:1}
+  #free-banner .banner-text strong{display:block;margin-bottom:2px}
+  #free-banner .banner-cta{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+  #free-banner .banner-cta:hover{background:var(--primary-dark)}
+
+  /* ── Progress ── */
+  #progress-card{display:none}
+  #progress-log{background:#0f1e1a;color:#7eecd4;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;border-radius:7px;padding:14px;min-height:80px;max-height:220px;overflow-y:auto;line-height:1.7;white-space:pre-wrap}
+
+  /* ── Results ── */
+  #results-card{display:none}
+  .tab-bar{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:-1px}
+  .tab{padding:8px 18px;border-radius:6px 6px 0 0;cursor:pointer;font-weight:600;font-size:13px;color:var(--muted);border:1px solid transparent;border-bottom:none;transition:color .15s,background .15s;position:relative;top:1px}
+  .tab.active{color:var(--primary);background:var(--surface);border-color:var(--border)}
+  .tab-content{display:none}
+  .tab-content.active{display:block}
+  .table-wrap{overflow-x:auto;border-radius:7px;border:1px solid var(--border)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{background:#f0f7f4;color:var(--primary-dark);font-weight:600;padding:10px 12px;text-align:left;white-space:nowrap;border-bottom:2px solid var(--border);position:sticky;top:0}
+  td{padding:9px 12px;border-bottom:1px solid #edf3f0;vertical-align:top;max-width:320px;word-wrap:break-word;white-space:pre-wrap}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#f6faf8}
+  /* special wide cols */
+  td.col-explanation,td.col-confidence{max-width:420px;font-size:12px;color:#444;line-height:1.5}
+
+  .badge-high{background:#d4f0e8;color:var(--high);font-weight:700;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap}
+  .badge-medium{background:#fef3d8;color:#b07d0a;font-weight:700;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap}
+  .badge-low{background:#fde8e8;color:var(--low);font-weight:700;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap}
+  .conflict-flag{background:#fde8e8;color:var(--low);font-size:11px;font-weight:600;border-radius:3px;padding:1px 6px}
+  .no-conflict{color:#bbb;font-size:12px}
+  .sources-cell a{color:var(--primary);text-decoration:none;display:block;font-size:12px}
+  .sources-cell a:hover{text-decoration:underline}
+
+  .report-btn{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:3px 10px;font-size:12px;cursor:pointer;transition:border-color .15s,color .15s}
+  .report-btn:hover{border-color:var(--low);color:var(--low)}
+
+  #results-actions{display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap}
+  #download-btn{background:var(--primary-light);color:var(--primary-dark);border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s}
+  #download-btn:hover{background:#c5e8df}
+  #download-btn:disabled{opacity:.45;cursor:not-allowed}
+  #result-summary{font-size:13px;color:var(--muted)}
+  #download-lock-note{font-size:12px;color:var(--medium);margin-left:4px;display:none}
+
+  /* ── Report modal ── */
+  #modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center}
+  #modal-overlay.open{display:flex}
+  #modal{background:#fff;border-radius:10px;padding:24px;width:420px;box-shadow:0 8px 32px rgba(0,0,0,.18)}
+  #modal h3{font-size:15px;font-weight:700;margin-bottom:6px;color:var(--text)}
+  #modal p{font-size:12px;color:var(--muted);margin-bottom:14px}
+  #modal textarea{width:100%;border:1px solid var(--border);border-radius:6px;padding:9px;font-size:13px;font-family:inherit;resize:vertical;min-height:80px}
+  #modal-email{width:100%;border:1px solid var(--border);border-radius:6px;padding:9px;font-size:13px;font-family:inherit;margin-top:8px}
+  #modal-actions{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+  #modal-actions button{border-radius:6px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer}
+  #modal-cancel{background:#f1f5f3;border:1px solid var(--border);color:var(--muted)}
+  #modal-submit{background:var(--primary);border:none;color:#fff}
+  #modal-submit:hover{background:var(--primary-dark)}
+  #modal-status{font-size:12px;margin-top:8px;color:var(--muted)}
+
+  /* ── Auth / Signup modal ── */
+  #auth-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:flex-start;justify-content:center;padding-top:80px}
+  #auth-overlay.open{display:flex}
+  #auth-modal{background:#fff;border-radius:14px;padding:36px 32px 28px;width:460px;box-shadow:0 12px 48px rgba(0,0,0,.22);position:relative;max-height:90vh;overflow-y:auto}
+  #auth-modal .auth-close-x{position:absolute;top:14px;right:18px;background:none;border:none;font-size:22px;cursor:pointer;color:#888;line-height:1}
+  #auth-modal .auth-close-x:hover{color:#333}
+  #auth-modal .auth-logo{font-size:28px;margin-bottom:8px;text-align:center}
+  #auth-modal h2{font-size:20px;font-weight:700;color:var(--text);margin-bottom:6px;text-align:center}
+  #auth-modal .auth-sub{font-size:13px;color:var(--muted);margin-bottom:24px;text-align:center;line-height:1.5}
+  #auth-modal .auth-sub strong{color:var(--primary-dark)}
+  .auth-field{margin-bottom:12px}
+  .auth-field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px}
+  .auth-field input{width:100%;border:1px solid var(--border);border-radius:7px;padding:10px 12px;font-size:13px;font-family:inherit;transition:border-color .2s}
+  .auth-field input:focus{outline:none;border-color:var(--primary)}
+  #auth-submit-btn{width:100%;background:var(--primary);color:#fff;border:none;border-radius:7px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s;margin-top:6px}
+  #auth-submit-btn:hover{background:var(--primary-dark)}
+  #auth-submit-btn:disabled{opacity:.55;cursor:not-allowed}
+  .auth-divider{text-align:center;color:var(--muted);font-size:12px;margin:14px 0;position:relative}
+  .auth-divider::before{content:'';position:absolute;top:50%;left:0;right:0;border-top:1px solid var(--border)}
+  .auth-divider span{background:#fff;padding:0 10px;position:relative}
+  .auth-switch{text-align:center;font-size:13px;color:var(--muted);margin-top:14px}
+  .auth-switch a{color:var(--primary);cursor:pointer;text-decoration:underline}
+  .auth-free-note{text-align:center;font-size:11px;color:#aaa;margin-top:12px}
+  #auth-status{font-size:12px;color:var(--low);margin-top:8px;text-align:center;min-height:18px}
+  .auth-benefits{background:var(--primary-light);border-radius:8px;padding:12px 14px;margin-bottom:20px;font-size:12px;color:var(--primary-dark)}
+  .auth-benefits li{margin-bottom:4px;padding-left:4px}
+  .auth-benefits li::before{content:'✓ ';font-weight:700}
+
+  /* ── Context file upload ── */
+  #ctx-dropzone{border:2px dashed var(--border);border-radius:7px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;color:var(--muted);font-size:13px;line-height:1.6;background:#fafcfb}
+  #ctx-dropzone:hover,#ctx-dropzone.ctx-dragover{border-color:var(--primary);background:var(--primary-light);color:var(--primary-dark)}
+  #ctx-dropzone small{display:block;font-size:11px;opacity:.75;margin-top:2px}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <header>
+    <h2>🧬 BioMetadataAudit</h2>
+    <p>Search history</p>
+  </header>
+  <div id="history-list">
+    <div id="history-empty">No searches yet</div>
+  </div>
+  <button id="share-workspace-btn" onclick="shareWorkspace()">Share workspace</button>
+  <button id="clear-history" onclick="clearHistory()">Clear history</button>
+</aside>
+
+<!-- Main -->
+<div id="main">
+  <div id="topbar">
+    <h1>BioMetadataAudit</h1>
+    <span class="badge">MVP</span>
+    <div id="topbar-right">
+      <span id="free-counter">Free: 0 / 10 samples used</span>
+      <button id="auth-btn" onclick="showAuthPopup('signup')">Log in / Sign up</button>
+    </div>
+  </div>
+
+  <div id="content">
+
+    <!-- Free tier banner (shown when near limit) -->
+    <div id="free-banner" class="hidden">
+      <span class="banner-icon">✨</span>
+      <span class="banner-text">
+        <strong id="banner-title">You're close to your free limit</strong>
+        <span id="banner-body">Sign up to unlock 20 more samples per run and download Excel files.</span>
+      </span>
+      <button class="banner-cta" onclick="showAuthPopup('signup','banner')">Sign up free</button>
+    </div>
+
+    <!-- Input card -->
+    <div class="card">
+      <h3>Classify Metadata</h3>
+      <div class="field">
+        <label>Accession ID(s)</label>
+        <textarea id="acc-input" rows="3" placeholder="BioProject, BioSample, GenBank, SRR/SRX — one per line or comma-separated&#10;e.g. PRJNA976261  SAMN23469632  OL757400  SRR17084312"></textarea>
+      </div>
+      <div class="field">
+        <label>Metadata fields to extract (optional)</label>
+        <textarea id="meta-fields" rows="2" placeholder="Comma-separated fields, e.g. disease_status, subject_id, sample_id, control, body_site, country, organism, specific_location, sequencing_platform, dna_extraction_kit"></textarea>
+      </div>
+      <div class="field">
+        <label>Standardization schema (optional — comma-separated CSV/GitHub URLs)</label>
+        <textarea id="std-url" rows="2" placeholder="e.g. https://github.com/waldronlab/curatedMetagenomicDataCuration/blob/master/inst/extdata/cMD_data_dictionary.csv, https://github.com/.../cMD_data_dictionary_codebook.csv"></textarea>
+      </div>
+      <div class="field">
+        <label>
+          Context file (optional)
+          <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add file</span>
+        </label>
+        <div id="ctx-upload-area" style="display:none">
+          <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload a paper, supplementary file, or any document you believe contains relevant metadata for these accessions. The AI will use it as additional context to improve extraction accuracy.</p>
+          <div id="ctx-dropzone" onclick="document.getElementById('ctx-file-input').click()" ondragover="event.preventDefault();this.classList.add('ctx-dragover')" ondragleave="this.classList.remove('ctx-dragover')" ondrop="handleCtxDrop(event)">
+            <input type="file" id="ctx-file-input" style="display:none" accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml" onchange="handleCtxFile(this.files[0])">
+            <span id="ctx-dropzone-label">Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small></span>
+          </div>
+          <div id="ctx-file-info" style="display:none;margin-top:8px;font-size:12px;display:none;align-items:center;gap:8px">
+            <span id="ctx-file-name" style="color:var(--primary-dark);font-weight:600"></span>
+            <span id="ctx-file-chars" style="color:var(--muted)"></span>
+            <button onclick="clearCtxFile()" style="background:none;border:none;color:var(--low);cursor:pointer;font-size:12px;padding:0">✕ Remove</button>
+          </div>
+          <div id="ctx-upload-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button id="submit-btn" onclick="runAnalysis()">▶ Submit &amp; Classify</button>
+        <button id="stop-btn" onclick="stopAnalysis()">⏹ Stop</button>
+        <button id="reset-btn" onclick="resetInputs()">↺ Reset</button>
+      </div>
+    </div>
+
+    <!-- Progress card -->
+    <div class="card" id="progress-card">
+      <h3>Live Progress</h3>
+      <pre id="progress-log"></pre>
+    </div>
+
+    <!-- Results card -->
+    <div class="card" id="results-card">
+      <div id="results-actions">
+        <span id="result-summary"></span>
+        <button id="download-btn" disabled onclick="handleDownload()">⬇ Download Excel</button>
+        <span id="download-lock-note">🔒 Sign up to download</span>
+      </div>
+      <div class="tab-bar">
+        <div class="tab active" id="tab1-btn" onclick="switchTab(1)">cMD Metadata</div>
+        <div class="tab" id="tab2-btn" onclick="switchTab(2)">Full Raw Attributes</div>
+      </div>
+      <div class="tab-content active" id="tab1">
+        <div class="table-wrap"><table id="table1"><thead></thead><tbody></tbody></table></div>
+      </div>
+      <div class="tab-content" id="tab2">
+        <div class="table-wrap"><table id="table2"><thead></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<!-- Report modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h3>Report an issue</h3>
+    <p id="modal-acc-label">Accession: —</p>
+    <textarea id="modal-msg" placeholder="Describe the issue…"></textarea>
+    <input id="modal-email" type="email" placeholder="Your email (optional)">
+    <div id="modal-status"></div>
+    <div id="modal-actions">
+      <button id="modal-cancel" onclick="closeModal()">Cancel</button>
+      <button id="modal-submit" onclick="submitReport()">Submit</button>
+    </div>
+  </div>
+</div>
+
+<!-- Auth / Signup modal -->
+<div id="auth-overlay">
+  <div id="auth-modal">
+    <button class="auth-close-x" onclick="closeAuthPopup()">×</button>
+    <div class="auth-logo">🧬</div>
+    <h2 id="auth-title">Create your free account</h2>
+    <p class="auth-sub" id="auth-subtitle">
+      You're using BioMetadataAudit free tier.<br>
+      Sign up to unlock <strong>20 more samples per run</strong> and <strong>download Excel files</strong>.
+    </p>
+
+    <ul class="auth-benefits">
+      <li>20 samples per run (vs 10 free)</li>
+      <li>Download biosample_metadata.xlsx</li>
+      <li>Search history saved in your workspace</li>
+      <li>Share workspace with collaborators</li>
+    </ul>
+
+    <div class="auth-field">
+      <label>Email address</label>
+      <input id="auth-email-input" type="email" placeholder="you@institution.edu" autocomplete="email">
+    </div>
+    <div class="auth-field" id="auth-name-field">
+      <label>Full name</label>
+      <input id="auth-name-input" type="text" placeholder="Your name" autocomplete="name">
+    </div>
+    <div class="auth-field">
+      <label>Password</label>
+      <input id="auth-password-input" type="password" placeholder="Create a password" autocomplete="new-password">
+    </div>
+    <div id="auth-status"></div>
+    <button id="auth-submit-btn" onclick="handleAuth()">Create free account</button>
+    <p class="auth-switch" id="auth-mode-switch">
+      Already have an account? <a onclick="toggleAuthMode()">Log in</a>
+    </p>
+    <p class="auth-free-note">You can close this and continue with your remaining free samples.</p>
+  </div>
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const FREE_SAMPLE_LIMIT  = 10;
+const PAID_SAMPLE_LIMIT  = 30;  // after signup
+
+// ── Session tracking ─────────────────────────────────────────────────────────
+const SESSION_ID = (() => {
+  let sid = sessionStorage.getItem('bma_sid');
+  if (!sid) { sid = crypto.randomUUID(); sessionStorage.setItem('bma_sid', sid); }
+  return sid;
+})();
+
+async function track(event, props = {}) {
+  try {
+    fetch('/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event,
+        session_id: SESSION_ID,
+        properties: props,
+        email: getUser()?.email || '',
+        user_agent: navigator.userAgent.slice(0, 200),
+      }),
+    });
+  } catch { /* never block the UI on analytics */ }
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let currentRows           = [];
+let currentExcelPath      = '';
+let reportTarget          = { accession: '', rowIndex: -1 };
+let authMode              = 'signup';   // 'signup' | 'login'
+let authSource            = 'manual';   // what triggered the auth popup
+let ctxFileId             = null;       // temp path returned by /upload-context
+let currentAbortController = null;
+let partialRows           = [];
+let analysisStartTime     = 0;
+
+// ── Context file upload ───────────────────────────────────────────────────────
+function toggleCtxUpload() {
+  const area   = document.getElementById('ctx-upload-area');
+  const toggle = document.getElementById('ctx-toggle');
+  const hidden = area.style.display === 'none';
+  area.style.display  = hidden ? 'block' : 'none';
+  toggle.textContent  = hidden ? '− Hide' : '+ Add file';
+  if (!hidden) clearCtxFile();
+}
+
+function handleCtxDrop(e) {
+  e.preventDefault();
+  document.getElementById('ctx-dropzone').classList.remove('ctx-dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) handleCtxFile(file);
+}
+
+async function handleCtxFile(file) {
+  if (!file) return;
+  const statusEl = document.getElementById('ctx-upload-status');
+  const infoEl   = document.getElementById('ctx-file-info');
+  const nameEl   = document.getElementById('ctx-file-name');
+  const charsEl  = document.getElementById('ctx-file-chars');
+  ctxFileId = null;
+
+  statusEl.textContent = 'Uploading…';
+  statusEl.style.color = 'var(--muted)';
+  infoEl.style.display = 'none';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const resp = await fetch('/upload-context', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      statusEl.textContent = '❌ ' + (err.detail || 'Upload failed');
+      statusEl.style.color = 'var(--low)';
+      return;
+    }
+    const data = await resp.json();
+    ctxFileId = data.context_file_id;
+    nameEl.textContent  = data.filename;
+    charsEl.textContent = `(${data.chars.toLocaleString()} chars extracted)`;
+    infoEl.style.display = 'flex';
+    statusEl.textContent = '✅ File ready — will be used as context.';
+    statusEl.style.color = 'var(--high)';
+  } catch (err) {
+    statusEl.textContent = '❌ Network error: ' + err;
+    statusEl.style.color = 'var(--low)';
+  }
+}
+
+function clearCtxFile() {
+  ctxFileId = null;
+  document.getElementById('ctx-file-input').value = '';
+  document.getElementById('ctx-file-info').style.display = 'none';
+  document.getElementById('ctx-upload-status').textContent = '';
+  document.getElementById('ctx-dropzone-label').innerHTML =
+    'Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small>';
+}
+
+// ── Auth helpers ─────────────────────────────────────────────────────────────
+function getUser()   { try { return JSON.parse(localStorage.getItem('bma_user') || 'null'); } catch { return null; } }
+function setUser(u)  { localStorage.setItem('bma_user', JSON.stringify(u)); }
+function clearUser() { localStorage.removeItem('bma_user'); }
+
+function getSamplesUsed() { return parseInt(localStorage.getItem('bma_samples_used') || '0', 10); }
+function addSamplesUsed(n){ localStorage.setItem('bma_samples_used', getSamplesUsed() + n); }
+
+function getLimit()  { return getUser() ? PAID_SAMPLE_LIMIT : FREE_SAMPLE_LIMIT; }
+
+function updateAuthButton() {
+  const u   = getUser();
+  const btn = document.getElementById('auth-btn');
+  if (u) {
+    btn.textContent = u.email.split('@')[0];
+    btn.classList.add('logged-in');
+    btn.onclick = () => {
+      if (confirm('Log out of BioMetadataAudit?')) { clearUser(); location.reload(); }
+    };
+    document.getElementById('share-workspace-btn').style.display = 'block';
+  } else {
+    btn.textContent = 'Log in / Sign up';
+    btn.classList.remove('logged-in');
+    btn.onclick = () => showAuthPopup('signup');
+    document.getElementById('share-workspace-btn').style.display = 'none';
+  }
+}
+
+function updateFreeCounter() {
+  const used  = getSamplesUsed();
+  const limit = getLimit();
+  const el    = document.getElementById('free-counter');
+  el.textContent = getUser()
+    ? `${used} / ${limit} samples used`
+    : `Free: ${used} / ${limit} samples`;
+  el.className = '';
+  if (!getUser()) {
+    if (used >= FREE_SAMPLE_LIMIT)       el.classList.add('full');
+    else if (used >= FREE_SAMPLE_LIMIT - 3) el.classList.add('warn');
+  }
+
+  // Show/hide free banner
+  const banner = document.getElementById('free-banner');
+  if (!getUser() && used >= FREE_SAMPLE_LIMIT - 2 && used < FREE_SAMPLE_LIMIT) {
+    banner.classList.remove('hidden');
+    document.getElementById('banner-title').textContent =
+      `${FREE_SAMPLE_LIMIT - used} free sample${FREE_SAMPLE_LIMIT - used === 1 ? '' : 's'} remaining`;
+    document.getElementById('banner-body').textContent =
+      'Sign up free to unlock 20 more samples per run and download Excel files.';
+  } else if (!getUser() && used >= FREE_SAMPLE_LIMIT) {
+    banner.classList.remove('hidden');
+    document.getElementById('banner-title').textContent = 'Free limit reached';
+    document.getElementById('banner-body').textContent =
+      'You\'ve used all 10 free samples. Sign up to continue analyzing data.';
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+// ── Auth popup ────────────────────────────────────────────────────────────────
+function showAuthPopup(mode, source) {
+  authMode   = mode || 'signup';
+  authSource = source || 'manual';
+  setAuthMode(authMode);
+  document.getElementById('auth-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('auth-email-input').focus(), 100);
+}
+function closeAuthPopup() {
+  document.getElementById('auth-overlay').classList.remove('open');
+  document.getElementById('auth-status').textContent = '';
+}
+function toggleAuthMode() {
+  setAuthMode(authMode === 'signup' ? 'login' : 'signup');
+}
+function setAuthMode(mode) {
+  authMode = mode;
+  const isSignup = mode === 'signup';
+  document.getElementById('auth-title').textContent       = isSignup ? 'Create your free account' : 'Welcome back';
+  document.getElementById('auth-subtitle').innerHTML      = isSignup
+    ? 'You\'re using BioMetadataAudit free tier.<br>Sign up to unlock <strong>20 more samples per run</strong> and <strong>download Excel files</strong>.'
+    : 'Log in to access your workspace and full sample quota.';
+  document.getElementById('auth-name-field').style.display = isSignup ? 'block' : 'none';
+  document.getElementById('auth-submit-btn').textContent  = isSignup ? 'Create free account' : 'Log in';
+  document.getElementById('auth-mode-switch').innerHTML   = isSignup
+    ? 'Already have an account? <a onclick="toggleAuthMode()">Log in</a>'
+    : 'New here? <a onclick="toggleAuthMode()">Create a free account</a>';
+  document.getElementById('auth-password-input').placeholder = isSignup ? 'Create a password' : 'Your password';
+  document.getElementById('auth-password-input').autocomplete = isSignup ? 'new-password' : 'current-password';
+}
+
+async function handleAuth() {
+  const email    = document.getElementById('auth-email-input').value.trim();
+  const name     = document.getElementById('auth-name-input').value.trim();
+  const password = document.getElementById('auth-password-input').value;
+  const statusEl = document.getElementById('auth-status');
+  const btn      = document.getElementById('auth-submit-btn');
+
+  if (!email || !email.includes('@')) { statusEl.textContent = 'Please enter a valid email address.'; return; }
+  if (!password || password.length < 6) { statusEl.textContent = 'Password must be at least 6 characters.'; return; }
+  if (authMode === 'signup' && !name) { statusEl.textContent = 'Please enter your name.'; return; }
+
+  btn.disabled = true;
+  statusEl.textContent = authMode === 'signup' ? 'Creating account…' : 'Logging in…';
+
+  // Simulate auth (localStorage-based; replace with real API call)
+  await new Promise(r => setTimeout(r, 600));
+  const user = { email, name: name || email.split('@')[0], signedUpAt: new Date().toISOString() };
+  setUser(user);
+  track(authMode === 'signup' ? 'signup' : 'login', { name: user.name, source: authSource });
+  statusEl.textContent = '';
+  btn.disabled = false;
+  closeAuthPopup();
+  updateAuthButton();
+  updateFreeCounter();
+  renderHistory();
+
+  // Flash success
+  const counter = document.getElementById('free-counter');
+  const orig = counter.textContent;
+  counter.textContent = authMode === 'signup' ? '✓ Account created!' : '✓ Logged in!';
+  setTimeout(() => { counter.textContent = orig; updateFreeCounter(); }, 2000);
+}
+
+// ── History ──────────────────────────────────────────────────────────────────
+function getHistory() {
+  const key = getUser() ? `bma_history_${getUser().email}` : 'bma_history';
+  try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
+}
+function saveHistory(h) {
+  const key = getUser() ? `bma_history_${getUser().email}` : 'bma_history';
+  localStorage.setItem(key, JSON.stringify(h.slice(0, 50)));
+}
+function addHistory(acc, fields, url, rowCount) {
+  const h = getHistory().filter(x => x.acc !== acc);
+  h.unshift({ acc, fields, url, rowCount, ts: new Date().toLocaleString() });
+  saveHistory(h);
+  renderHistory();
+}
+function clearHistory() {
+  const key = getUser() ? `bma_history_${getUser().email}` : 'bma_history';
+  localStorage.removeItem(key);
+  track('feature_click', { feature: 'clear_history' });
+  renderHistory();
+}
+function renderHistory() {
+  const h    = getHistory();
+  const list = document.getElementById('history-list');
+  if (!h.length) {
+    list.innerHTML = '<div id="history-empty">No searches yet</div>';
+    return;
+  }
+  list.innerHTML = h.map((item, i) => `
+    <div class="history-item" onclick="restoreHistory(${i})">
+      <div class="acc">${escHtml(item.acc)}</div>
+      <div class="ts">${escHtml(item.ts)}${item.rowCount ? ` · ${item.rowCount} samples` : ''}</div>
+    </div>`).join('');
+}
+function restoreHistory(i) {
+  const item = getHistory()[i];
+  if (!item) return;
+  document.getElementById('acc-input').value   = item.acc;
+  document.getElementById('meta-fields').value = item.fields || '';
+  document.getElementById('std-url').value     = item.url   || '';
+  track('feature_click', { feature: 'restore_history', accession_input: item.acc.slice(0, 100) });
+}
+function shareWorkspace() {
+  const h     = getHistory();
+  const data  = btoa(JSON.stringify(h.slice(0, 10)));
+  const url   = `${location.origin}${location.pathname}?shared=${data}`;
+  track('feature_click', { feature: 'share_workspace' });
+  navigator.clipboard.writeText(url).then(
+    () => alert('Workspace link copied to clipboard!'),
+    () => { prompt('Copy this link to share your workspace:', url); }
+  );
+}
+
+// ── Stop & Reset ─────────────────────────────────────────────────────────────
+function stopAnalysis() {
+  if (currentAbortController) currentAbortController.abort();
+}
+
+function resetInputs() {
+  document.getElementById('acc-input').value   = '';
+  document.getElementById('meta-fields').value = '';
+  document.getElementById('std-url').value     = '';
+  clearCtxFile();
+  const area = document.getElementById('ctx-upload-area');
+  if (area && area.style.display !== 'none') toggleCtxUpload();
+}
+
+// ── Analysis ─────────────────────────────────────────────────────────────────
+async function runAnalysis() {
+  const accText = document.getElementById('acc-input').value.trim();
+  const metaRaw = document.getElementById('meta-fields').value.trim();
+  const stdUrl  = document.getElementById('std-url').value.trim();
+
+  if (!accText) { alert('Please enter at least one accession ID.'); return; }
+
+  // Count how many samples the user is requesting
+  const tokens = accText.split(/[,\n;\s]+/).map(s => s.trim()).filter(Boolean);
+  const used   = getSamplesUsed();
+  const limit  = getLimit();
+
+  if (used >= limit) {
+    track('free_limit_hit', { samples_used: used, limit });
+    showAuthPopup(getUser() ? 'login' : 'signup', 'free_limit');
+    document.getElementById('auth-subtitle').innerHTML =
+      getUser()
+        ? 'You\'ve reached your sample quota for this session.'
+        : 'You\'ve used all 10 free samples. Sign up to continue analyzing.';
+    return;
+  }
+
+  const metaFields = metaRaw ? metaRaw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean) : null;
+
+  // Classify accession types for analytics without logging raw IDs
+  const accTypes = {};
+  tokens.forEach(t => {
+    const k = t.startsWith('PRJNA') || t.startsWith('PRJEB') ? 'BioProject'
+            : t.startsWith('SAMN') || t.startsWith('SAMD') || t.startsWith('SAME') ? 'BioSample'
+            : /^[SE]RR/.test(t) ? 'SRA'
+            : /^[A-Z]{2}\d/.test(t) ? 'GenBank'
+            : 'other';
+    accTypes[k] = (accTypes[k] || 0) + 1;
+  });
+
+  const user = getUser();
+  track('analysis_start', {
+    accession_count: tokens.length,
+    accession_types: accTypes,
+    has_metadata_fields: !!(metaFields && metaFields.length),
+    metadata_field_count: metaFields ? metaFields.length : 0,
+    has_std_url: !!stdUrl,
+    has_context_file: !!ctxFileId,
+    is_logged_in: !!user,
+    // Full inputs logged only for signed-in users (for UserLog sheet)
+    ...(user ? {
+      accession_input: accText.slice(0, 500),
+      metadata_fields: metaRaw.slice(0, 300),
+      feature: 'analysis_run',
+    } : {}),
+  });
+
+  analysisStartTime = Date.now();
+  partialRows = [];
+  currentAbortController = new AbortController();
+  document.getElementById('submit-btn').disabled = true;
+  document.getElementById('stop-btn').style.display = 'inline-block';
+  document.getElementById('progress-card').style.display = 'block';
+  document.getElementById('results-card').style.display  = 'none';
+  const log = document.getElementById('progress-log');
+  log.textContent = '';
+
+  function logLine(msg) {
+    log.textContent += msg + '\n';
+    log.scrollTop = log.scrollHeight;
+  }
+
+  try {
+    const resp = await fetch('/analyze', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        bioproject_id:       accText,
+        metadata_fields:     metaFields,
+        standardization_url: stdUrl || null,
+        context_file_id:     ctxFileId || null,
+      }),
+      signal: currentAbortController.signal,
+    });
+
+    if (!resp.ok) {
+      logLine('❌ Server error: ' + resp.status);
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const dec    = new TextDecoder();
+    let buf      = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let evt;
+        try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (evt.type === 'progress') {
+          logLine(evt.message);
+        } else if (evt.type === 'error') {
+          logLine('❌ ' + evt.message);
+        } else if (evt.type === 'partial_result') {
+          const newRows = evt.rows || [];
+          partialRows.push(...newRows);
+        } else if (evt.type === 'result') {
+          currentRows      = evt.rows || [];
+          currentExcelPath = evt.excel_path || '';
+          logLine(`✅ Done — ${currentRows.length} row(s) returned.`);
+          const _u = getUser();
+          track('analysis_complete', {
+            sample_count: currentRows.length,
+            duration_ms: Date.now() - analysisStartTime,
+            has_excel: !!currentExcelPath,
+            ...(_u ? {
+              accession_input: accText.slice(0, 500),
+              metadata_fields: metaRaw.slice(0, 300),
+              feature: 'analysis_run',
+            } : {}),
+          });
+          addHistory(accText, metaRaw, stdUrl, currentRows.length);
+          addSamplesUsed(currentRows.length);
+          updateFreeCounter();
+          renderResults(currentRows);
+        } else if (evt.type === 'error') {
+          track('analysis_error', { message: (evt.message || '').slice(0, 120) });
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      logLine('⏹ Stopped by user.');
+      track('analysis_stopped', { partial_count: partialRows.length, duration_ms: Date.now() - analysisStartTime });
+      if (partialRows.length) {
+        logLine(`Showing ${partialRows.length} sample(s) collected before stop.`);
+        currentRows      = partialRows;
+        currentExcelPath = '';
+        addHistory(accText, metaRaw, stdUrl, partialRows.length);
+        addSamplesUsed(partialRows.length);
+        updateFreeCounter();
+        renderResults(partialRows);
+      } else {
+        logLine('No samples were completed before stopping.');
+      }
+    } else if (err instanceof TypeError && err.message.toLowerCase().includes('network')) {
+      logLine('❌ Cannot reach the server — the backend may not be running.');
+      logLine('   Please start the server with: python api.py');
+      logLine('   Then refresh this page and try again.');
+    } else {
+      logLine('❌ Error: ' + err);
+    }
+  } finally {
+    document.getElementById('submit-btn').disabled = false;
+    document.getElementById('stop-btn').style.display = 'none';
+    currentAbortController = null;
+  }
+}
+
+// ── Download handler (gated behind signup) ────────────────────────────────────
+function handleDownload() {
+  if (!currentExcelPath) return;
+  if (!getUser()) {
+    showAuthPopup('signup', 'download_gate');
+    document.getElementById('auth-subtitle').innerHTML =
+      'Sign up to <strong>download your results as Excel</strong> and unlock 20 samples per run.';
+    return;
+  }
+  const url = '/download-excel?path=' + encodeURIComponent(currentExcelPath);
+  track('download', { sample_count: currentRows.length });
+  const a   = document.createElement('a');
+  a.href     = url;
+  a.download = 'biosample_metadata.xlsx';
+  a.click();
+}
+
+// ── Results rendering ─────────────────────────────────────────────────────────
+function renderResults(rows) {
+  if (!rows.length) return;
+  document.getElementById('results-card').style.display = 'block';
+  document.getElementById('result-summary').textContent = `${rows.length} sample(s) processed`;
+
+  // Sheet 1: main field columns (exclude _additional_fields keys)
+  const sheet1Keys = [];
+  const seenS1     = new Set();
+  rows.forEach(r => {
+    Object.keys(r).filter(k => k !== '_additional_fields').forEach(k => {
+      if (!seenS1.has(k)) { seenS1.add(k); sheet1Keys.push(k); }
+    });
+  });
+
+  // Sheet 2: sheet 1 keys + per-field explanation keys from _additional_fields
+  const extraKeys  = [];
+  const seenExtra  = new Set();
+  rows.forEach(r => {
+    const af = r['_additional_fields'] || {};
+    Object.keys(af).forEach(k => {
+      if (!seenExtra.has(k)) { seenExtra.add(k); extraKeys.push(k); }
+    });
+  });
+  const sheet2Keys = [...sheet1Keys, ...extraKeys];
+
+  buildTable('table1', ['#', ...sheet1Keys, 'Conflict', 'Report'], rows, sheet1Keys, false);
+  buildTable('table2', ['#', ...sheet2Keys, 'Conflict', 'Report'], rows, sheet2Keys, true);
+
+  const dlBtn      = document.getElementById('download-btn');
+  const lockNote   = document.getElementById('download-lock-note');
+  if (currentExcelPath) {
+    dlBtn.disabled       = false;
+    lockNote.style.display = getUser() ? 'none' : 'inline';
+  }
+}
+
+function buildTable(tableId, headers, rows, keyOrder, includeExtra) {
+  const tbl   = document.getElementById(tableId);
+  const thead = tbl.querySelector('thead');
+  const tbody = tbl.querySelector('tbody');
+
+  thead.innerHTML = '<tr>' + headers.map(h => `<th>${escHtml(h)}</th>`).join('') + '</tr>';
+  tbody.innerHTML = '';
+
+  rows.forEach((row, idx) => {
+    const tr = document.createElement('tr');
+
+    // Row number
+    const tdNum = document.createElement('td');
+    tdNum.textContent = idx + 1;
+    tr.appendChild(tdNum);
+
+    keyOrder.forEach(k => {
+      const td  = document.createElement('td');
+      let val   = '';
+      if (includeExtra && !row.hasOwnProperty(k)) {
+        val = (row['_additional_fields'] || {})[k] || '';
+      } else {
+        val = row[k] || '';
+      }
+
+      // Render special columns
+      if (k === 'sources') {
+        td.className = 'sources-cell';
+        td.innerHTML = renderSources(String(val));
+      } else if (k === 'explanation') {
+        td.className = 'col-explanation';
+        td.textContent = String(val);
+      } else if (k === 'confidence_score') {
+        td.className = 'col-confidence';
+        td.textContent = String(val);
+      } else {
+        td.textContent = String(val);
+      }
+      tr.appendChild(td);
+    });
+
+    // Conflict flag
+    const conflictTd = document.createElement('td');
+    const hasConflict = keyOrder.some(k => String(row[k] || '').includes('##'));
+    conflictTd.innerHTML = hasConflict
+      ? '<span class="conflict-flag">⚠ conflict</span>'
+      : '<span class="no-conflict">—</span>';
+    tr.appendChild(conflictTd);
+
+    // Report button
+    const repTd = document.createElement('td');
+    const btn   = document.createElement('button');
+    btn.className = 'report-btn';
+    btn.textContent = 'Report';
+    btn.onclick = () => openModal(
+      row['biosample_accession'] || row['sample_id'] || String(idx + 1), idx
+    );
+    repTd.appendChild(btn);
+    tr.appendChild(repTd);
+
+    tbody.appendChild(tr);
+  });
+}
+
+function renderSources(val) {
+  if (!val) return '—';
+  return val.split(/\n|\\n/).map(s => s.trim()).filter(Boolean).map(s =>
+    s.startsWith('http')
+      ? `<a href="${escHtml(s)}" target="_blank" rel="noopener">${escHtml(s)}</a>`
+      : `<span>${escHtml(s)}</span>`
+  ).join('');
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+function switchTab(n) {
+  document.getElementById('tab1').classList.toggle('active', n === 1);
+  document.getElementById('tab2').classList.toggle('active', n === 2);
+  document.getElementById('tab1-btn').classList.toggle('active', n === 1);
+  document.getElementById('tab2-btn').classList.toggle('active', n === 2);
+  track('feature_click', { feature: n === 1 ? 'tab_cmd_metadata' : 'tab_raw_attributes' });
+}
+
+// ── Report modal ──────────────────────────────────────────────────────────────
+function openModal(accession, idx) {
+  reportTarget = { accession, rowIndex: idx };
+  document.getElementById('modal-acc-label').textContent = 'Accession: ' + accession;
+  document.getElementById('modal-msg').value = '';
+  document.getElementById('modal-email').value = '';
+  document.getElementById('modal-status').textContent = '';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+async function submitReport() {
+  const msg   = document.getElementById('modal-msg').value.trim();
+  const email = document.getElementById('modal-email').value.trim();
+  if (!msg) { document.getElementById('modal-status').textContent = '⚠ Please describe the issue.'; return; }
+
+  document.getElementById('modal-submit').disabled = true;
+  document.getElementById('modal-status').textContent = 'Submitting…';
+
+  try {
+    const res  = await fetch('/report', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ accession: reportTarget.accession, message: msg, email }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      track('report_submitted', { accession: reportTarget.accession });
+      document.getElementById('modal-status').textContent = '✅ Submitted. Thank you!';
+      setTimeout(closeModal, 1500);
+    } else {
+      document.getElementById('modal-status').textContent = '❌ ' + (data.detail || 'Error');
+    }
+  } catch (err) {
+    document.getElementById('modal-status').textContent = '❌ Network error';
+  }
+  document.getElementById('modal-submit').disabled = false;
+}
+
+// ── Shared workspace restore (URL param) ──────────────────────────────────────
+function tryRestoreShared() {
+  const params = new URLSearchParams(location.search);
+  const shared = params.get('shared');
+  if (!shared) return;
+  try {
+    const h = JSON.parse(atob(shared));
+    if (Array.isArray(h) && h.length) {
+      const key = getUser() ? `bma_history_${getUser().email}` : 'bma_history';
+      localStorage.setItem(key, JSON.stringify(h.slice(0, 50)));
+      renderHistory();
+      history.replaceState({}, '', location.pathname);
+    }
+  } catch { /* ignore */ }
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+updateAuthButton();
+updateFreeCounter();
+renderHistory();
+tryRestoreShared();
+track('page_load', {
+  referrer_domain: document.referrer ? new URL(document.referrer).hostname : '',
+  is_mobile: /Mobi|Android/i.test(navigator.userAgent),
+  is_logged_in: !!getUser(),
+});
+</script>
+</body>
+</html>
