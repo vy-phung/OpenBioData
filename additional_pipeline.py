@@ -293,7 +293,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           if 'https://doi.org/' in link: # check doi first
             # get the file to create listOfFile for each id
             print("link of doi: ", link)
-            #html = extractHTML.HTML("",link)
+            if extractHTML is None:
+                continue  # HTML extractor unavailable (lightweight deploy) — skip this link
             html = extractHTML.HTML(htmlContent=None, htmlLink=link, htmlFile="")
             jsonSM = html.getSupMaterial()
             article_text = await html.async_getListSection() # html.getListSection()
