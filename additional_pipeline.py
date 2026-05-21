@@ -16,8 +16,11 @@ try:
 except ImportError:
     pass  # new SDK optional — pipeline calls model.query_document_info instead
 import re
-import standardize_location
-import smart_fallback
+try:
+    import standardize_location
+    import smart_fallback
+except ImportError:
+    standardize_location = smart_fallback = None
 import time
 import multiprocessing
 import gspread
