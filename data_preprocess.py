@@ -942,10 +942,11 @@ def extract_context_reduceToken(text: str, keyword: str, window: int = 1200) -> 
 # =============================
 # 3. Expand question keywords dynamically
 # =============================
-from sentence_transformers import SentenceTransformer, util
-
-# Load once globally (fast)
-model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+try:
+    from sentence_transformers import SentenceTransformer, util as _st_util
+    _sentence_model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+except Exception:
+    SentenceTransformer = _st_util = _sentence_model = None
 
 import nltk
 nltk.download('wordnet')
