@@ -21,3 +21,4 @@ nltk
 aiohttp
 pycountry
 xlrd==2.0.1
+tiktoken

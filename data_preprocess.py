@@ -913,13 +913,18 @@ def process_inputToken(filePaths, saveLinkFolder,accession=None, isolate=None):
 import re
 from typing import List, Tuple
 from collections import defaultdict
-import tiktoken
+try:
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    tiktoken = None
+    enc = None
 # =============================
 # 1. HELPER: Token counter
 # =============================
-enc = tiktoken.get_encoding("cl100k_base")
-
 def num_tokens(text: str) -> int:
+    if enc is None:
+        return len(text) // 4  # rough estimate: ~4 chars per token
     return len(enc.encode(text))
 
 # =============================
