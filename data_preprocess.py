@@ -9,16 +9,33 @@ try:
     from spacy.cli import download
 except ImportError:
     Document = fitz = spacy = download = None
-from NER.PDF import pdf
-from NER.WordDoc import wordDoc
-from NER.html import extractHTML
-from NER.word2Vec import word2vec
-#from transformers import pipeline
+try:
+    from NER.PDF import pdf
+except Exception:
+    pdf = None
+try:
+    from NER.WordDoc import wordDoc
+except Exception:
+    wordDoc = None
+try:
+    from NER.html import extractHTML
+except Exception:
+    extractHTML = None
+try:
+    from NER.word2Vec import word2vec
+except Exception:
+    word2vec = None
 import urllib.parse, requests
 from pathlib import Path
 import pandas as pd
-import model
-import pipeline
+try:
+    import model
+except Exception:
+    model = None
+try:
+    import pipeline
+except Exception:
+    pipeline = None
 import tempfile
 import nltk
 nltk.download('punkt_tab')
