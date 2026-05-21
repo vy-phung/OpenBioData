@@ -1,18 +1,22 @@
 import re
-import pycountry
-from docx import Document
 import json
 import os
-import numpy as np
-import faiss
-from collections import defaultdict
-import ast # For literal_eval
-import math # For ceiling function
-import data_preprocess
-import mtdna_classifier
-import smart_fallback
-import pipeline
 import asyncio
+from collections import defaultdict
+import ast
+import math
+try:
+    import pycountry
+    from docx import Document
+    import numpy as np
+    import faiss
+    import data_preprocess
+    import mtdna_classifier
+    import smart_fallback
+    import pipeline
+except ImportError:
+    pycountry = Document = np = faiss = None
+    data_preprocess = mtdna_classifier = smart_fallback = pipeline = None
 # --- IMPORTANT: UNCOMMENT AND CONFIGURE YOUR REAL API KEY ---
 import google.generativeai as genai
 
