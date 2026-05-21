@@ -18,18 +18,23 @@ except ImportError:
 import time
 import multiprocessing
 import gspread
+import io
+import json
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
 from oauth2client.service_account import ServiceAccountCredentials
-import io
-import json
 #––– Authentication setup –––
 GDRIVE_PARENT_FOLDER_NAME = "mtDNA-Location-Classifier"
-GDRIVE_DATA_FOLDER_NAME = os.environ["GDRIVE_DATA_FOLDER_NAME"]
-GCP_CREDS_DICT = json.loads(os.environ["GCP_CREDS_JSON"])  # from HF secrets
-GDRIVE_CREDS = Credentials.from_service_account_info(GCP_CREDS_DICT, scopes=["https://www.googleapis.com/auth/drive"])
-drive_service = build("drive", "v3", credentials=GDRIVE_CREDS)
+GDRIVE_DATA_FOLDER_NAME = os.environ.get("GDRIVE_DATA_FOLDER_NAME", "")
+try:
+    _gcp_raw = os.environ.get("GCP_CREDS_JSON", "{}")
+    GCP_CREDS_DICT = json.loads(_gcp_raw) if _gcp_raw.strip().startswith("{") else {}
+    GDRIVE_CREDS = Credentials.from_service_account_info(GCP_CREDS_DICT, scopes=["https://www.googleapis.com/auth/drive"]) if GCP_CREDS_DICT else None
+    drive_service = build("drive", "v3", credentials=GDRIVE_CREDS) if GDRIVE_CREDS else None
+except Exception:
+    GCP_CREDS_DICT = {}
+    GDRIVE_CREDS = drive_service = None
 
 def get_or_create_drive_folder(name, parent_id=None):
     query = f"name='{name}' and mimeType='application/vnd.google-apps.folder'"
