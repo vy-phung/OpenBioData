@@ -539,6 +539,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       acc_score["_accession_info"] = accessions[acc]
       accs_output[acc] = acc_score
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] ✓ {acc} done ({acc_score.get('time_cost', '')})")
+      # Signal a partial result so api.py can stream the row to the browser immediately
+      await _progress({"__partial_acc__": acc, "__partial_data__": {acc: acc_score}})
     print(accs_output)
     return accs_output, acc_score["source_texts"], text
 

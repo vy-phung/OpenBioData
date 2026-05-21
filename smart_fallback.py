@@ -2,6 +2,69 @@ from Bio import Entrez, Medline
 import aiohttp
 import asyncio
 import re
+import os
+import requests as _requests
+
+def search_serper(query, max_results=3):
+    api_key = os.environ.get("SERPER_API_KEY", "")
+    if not api_key:
+        return []
+    try:
+        resp = _requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": max_results},
+            timeout=10,
+        )
+        if resp.status_code == 429:
+            return []
+        resp.raise_for_status()
+        return [item["link"] for item in resp.json().get("organic", []) if item.get("link")]
+    except Exception:
+        return []
+
+def search_pubmed_free(query, max_results=3):
+    try:
+        r = _requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={"db": "pubmed", "term": query, "retmode": "json", "retmax": max_results},
+            timeout=10,
+        )
+        r.raise_for_status()
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+        return [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in ids]
+    except Exception:
+        return []
+
+def search_europepmc_free(query, max_results=3):
+    try:
+        r = _requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={"query": query, "format": "json", "pageSize": max_results, "resultType": "lite"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("resultList", {}).get("result", [])
+        links = []
+        for item in results:
+            doi = item.get("doi")
+            if doi:
+                links.append(f"https://doi.org/{doi}")
+            pmid = item.get("pmid")
+            if pmid:
+                links.append(f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
+        return links
+    except Exception:
+        return []
+
+def _search_any(query, max_results=3):
+    """Search using Serper (if key set) then PubMed then EuropePMC as fallbacks."""
+    links = search_serper(query, max_results)
+    if not links:
+        links = search_pubmed_free(query, max_results)
+    if not links:
+        links = search_europepmc_free(query, max_results)
+    return links
 try:
     import mtdna_classifier
 except ImportError:
@@ -108,11 +171,13 @@ def google_accession_search(accession_id):
     ]
     
     links = []
-    if mtdna_classifier is None:
-        return links
+    _search_fn = (
+        (lambda q, n: mtdna_classifier.search_google_custom(q, n))
+        if mtdna_classifier is not None
+        else _search_any
+    )
     for query in queries:
-        search_results = mtdna_classifier.search_google_custom(query, 2)
-        for link in search_results:
+        for link in _search_fn(query, 2):
             if link not in links:
                 links.append(link)
     return links
@@ -343,14 +408,17 @@ def filter_links_by_metadata(search_results, saveLinkFolder, accession=None):
     return filtered
 
 def smart_google_search(accession_id, metadata):
-  print("doing smart goole queries")
+  print("doing smart google queries")
   queries = smart_google_queries(accession_id, metadata)
   links = []
-  if mtdna_classifier is None:
-      return links
+  _search_fn = (
+      (lambda q, n: mtdna_classifier.search_google_custom(q, n))
+      if mtdna_classifier is not None
+      else _search_any
+  )
   for q in queries:
       print("\n🔍 Query:", q)
-      results = mtdna_classifier.search_google_custom(q,2)
+      results = _search_fn(q, 2)
       for link in results:
           print(f"- {link}")
           if link not in links:
