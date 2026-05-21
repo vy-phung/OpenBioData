@@ -1,12 +1,13 @@
-import pipeline, model, mtdna_classifier, smart_fallback, standardize_location, mtdna_backend, NCBI
-import data_preprocess
-import model
-import mtdna_classifier
-#import app
+try:
+    import pipeline, model, mtdna_classifier, smart_fallback, standardize_location, mtdna_backend, NCBI
+    import data_preprocess
+    from NER.html import extractHTML
+except ImportError:
+    pipeline = model = mtdna_classifier = smart_fallback = standardize_location = mtdna_backend = NCBI = None
+    data_preprocess = extractHTML = None
 import pandas as pd
 from pathlib import Path
 import subprocess
-from NER.html import extractHTML
 import os
 import google.generativeai as genai
 try:

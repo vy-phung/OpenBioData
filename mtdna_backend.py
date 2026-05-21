@@ -1,11 +1,15 @@
-import gradio as gr
+try:
+    import gradio as gr
+    from mtdna_classifier import classify_sample_location
+    import data_preprocess, model, pipeline
+except ImportError:
+    gr = None
+    classify_sample_location = None
+    data_preprocess = model = pipeline = None
 from collections import Counter
 import csv
 import os
 from functools import lru_cache
-#import app
-from mtdna_classifier import classify_sample_location 
-import data_preprocess, model, pipeline
 import subprocess
 import json
 import pandas as pd
@@ -587,13 +591,16 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
         df_sheet2 = _merge(existing2, df_sheet2)
 
     # ── Write ─────────────────────────────────────────────────────────────────
+    # Both sheets carry the combined explanation, confidence_score, and
+    # time_cost columns.  Sheet 2 ("Full Raw Attributes") additionally
+    # includes per-field detail columns from _additional_fields.
     try:
         with pd.ExcelWriter(filename, engine="openpyxl") as writer:
             df_sheet1.to_excel(writer, sheet_name="cMD Metadata", index=False)
-            df_sheet2.to_excel(writer, sheet_name="All Attributes", index=False)
+            df_sheet2.to_excel(writer, sheet_name="Full Raw Attributes", index=False)
         print(f"✅ Excel saved: {filename} "
-              f"(Sheet1: {len(df_sheet1)} rows | "
-              f"Sheet2: {len(df_sheet2)} rows, {len(extra_keys)} extra cols)")
+              f"(cMD Metadata: {len(df_sheet1)} rows | "
+              f"Full Raw Attributes: {len(df_sheet2)} rows, {len(extra_keys)} extra cols)")
     except Exception as e:
         print(f"❌ Failed to write Excel file {filename}: {e}")
 
