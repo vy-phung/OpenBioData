@@ -1,15 +1,23 @@
-try:
-    import NCBI
-except ImportError:
-    NCBI = None
+def _try_import(name):
+    try:
+        import importlib
+        return importlib.import_module(name)
+    except Exception:
+        return None
+
+NCBI              = _try_import("NCBI")
+model             = _try_import("model")
+pipeline          = _try_import("pipeline")
+mtdna_classifier  = _try_import("mtdna_classifier")
+smart_fallback    = _try_import("smart_fallback")
+standardize_location = _try_import("standardize_location")
+mtdna_backend     = _try_import("mtdna_backend")
+data_preprocess   = _try_import("data_preprocess")
 
 try:
-    import pipeline, model, mtdna_classifier, smart_fallback, standardize_location, mtdna_backend
-    import data_preprocess
     from NER.html import extractHTML
-except ImportError:
-    pipeline = model = mtdna_classifier = smart_fallback = standardize_location = mtdna_backend = None
-    data_preprocess = extractHTML = None
+except Exception:
+    extractHTML = None
 import pandas as pd
 from pathlib import Path
 import subprocess
