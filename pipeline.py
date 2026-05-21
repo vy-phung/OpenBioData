@@ -6,13 +6,28 @@ import re
 import google.generativeai as genai
 try:
     import data_preprocess
+except ImportError:
+    data_preprocess = None
+try:
     import model
+except ImportError:
+    model = None
+try:
     import mtdna_classifier
+except ImportError:
+    mtdna_classifier = None
+try:
     import smart_fallback
+except ImportError:
+    smart_fallback = None
+try:
     import standardize_location
+except ImportError:
+    standardize_location = None
+try:
     from NER.html import extractHTML
 except ImportError:
-    data_preprocess = model = mtdna_classifier = smart_fallback = standardize_location = extractHTML = None
+    extractHTML = None
 # Helper functions in for this pipeline
 # Track time
 import time

@@ -7,16 +7,33 @@ import ast
 import math
 try:
     import pycountry
+except ImportError:
+    pycountry = None
+try:
     from docx import Document
+except ImportError:
+    Document = None
+try:
     import numpy as np
     import faiss
+except ImportError:
+    np = faiss = None
+try:
     import data_preprocess
+except ImportError:
+    data_preprocess = None
+try:
     import mtdna_classifier
+except ImportError:
+    mtdna_classifier = None
+try:
     import smart_fallback
+except ImportError:
+    smart_fallback = None
+try:
     import pipeline
 except ImportError:
-    pycountry = Document = np = faiss = None
-    data_preprocess = mtdna_classifier = smart_fallback = pipeline = None
+    pipeline = None
 # --- IMPORTANT: UNCOMMENT AND CONFIGURE YOUR REAL API KEY ---
 import google.generativeai as genai
 
