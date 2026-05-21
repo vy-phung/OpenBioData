@@ -1,7 +1,11 @@
 # reference: https://www.crummy.com/software/BeautifulSoup/bs4/doc/#for-html-documents
 from bs4 import BeautifulSoup
 import requests
-from DefaultPackages import openFile, saveFile
+def openFile(path, mode="r"):
+    return open(path, mode)
+def saveFile(data, path):
+    with open(path, "w") as f:
+        f.write(str(data))
 from NER import cleanText
 import pandas as pd
 from lxml.etree import ParserError, XMLSyntaxError
