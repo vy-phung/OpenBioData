@@ -14,6 +14,7 @@ requests==2.32.3
 pandas>=2.3.0
 openpyxl==3.1.5
 PyPDF2
+python-docx
 beautifulsoup4
 lxml
 pycountry
