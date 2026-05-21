@@ -4,11 +4,20 @@ import asyncio
 import re
 try:
     import mtdna_classifier
+except ImportError:
+    mtdna_classifier = None
+try:
     from NER.html import extractHTML
+except ImportError:
+    extractHTML = None
+try:
     import data_preprocess
+except ImportError:
+    data_preprocess = None
+try:
     import pipeline
 except ImportError:
-    mtdna_classifier = extractHTML = data_preprocess = pipeline = None
+    pipeline = None
 # Setup
 def fetch_ncbi(accession_number):
   try:
@@ -99,6 +108,8 @@ def google_accession_search(accession_id):
     ]
     
     links = []
+    if mtdna_classifier is None:
+        return links
     for query in queries:
         search_results = mtdna_classifier.search_google_custom(query, 2)
         for link in search_results:
@@ -332,9 +343,11 @@ def filter_links_by_metadata(search_results, saveLinkFolder, accession=None):
     return filtered
 
 def smart_google_search(accession_id, metadata):
-  print("doing smart goole queries")  
+  print("doing smart goole queries")
   queries = smart_google_queries(accession_id, metadata)
   links = []
+  if mtdna_classifier is None:
+      return links
   for q in queries:
       print("\n🔍 Query:", q)
       results = mtdna_classifier.search_google_custom(q,2)
