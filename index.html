@@ -206,6 +206,17 @@
 
   <div id="content">
 
+    <!-- Shared workspace banner (shown when a share link is opened) -->
+    <div id="shared-banner" class="hidden" style="background:#1a3a52;border:1px solid #2a6080;border-radius:8px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <span style="font-size:22px;">🔗</span>
+      <div style="flex:1;min-width:0;">
+        <strong id="shared-banner-title" style="display:block;color:#7ec8f0;font-size:14px;">Shared workspace loaded</strong>
+        <span id="shared-banner-body" style="color:#aad4e8;font-size:12px;"></span>
+      </div>
+      <button onclick="runSharedWorkspace()" style="background:#2a6080;color:#fff;border:none;border-radius:5px;padding:8px 16px;cursor:pointer;font-size:13px;white-space:nowrap;">Load &amp; Run</button>
+      <button onclick="document.getElementById('shared-banner').classList.add('hidden')" style="background:transparent;color:#aad4e8;border:none;cursor:pointer;font-size:18px;line-height:1;" title="Dismiss">&times;</button>
+    </div>
+
     <!-- Free tier banner (shown when near limit) -->
     <div id="free-banner" class="hidden">
       <span class="banner-icon">✨</span>
@@ -606,14 +617,28 @@ function restoreHistory(i) {
   track('feature_click', { feature: 'restore_history', accession_input: item.acc.slice(0, 100) });
 }
 function shareWorkspace() {
-  const h     = getHistory();
-  const data  = btoa(JSON.stringify(h.slice(0, 10)));
-  const url   = `${location.origin}${location.pathname}?shared=${data}`;
+  const h = getHistory();
+  if (!h.length) { alert('No runs to share yet. Run an analysis first.'); return; }
+  // Share the most recent run's inputs + sample count so recipient can re-run with same settings
+  const latest = h[0];
+  const payload = { acc: latest.acc, fields: latest.fields || '', url: latest.url || '', rowCount: latest.rowCount || 0 };
+  const data = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  const shareUrl = `${location.origin}${location.pathname}?shared=${data}`;
   track('feature_click', { feature: 'share_workspace' });
-  navigator.clipboard.writeText(url).then(
-    () => alert('Workspace link copied to clipboard!'),
-    () => { prompt('Copy this link to share your workspace:', url); }
+  navigator.clipboard.writeText(shareUrl).then(
+    () => alert(`Workspace link copied!\n\nAnyone who opens it will see the inputs pre-filled and can run the same analysis with one click.`),
+    () => { prompt('Copy this link to share your workspace:', shareUrl); }
   );
+}
+
+let _sharedPayload = null;
+function runSharedWorkspace() {
+  if (!_sharedPayload) return;
+  document.getElementById('acc-input').value   = _sharedPayload.acc   || '';
+  document.getElementById('meta-fields').value = _sharedPayload.fields || '';
+  document.getElementById('std-url').value     = _sharedPayload.url   || '';
+  document.getElementById('shared-banner').classList.add('hidden');
+  document.getElementById('run-btn').click();
 }
 
 // ── Stop & Reset ─────────────────────────────────────────────────────────────
@@ -990,14 +1015,28 @@ function tryRestoreShared() {
   const shared = params.get('shared');
   if (!shared) return;
   try {
-    const h = JSON.parse(atob(shared));
-    if (Array.isArray(h) && h.length) {
-      const key = getUser() ? `bma_history_${getUser().email}` : 'bma_history';
-      localStorage.setItem(key, JSON.stringify(h.slice(0, 50)));
-      renderHistory();
-      history.replaceState({}, '', location.pathname);
-    }
-  } catch { /* ignore */ }
+    const payload = JSON.parse(decodeURIComponent(escape(atob(shared))));
+    if (!payload || !payload.acc) return;
+    _sharedPayload = payload;
+
+    // Pre-fill the inputs silently
+    document.getElementById('acc-input').value   = payload.acc   || '';
+    document.getElementById('meta-fields').value = payload.fields || '';
+    document.getElementById('std-url').value     = payload.url   || '';
+
+    // Show the shared workspace banner
+    const banner = document.getElementById('shared-banner');
+    banner.classList.remove('hidden');
+    banner.style.display = 'flex';
+    document.getElementById('shared-banner-title').textContent = 'Shared workspace loaded';
+    const accLines = (payload.acc || '').split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+    const countStr = payload.rowCount ? ` (${payload.rowCount} samples last run)` : '';
+    document.getElementById('shared-banner-body').textContent =
+      `${accLines.length} accession(s) pre-filled${countStr}. Click "Load & Run" to analyze, or edit inputs first.`;
+
+    // Clean the URL so refreshing doesn't re-trigger
+    history.replaceState({}, '', location.pathname);
+  } catch { /* ignore malformed links */ }
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────
