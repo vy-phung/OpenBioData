@@ -34,7 +34,7 @@ if _NCBI_API_KEY:
     Entrez.api_key = _NCBI_API_KEY
 
 _SLEEP = 0.15       # seconds between every NCBI API call (raise to 0.4 if rate-limited)
-MAX_SAMPLES = 100   # safety cap for BioProject -> BioSample expansion
+MAX_SAMPLES = 50    # safety cap for BioProject -> BioSample expansion
 
 
 # ── 1. Identifier detection ────────────────────────────────────────────────────
@@ -345,7 +345,7 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
     return samn_ids
 
 
-def resolve_from_bioproject(bioproject_id: str) -> dict:
+def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> dict:
     """
     BioProject -> find ALL linked BioSamples -> resolve each one.
 
@@ -356,17 +356,17 @@ def resolve_from_bioproject(bioproject_id: str) -> dict:
       3. SRA fallback: esearch SRA with [bioproject] and parse BioSample from
          ExpXml (required for SRA-only projects like metagenomics BioProjects)
 
-    Returns multi-entry dict keyed by BioSample ID (up to MAX_SAMPLES).
+    Returns multi-entry dict keyed by BioSample ID (up to max_samples).
     """
     import urllib.request, urllib.parse
-    print(f'  [BioProject] Resolving {bioproject_id}...')
+    print(f'  [BioProject] Resolving {bioproject_id} (cap={max_samples})...')
     biosample_ids = []
 
     # ── Strategy 1: esearch biosample DB ──────────────────────────────────────
     try:
         handle = Entrez.esearch(db='biosample',
                                 term=f'{bioproject_id}[BioProject]',
-                                retmax=MAX_SAMPLES)
+                                retmax=max_samples)
         rec = Entrez.read(handle); handle.close()
         _safe_sleep()
         if rec['IdList']:
@@ -405,22 +405,47 @@ def resolve_from_bioproject(bioproject_id: str) -> dict:
                 with urllib.request.urlopen(url, timeout=30) as resp:
                     raw = resp.read().decode('utf-8', errors='replace')
                 _safe_sleep()
-                bs_uids_raw = re.findall(r'<Id>(\d+)</Id>', raw)
-                # First ID in the response is the source, skip it
-                bs_uids_raw = [u for u in bs_uids_raw if u != bp_uid]
+                # Only extract IDs inside the biosample LinkSetDb block (not SRA or other dbs)
+                bs_uids_raw = []
+                try:
+                    elink_root = ET.fromstring(raw)
+                    for linkset in elink_root.findall('.//LinkSetDb'):
+                        dbto = linkset.findtext('DbTo', '')
+                        if dbto.lower() == 'biosample':
+                            for link in linkset.findall('Link/Id'):
+                                if link.text and link.text != bp_uid:
+                                    bs_uids_raw.append(link.text)
+                except ET.ParseError:
+                    # XML parse failed — fall back to regex but filter by excluding source ID
+                    all_ids = re.findall(r'<Id>(\d+)</Id>', raw)
+                    bs_uids_raw = [u for u in all_ids if u != bp_uid]
                 if bs_uids_raw:
-                    print(f'  [BioProject] Strategy 2 found {len(bs_uids_raw)} UIDs via elink')
-                    for uid in bs_uids_raw[:MAX_SAMPLES]:
-                        try:
-                            handle = Entrez.esummary(db='biosample', id=uid)
-                            sum2 = Entrez.read(handle); handle.close()
-                            _safe_sleep()
-                            doc = sum2['DocumentSummarySet']['DocumentSummary'][0]
+                    print(f'  [BioProject] Strategy 2 found {len(bs_uids_raw)} raw UIDs via elink '
+                          f'(elink includes SRA/PubMed IDs — filtering for biosample accessions…)')
+                    # Batch esummary: 1 call instead of up to 36 individual calls
+                    batch = bs_uids_raw[:max_samples]
+                    try:
+                        handle = Entrez.esummary(db='biosample', id=','.join(batch))
+                        sum_batch = Entrez.read(handle); handle.close()
+                        _safe_sleep()
+                        for doc in sum_batch.get('DocumentSummarySet', {}).get('DocumentSummary', []):
                             acc = doc.get('Accession', '')
-                            if acc.startswith('SAM'):
+                            if acc.startswith('SAM') and acc not in biosample_ids:
                                 biosample_ids.append(acc)
-                        except Exception:
-                            pass
+                        print(f'  [BioProject] Strategy 2 yielded {len(biosample_ids)} valid biosample accessions')
+                    except Exception:
+                        # Fallback: individual queries (slower but handles partial errors)
+                        for uid in batch:
+                            try:
+                                handle = Entrez.esummary(db='biosample', id=uid)
+                                sum2 = Entrez.read(handle); handle.close()
+                                _safe_sleep()
+                                doc = sum2['DocumentSummarySet']['DocumentSummary'][0]
+                                acc = doc.get('Accession', '')
+                                if acc.startswith('SAM') and acc not in biosample_ids:
+                                    biosample_ids.append(acc)
+                            except Exception:
+                                pass
         except Exception as e:
             print(f'  [BioProject] Strategy 2 failed: {e}')
 
@@ -432,6 +457,17 @@ def resolve_from_bioproject(bioproject_id: str) -> dict:
     if not biosample_ids:
         print(f'  [BioProject] WARNING: no BioSamples found for {bioproject_id}')
         return {}
+
+    # Deduplicate and cap
+    seen_ids: set = set()
+    unique_ids: list = []
+    for bs in biosample_ids:
+        if bs not in seen_ids:
+            seen_ids.add(bs)
+            unique_ids.append(bs)
+    biosample_ids = unique_ids[:max_samples]
+    if len(unique_ids) > max_samples:
+        print(f'  [BioProject] Capped at {max_samples} of {len(unique_ids)} unique BioSamples.')
 
     # Resolve each BioSample
     result = {}
@@ -490,7 +526,7 @@ def resolve_from_sra(sra_id: str) -> dict:
 
 # ── 4. Master entry point ──────────────────────────────────────────────────────
 
-def resolve_accessions(user_input: str) -> dict:
+def resolve_accessions(user_input: str, max_samples: int = MAX_SAMPLES) -> dict:
     """
     Main entry point. Accepts any single NCBI identifier string.
     Auto-detects the type and routes to the appropriate resolver.
@@ -504,7 +540,7 @@ def resolve_accessions(user_input: str) -> dict:
     print(f'[resolve_accessions] Input: {user_input!r} -> detected type: {acc_type}')
 
     if acc_type == 'bioproject':
-        return resolve_from_bioproject(user_input)
+        return resolve_from_bioproject(user_input, max_samples=max_samples)
     elif acc_type == 'biosample':
         return resolve_from_biosample(user_input)
     elif acc_type == 'genbank':

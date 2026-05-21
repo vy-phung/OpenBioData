@@ -49,7 +49,7 @@ def parse_user_input(raw_input: str) -> list:
     return result
 
 
-def build_pipeline_input(raw_input: str) -> tuple:
+def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
     """
     Full entry point: parse input, resolve each accession via NCBI, return
     a pipeline-ready dict and a list of skipped IDs with reasons.
@@ -77,7 +77,7 @@ def build_pipeline_input(raw_input: str) -> tuple:
         log.info("build_pipeline_input: resolving '%s' (type=%s)", token, acc_type)
 
         try:
-            resolved = resolve_accessions(token)
+            resolved = resolve_accessions(token, max_samples=max_samples)
         except Exception as e:
             log.warning("build_pipeline_input: resolve_accessions failed for '%s': %s",
                         token, e)
