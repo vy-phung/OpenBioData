@@ -1,11 +1,8 @@
 def _try_import(name):
     try:
         import importlib
-        m = importlib.import_module(name)
-        print(f"[import] {name}: OK")
-        return m
-    except Exception as _e:
-        print(f"[import] {name}: FAILED — {_e}")
+        return importlib.import_module(name)
+    except Exception:
         return None
 
 NCBI              = _try_import("NCBI")
