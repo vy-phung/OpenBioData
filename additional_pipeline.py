@@ -1,9 +1,14 @@
 try:
-    import pipeline, model, mtdna_classifier, smart_fallback, standardize_location, mtdna_backend, NCBI
+    import NCBI
+except ImportError:
+    NCBI = None
+
+try:
+    import pipeline, model, mtdna_classifier, smart_fallback, standardize_location, mtdna_backend
     import data_preprocess
     from NER.html import extractHTML
 except ImportError:
-    pipeline = model = mtdna_classifier = smart_fallback = standardize_location = mtdna_backend = NCBI = None
+    pipeline = model = mtdna_classifier = smart_fallback = standardize_location = mtdna_backend = None
     data_preprocess = extractHTML = None
 import pandas as pd
 from pathlib import Path
