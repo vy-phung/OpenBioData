@@ -1,6 +1,3 @@
-[build]
-buildCommand = "pip install -r requirements-api.txt"
-
 [deploy]
 startCommand = "uvicorn api:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"

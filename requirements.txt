@@ -1,5 +1,5 @@
-# Web API dependencies only (used by Railway/Render)
-# For local ML pipeline, install requirements-full.txt instead
+# Web API dependencies — used by Railway/Render auto-detection
+# For local ML pipeline use requirements-full.txt
 fastapi
 uvicorn[standard]
 python-multipart
@@ -11,7 +11,7 @@ google-auth
 anthropic
 biopython==1.85
 requests==2.32.3
-pandas>=2.2.2
+pandas>=2.3.0
 openpyxl==3.1.5
 PyPDF2
 beautifulsoup4
