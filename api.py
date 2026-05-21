@@ -488,11 +488,22 @@ async def analyze(req: AnalyzeRequest):
                         )
                     )
 
+                    async def _emit_queue_item(msg):
+                        """Emit a single queue item as the right SSE type."""
+                        if isinstance(msg, dict) and "__partial_acc__" in msg:
+                            partial_rows = _rows_from_new_pipeline(
+                                msg["__partial_data__"], niche_cases
+                            )
+                            yield _sse("partial_result", {"rows": partial_rows})
+                        elif isinstance(msg, str):
+                            yield _sse("progress", {"message": msg})
+
                     # Stream progress messages while the pipeline task is running
                     while not pipeline_task.done():
                         try:
                             msg = await asyncio.wait_for(_progress_q.get(), timeout=0.3)
-                            yield _sse("progress", {"message": msg})
+                            async for evt in _emit_queue_item(msg):
+                                yield evt
                             await asyncio.sleep(0)
                         except asyncio.TimeoutError:
                             await asyncio.sleep(0)
@@ -500,7 +511,8 @@ async def analyze(req: AnalyzeRequest):
                     # Drain any remaining messages
                     while not _progress_q.empty():
                         msg = _progress_q.get_nowait()
-                        yield _sse("progress", {"message": msg})
+                        async for evt in _emit_queue_item(msg):
+                            yield evt
 
                     pipeline_result = await pipeline_task
                     # additional_pipeline returns (accs_output, source_texts, text)

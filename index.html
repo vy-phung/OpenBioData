@@ -748,9 +748,14 @@ async function runAnalysis() {
         } else if (evt.type === 'partial_result') {
           const newRows = evt.rows || [];
           partialRows.push(...newRows);
+          // Show results card immediately as samples complete
+          currentRows = [...partialRows];
+          document.getElementById('results-card').style.display = 'block';
+          renderResults(currentRows);
+          logLine(`⏳ ${currentRows.length} sample(s) ready so far…`);
         } else if (evt.type === 'result') {
           clearInterval(_timerInterval);
-          currentRows      = evt.rows || [];
+          currentRows      = evt.rows.length ? evt.rows : partialRows;
           currentExcelPath = evt.excel_path || '';
           logLine(`✅ Done — ${currentRows.length} row(s) returned.`);
           const _u = getUser();
