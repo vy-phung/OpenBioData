@@ -17,5 +17,7 @@ PyPDF2
 python-docx
 beautifulsoup4
 lxml
+nltk
+aiohttp
 pycountry
 xlrd==2.0.1
