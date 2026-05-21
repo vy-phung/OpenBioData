@@ -70,14 +70,30 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
         return np.zeros(768, dtype='float32')
 
 
-def call_llm_api(prompt, model_name="gemini-2.5-flash-lite"):#'gemini-1.5-flash-latest'):
-    """Calls a Google Gemini LLM with the given prompt."""
+def call_llm_api(prompt, model_name=None):
+    """Call LLM — tries Anthropic Claude first, falls back to Gemini."""
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=anthropic_key)
+            msg = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return msg.content[0].text, None
+        except Exception as e:
+            print(f"Anthropic API error: {e} — falling back to Gemini.")
+
+    # Gemini fallback
+    gemini_model = model_name or "gemini-2.5-flash-lite"
     try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
-        return response.text, model # Return model instance for token counting
+        m = genai.GenerativeModel(gemini_model)
+        response = m.generate_content(prompt)
+        return response.text, m
     except Exception as e:
-        print(f"Error calling LLM: {e}")
+        print(f"Gemini API error: {e}")
         return "Error: Could not get response from LLM API.", None
 
 
@@ -871,51 +887,74 @@ def clean_llm_output(llm_response_text, output_format_str):
 
 def parse_multi_sample_llm_output(raw_response: str, output_format_str):
     """
-    Parse LLM output with possibly multiple metadata lines + shared explanations.
+    Parse LLM output with possibly multiple metadata lines + per-field explanations.
+
+    Supports two explanation layouts the LLM might produce:
+      A. One explanation line per field in order (newline-separated)
+      B. All explanations on one block with **field_name:** markers
     """
     metadata_list = {}
-    explanation_lines = []
-    output_answers = re.split(r",\s*", raw_response.split("\n")[0].strip()) #raw_response.split("\n")[0].split(", ")
-    explanation_lines =  [x for x in raw_response.split("\n")[1:] if x.strip()]
-    print("raw explanation line which split by new line: ", explanation_lines)
-    if len(explanation_lines) == 1:
-        if len(explanation_lines[0].split(". ")) > len(explanation_lines):
-          explanation_lines =  [x for x in explanation_lines[0].split(". ") if x.strip()]
-          print("explain line split by dot: ", explanation_lines)  
-    output_formats = output_format_str.split(", ")
-    explain = ""
-    # assign output format to its output answer and explanation
-    if output_format_str:
-      outputs = output_format_str.split(", ")
-      for o in range(len(outputs)):
-        output = outputs[o]
-        metadata_list[output] = {"answer":"",
-                                  output+"_explanation":""}   
-        # assign output answers
+    raw_lines = raw_response.strip().split("\n")
+    first_line = raw_lines[0].strip() if raw_lines else ""
+    explanation_lines_raw = [x for x in raw_lines[1:] if x.strip()]
+
+    output_answers = re.split(r",\s*", first_line)
+    output_formats = output_format_str.split(", ") if output_format_str else []
+
+    # ── Build per-field explanation map ───────────────────────────────────────
+    # Strategy A: try **field_name:** markers anywhere in the explanation block
+    full_expl_text = " ".join(explanation_lines_raw)
+    field_expl_map: dict = {}
+    for fmt in output_formats:
+        escaped = re.escape(fmt)
+        # Match **field:** ... up to next **field:** or end
+        pattern = rf'\*{{1,2}}{escaped}\*{{0,2}}\s*[:\-]?\s*(.+?)(?=\*{{1,2}}[A-Za-z_/]+\*{{0,2}}\s*[:\-]|$)'
+        m = re.search(pattern, full_expl_text, re.IGNORECASE | re.DOTALL)
+        if m:
+            sentence = m.group(1).strip().split("\n")[0]  # first sentence only
+            field_expl_map[fmt] = sentence
+
+    # Strategy B: ordered lines (one per field)
+    ordered_lines = explanation_lines_raw
+    if not field_expl_map and len(ordered_lines) == 1 and ". " in ordered_lines[0]:
+        # Single paragraph — split into sentences
+        ordered_lines = [s.strip() for s in ordered_lines[0].split(". ") if s.strip()]
+
+    # ── Assign answers + per-field explanations ───────────────────────────────
+    for o, output in enumerate(output_formats):
+        metadata_list[output] = {"answer": "", output + "_explanation": ""}
+
+        # Answer
         if o < len(output_answers):
-          # check if output_format unexpectedly in the answer such as:  
-          #country_name: Europe, modern/ancient: modern
-          try: 
-            if ": " in output_answers[o]:
-              output_answers[o] = output_answers[o].split(": ")[1]
-          except:
-            pass    
-          # Europe, modern  
-          metadata_list[output]["answer"] = output_answers[o]
-          if "unknown" in metadata_list[output]["answer"].lower():
-            metadata_list[output]["answer"] = "unknown"
+            ans = output_answers[o].strip()
+            try:
+                if ": " in ans:
+                    ans = ans.split(": ", 1)[1]
+            except Exception:
+                pass
+            metadata_list[output]["answer"] = ans
+            if "unknown" in metadata_list[output]["answer"].lower():
+                metadata_list[output]["answer"] = "unknown"
         else:
-          metadata_list[output]["answer"] = "unknown"
-        # assign explanations
+            metadata_list[output]["answer"] = "unknown"
+
+        # Explanation — one sentence, assigned to this field specifically
         if metadata_list[output]["answer"] != "unknown":
-          # if explanation_lines:
-          #   explain = explanation_lines.pop(0)
-          # else:
-          #   explain = ". ".join(explanation_lines)    
-          explain = ". ".join(explanation_lines)  
-          metadata_list[output][output+"_explanation"] = explain
-        else:  
-          metadata_list[output][output+"_explanation"] = "unknown"  
+            if output in field_expl_map:
+                explain = field_expl_map[output]
+            elif o < len(ordered_lines):
+                explain = ordered_lines[o]
+            elif ordered_lines:
+                explain = ordered_lines[-1]
+            else:
+                explain = ""
+            # Strip leading **field:** prefix if present
+            explain = re.sub(r'^\*{1,2}[A-Za-z_/\-]+\*{0,2}\s*[:\-]\s*', '', explain).strip()
+            metadata_list[output][output + "_explanation"] = explain
+        else:
+            metadata_list[output][output + "_explanation"] = "unknown"
+
+    print("parsed metadata_list keys:", list(metadata_list.keys()))
     return metadata_list
 
 def merge_metadata_outputs(metadata_list):
@@ -999,56 +1038,166 @@ def outputs_from_multiPrompts(raw_response: str, output_format_str, acc_prompts)
       outputs[accession] = metadata_list    
   return outputs   
 
-def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_template="default"):
+def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_template="default",
+                  standardization_schema=None):
+  """Build per-accession prompts.
+
+  standardization_schema: dict {field_name: description} from a schema CSV
+  (e.g. cMD data dictionary + codebook).  When provided:
+    - Each requested field is annotated with its schema definition AND allowed
+      values so the LLM constrains its output to the canonical vocabulary.
+    - Output column names must exactly match the schema field names.
+  """
   prompts = {}
-  """dictsAccs = {
-    "acc1": "text1",
-    "acc2": "text2",
-    "acc3": "text3" }"""  
   if niche_cases:
     fields_list = ", ".join(niche_cases)
+    if standardization_schema:
+      # Build rich, per-field instructions: definition + allowed values
+      schema_lines = []
+      for f in niche_cases:
+        entry = standardization_schema.get(f, {})
+        if isinstance(entry, dict):
+          desc    = entry.get("description", "")
+          allowed = entry.get("allowed_values", [])
+        else:
+          desc    = str(entry)
+          allowed = []
+        line = f"  - {f}"
+        if desc:
+          line += f": {desc}"
+        if allowed:
+          # Boolean fields need special handling so LLM doesn't confuse "FALSE" with "absent"
+          bool_vals = {v.strip().lower() for v in allowed}
+          if bool_vals <= {"true", "false", "0", "1", "yes", "no"}:
+            line += (
+              f" [BOOLEAN — output TRUE if sample IS a control/reference, "
+              f"FALSE if sample is a case/disease/treatment group. "
+              f"Allowed: {', '.join(str(v) for v in allowed[:10])}. "
+              f"Do NOT output 'unknown' when you can determine whether it is a case or control from the text.]"
+            )
+          else:
+            line += f" [allowed values: {', '.join(str(v) for v in allowed[:20])}]"
+        schema_lines.append(line)
+
+      schema_hint = (
+        "STANDARDIZATION RULES — use these exact field definitions and "
+        "allowed values from the user-provided schema:\n"
+        + "\n".join(schema_lines)
+        + "\n\nIMPORTANT: Use ONLY the allowed values listed above. "
+        "Choose the closest match when exact wording differs. "
+        "Write 'unknown' ONLY when the information is genuinely absent from ALL source texts.\n"
+      )
+    else:
+      schema_hint = ""
+
     niche_prompt = (
-      f"Also, extract {fields_list}. "
-      f"If not explicitly stated, infer the most specific related or contextually relevant value. "
-      f"If no information is found, write 'unknown'. "
+      f"Extract the following metadata fields: {fields_list}.\n"
+      f"{schema_hint}"
+      f"For each field: infer the most specific value from the source text. "
+      f"Write 'unknown' only when truly absent.\n"
     )
-    #output_format_str += ", " + ", ".join(niche_cases)
-  else: niche_prompt = ""  
+  else:
+    niche_prompt = ""
+
   for acc_pos in range(len(list(dictsAccs.keys()))):
     acc = list(dictsAccs.keys())[acc_pos]
-    if acc:
-        acc_cleaned = acc.split('.')[0]
-    else:
-        acc_cleaned = acc
+    acc_cleaned = acc.split('.')[0] if acc else acc
     accession_found_in_text = False
     context_for_llm = dictsAccs[acc]
     if prompt_template == "default":
+      field_count = len(output_format_str.split(", "))
       prompt_for_llm = (
-      f"Prompt {acc_pos+1}: "  
-      f"Given the following text snippets, analyze the entity/concept of this accession number {acc_cleaned} "
-      #f"or the mitochondrial DNA sample if these identifiers are not explicitly found. "
-      f"Identify its **primary associated geographic location**, preferring the most specific available: "
-      f"first try to determine the exact country; if no country is explicitly mentioned, then provide "
-      f"the next most specific region, continent, island, or other clear geographic area mentioned. "
-      f"If no geographic clues at all are present, state 'unknown' for location. "
-      f"Also, determine if the genetic sample is from a 'modern' (present-day living individual) "
-      f"or 'ancient' (prehistoric/archaeological) source. "
-      f"If the text does not specify ancient or archaeological context, assume 'modern'. "
+      f"Prompt {acc_pos+1}: "
+      f"Given the following text snippets, analyze the biological sample with "
+      f"accession number {acc_cleaned}.\n"
+      f"Identify its primary associated geographic location (country preferred; "
+      f"fall back to region/continent if no country mentioned; write 'unknown' "
+      f"if no geographic clues are present).\n"
+      f"Determine if the sample source is 'modern' (living individual) or "
+      f"'ancient' (prehistoric/archaeological); assume 'modern' if not specified.\n"
       f"{niche_prompt}"
-      f"Provide only {output_format_str}. "
-      f"If any information is not explicitly present, use the fallback rules above before defaulting to 'unknown'. "
-      f"For each non-'unknown' field, write one sentence explaining how it was inferred from the text "
-      f"(one sentence for each). "
-      f"Format your answer so that:\n"
-      f"1. The **first line** contains only the {output_format_str} values separated by commas.\n"
-      f"2. The **second line onward** contains the explanations based on the order of the non-unknown {output_format_str} answer.\n"
-      f"\nText Snippets:\n{context_for_llm}")  
-      # check if accession in text or not
+      f"\nOUTPUT FORMAT (follow exactly):\n"
+      f"Line 1: exactly {field_count} comma-separated values for: {output_format_str}\n"
+      f"Lines 2–{field_count+1}: one sentence per field in the SAME ORDER — "
+      f"no field-name labels, no bullet points, just the sentence.\n"
+      f"Example for 3 fields:\n"
+      f"  Italy, modern, type 2 diabetes\n"
+      f"  The BioSample record states geo_loc_name: Italy: Ferrara.\n"
+      f"  Sample was collected from living subjects enrolled in 2018.\n"
+      f"  Subject belongs to the T2D+P+ group per Table 3 of the linked paper.\n"
+      f"\nText Snippets:\n{context_for_llm}")
       if acc_cleaned.lower() in context_for_llm.lower():
         accession_found_in_text = True
-      # save values in prompts:
       prompts[acc] = [prompt_for_llm, accession_found_in_text]
-  return prompts  
+  return prompts
+
+def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict:
+    """
+    Post-extraction LLM standardization.
+    Maps extracted free-text values to canonical schema-defined values.
+    Uses Anthropic Claude first (better instruction-following), Gemini as fallback.
+    """
+    if not schema or not extracted_values:
+        return extracted_values
+
+    # Only standardize fields that exist in the schema
+    fields_to_std = {k: v for k, v in extracted_values.items()
+                     if k in schema and v and v.lower() != "unknown"}
+    if not fields_to_std:
+        return extracted_values
+
+    schema_lines = []
+    for field, val in fields_to_std.items():
+        entry = schema.get(field, {})
+        if isinstance(entry, dict):
+            desc = entry.get("description", "")
+            allowed = entry.get("allowed_values", [])
+        else:
+            desc = str(entry)
+            allowed = []
+        line = f"  {field}: current='{val}'"
+        if desc:
+            line += f", definition='{desc}'"
+        if allowed:
+            bool_vals = {v.strip().lower() for v in allowed}
+            if bool_vals <= {"true", "false", "0", "1", "yes", "no"}:
+                line += (f", BOOLEAN — TRUE=is a control, FALSE=is a case/disease. "
+                         f"Allowed: {', '.join(str(v) for v in allowed[:10])}")
+            else:
+                line += f", allowed=[{', '.join(str(v) for v in allowed[:15])}]"
+        schema_lines.append(line)
+
+    prompt = (
+        f"You are a biomedical metadata standardizer for sample {acc}.\n\n"
+        f"Map each extracted value to its canonical schema value:\n"
+        + "\n".join(schema_lines) + "\n\n"
+        "Rules:\n"
+        "1. Use ONLY the allowed values listed; pick the closest match.\n"
+        "2. For BOOLEAN fields: if the sample is clearly a case/disease/treatment, output FALSE for 'control'. "
+        "If it is clearly in the control/reference group, output TRUE.\n"
+        "3. If you cannot determine the correct standardized value, keep the original.\n"
+        "4. Return ONLY a JSON object: {\"field\": \"standardized_value\"}.\n"
+        "No markdown, no explanation.\n"
+    )
+
+    try:
+        response_text, _ = call_llm_api(prompt)
+        raw = response_text.strip()
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = json.loads(raw.strip())
+        standardized = dict(extracted_values)
+        for k, v in result.items():
+            if k in extracted_values and v is not None:
+                standardized[k] = str(v).strip()
+        return standardized
+    except Exception as e:
+        print(f"[standardize_with_llm] WARNING: {e}")
+        return extracted_values
+
 
 async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases=None, limit_context=250000):
   linksWithTexts, links, context_for_llm = {}, [], ""
@@ -1138,10 +1287,10 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         "- If a field has no clear value, skip it entirely (do not return null or empty string)\n\n"
         "Text to extract from:\n"
         "---\n"
-        f"{context_text[:4000]}\n"
+        f"{context_text[:30000]}\n"
         "---\n\n"
         "Return only valid JSON. No explanation. No markdown. No code blocks.\n"
-        'Example: {"host_age": "45", "disease_status": "Type 2 Diabetes", "tissue_type": "oral mucosa"}'
+        'Example: {"host_age": "45", "sequencing_platform": "Illumina NextSeq 500", "tissue_type": "oral mucosa", "collection_date": "2018"}'
     )
 
     try:
@@ -1170,7 +1319,8 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         return {}
 
 
-async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, prompts):
+async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, prompts,
+                              standardization_schema=None):
     """
     Queries the document using a hybrid approach:
     1. Local structured lookup (fast, cheap, accurate for known patterns).
@@ -1195,7 +1345,9 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       output_format_str += ", " + ", ".join(niche_cases)
     # Calculate embedding cost for the primary query word
     total_query_cost, current_embedding_cost = 0, 0
-    created_prompts = multi_prompts(prompts, output_format_str, niche_cases=niche_cases, prompt_template="default")
+    created_prompts = multi_prompts(prompts, output_format_str, niche_cases=niche_cases,
+                                    prompt_template="default",
+                                    standardization_schema=standardization_schema)
     print("done create prompt and length: ", len(created_prompts))
     prompt_for_llm = []
     for acc in created_prompts:
@@ -1313,18 +1465,35 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
                         
         else:
             output_acc[key] = metadata_list[key]  
+      # ── LLM-based standardization pass ───────────────────────────────────
+      # Run after extraction; maps free-text values to canonical schema values.
+      if standardization_schema and output_acc:
+          try:
+              extracted_flat = {
+                  k: output_acc[k]["answer"]
+                  for k in output_acc
+                  if isinstance(output_acc[k], dict) and output_acc[k].get("answer", "").lower() not in ("", "unknown")
+              }
+              if extracted_flat:
+                  standardized = standardize_with_llm(extracted_flat, standardization_schema, acc)
+                  for field, std_val in standardized.items():
+                      if field in output_acc and std_val:
+                          output_acc[field]["answer"] = std_val
+                  print(f"[Standardization] {acc}: {standardized}")
+          except Exception as _std_err:
+              print(f"[Standardization] WARNING: {_std_err}")
+
       outputs[acc]["predicted_output"] = output_acc
       outputs[acc]["total_query_cost"] = total_query_cost
 
       # ── PASS 2: generalized extraction of ALL additional metadata ─────────
-      # Runs on the same context text already prepared for Pass 1.
-      # predefined fields (country_name, modern/ancient/unknown, niche_cases)
-      # take priority — Pass 2 only captures what Pass 1 missed.
+      # Uses all source text to extract every metadata attribute mentioned.
       try:
           predefined_keys = set(['country_name', 'modern/ancient/unknown']
                                  + list(niche_cases or []))
-          all_additional = _extract_additional_fields(context_for_llm, niche_cases or [])
-          # Keep only fields NOT already covered by predefined extraction
+          # Use the full prompt context (contains all source texts) for richer extraction
+          pass2_context = context_for_llm if context_for_llm else ""
+          all_additional = _extract_additional_fields(pass2_context, niche_cases or [])
           additional_only = {
               k: v for k, v in all_additional.items()
               if k not in predefined_keys

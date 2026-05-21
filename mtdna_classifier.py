@@ -309,55 +309,135 @@ def get_country_from_text(text):
 #         print("Google CSE error:", e)
 #         return []
 
-def search_google_custom(query, max_results=3):
-  # query should be the title from ncbi or paper/source title
-    GOOGLE_CSE_API_KEY = os.environ["GOOGLE_CSE_API_KEY"]
-    GOOGLE_CSE_CX = os.environ["GOOGLE_CSE_CX"]
-    endpoint = os.environ["SEARCH_ENDPOINT"]
-    params = {
-        "key": GOOGLE_CSE_API_KEY,
-        "cx": GOOGLE_CSE_CX,
-        "q": query,
-        "num": max_results
-    }
-    try:
-        response = requests.get(endpoint, params=params)
-        if response.status_code == 429:
-            print("Rate limit hit. Try again later.")
-            print("try with back up account")
-            try: 
-              return search_google_custom_backup(query, max_results)
-            except:
-              return []
-        response.raise_for_status()
-        data = response.json().get("items", [])
-        return [item.get("link") for item in data if item.get("link")]
-    except Exception as e:
-        print("Google CSE error:", e)
+def search_serper(query, max_results=3):
+    """Search via Serper API (Google results). Requires SERPER_API_KEY env var.
+    Sign up free at serper.dev — 2500 queries/month free tier."""
+    api_key = os.environ.get("SERPER_API_KEY", "")
+    if not api_key:
         return []
-
-def search_google_custom_backup(query, max_results=3):
-  # query should be the title from ncbi or paper/source title
-    GOOGLE_CSE_API_KEY = os.environ["GOOGLE_CSE_API_KEY_BACKUP"]
-    GOOGLE_CSE_CX = os.environ["GOOGLE_CSE_CX_BACKUP"]
-    endpoint = os.environ["SEARCH_ENDPOINT"]
-    params = {
-        "key": GOOGLE_CSE_API_KEY,
-        "cx": GOOGLE_CSE_CX,
-        "q": query,
-        "num": max_results
-    }
     try:
-        response = requests.get(endpoint, params=params)
+        response = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": max_results},
+            timeout=10
+        )
         if response.status_code == 429:
-            print("Rate limit hit. Try again later.")
+            print("Serper rate limit hit.")
             return []
         response.raise_for_status()
-        data = response.json().get("items", [])
-        return [item.get("link") for item in data if item.get("link")]
+        items = response.json().get("organic", [])
+        return [item["link"] for item in items if item.get("link")]
     except Exception as e:
-        print("Google CSE error:", e)
+        print(f"Serper search error: {e}")
         return []
+
+
+def search_pubmed_free(query, max_results=3):
+    """Search PubMed E-utilities — always free, no API key needed."""
+    try:
+        search_resp = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={"db": "pubmed", "term": query, "retmode": "json", "retmax": max_results},
+            timeout=10
+        )
+        search_resp.raise_for_status()
+        ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
+        return [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in ids]
+    except Exception as e:
+        print(f"PubMed free search error: {e}")
+        return []
+
+
+def search_europepmc_free(query, max_results=3):
+    """Search Europe PMC — always free, no API key needed."""
+    try:
+        resp = requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={"query": query, "format": "json", "pageSize": max_results, "resultType": "lite"},
+            timeout=10
+        )
+        resp.raise_for_status()
+        results = resp.json().get("resultList", {}).get("result", [])
+        links = []
+        for r in results:
+            pmid = r.get("pmid")
+            doi = r.get("doi")
+            if pmid:
+                links.append(f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
+            elif doi:
+                links.append(f"https://doi.org/{doi}")
+        return links
+    except Exception as e:
+        print(f"EuropePMC free search error: {e}")
+        return []
+
+
+def search_ncbi_direct_urls(query):
+    """Build direct NCBI database URLs from accession patterns — no API needed."""
+    links = []
+    # BioSample: SAMN*, SAME*, SAMD*
+    for m in re.finditer(r'\b(SAM[NED]\d+)\b', query, re.IGNORECASE):
+        acc = m.group(1).upper()
+        links.append(f"https://www.ncbi.nlm.nih.gov/biosample/{acc}/")
+    # SRA runs: SRR*, ERR*, DRR*
+    for m in re.finditer(r'\b([SED]RR\d+)\b', query, re.IGNORECASE):
+        acc = m.group(1).upper()
+        links.append(f"https://www.ncbi.nlm.nih.gov/sra/{acc}/")
+    # BioProject: PRJNA*, PRJEB*, PRJDB*
+    for m in re.finditer(r'\b(PRJ[NED][A-Z]\d+)\b', query, re.IGNORECASE):
+        acc = m.group(1).upper()
+        links.append(f"https://www.ncbi.nlm.nih.gov/bioproject/{acc}/")
+    # GenBank nucleotide accessions (e.g. MT123456)
+    for m in re.finditer(r'\b([A-Z]{1,2}\d{5,8})\b', query):
+        acc = m.group(1)
+        links.append(f"https://www.ncbi.nlm.nih.gov/nuccore/{acc}/")
+    return links
+
+
+def search_google_custom(query, max_results=3):
+    """Layered search: Serper (Google) → PubMed → EuropePMC → direct NCBI URLs."""
+    links = []
+
+    # Layer 1: Serper API (Google results) — best coverage if key is set
+    serper_links = search_serper(query, max_results)
+    if serper_links:
+        print(f"  [Serper] {len(serper_links)} results")
+        for l in serper_links:
+            if l not in links:
+                links.append(l)
+        return links
+
+    # Layer 2: PubMed free search
+    pubmed_links = search_pubmed_free(query, max_results)
+    if pubmed_links:
+        print(f"  [PubMed] {len(pubmed_links)} results")
+        for l in pubmed_links:
+            if l not in links:
+                links.append(l)
+
+    # Layer 3: EuropePMC free search
+    epmc_links = search_europepmc_free(query, max_results)
+    if epmc_links:
+        print(f"  [EuropePMC] {len(epmc_links)} results")
+        for l in epmc_links:
+            if l not in links:
+                links.append(l)
+
+    # Layer 4: Direct NCBI URLs from accession patterns in the query
+    direct_links = search_ncbi_direct_urls(query)
+    for l in direct_links:
+        if l not in links:
+            links.append(l)
+
+    if not links:
+        print(f"  [search] No results found for: {query}")
+    return links
+
+
+def search_google_custom_backup(query, max_results=3):
+    """Kept for compatibility — now delegates to the layered search."""
+    return search_google_custom(query, max_results)
 # Step 3: Extract Text: Get the paper (html text), sup. materials (pdf, doc, excel) and do text-preprocessing
 # Step 3.1: Extract Text
 # sub: download excel file

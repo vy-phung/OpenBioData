@@ -1,0 +1,157 @@
+from the given links here ["https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?file=f.MSV000080918%2Fccms_parameters%2Fparams.xml&forceDownload=true",
+"https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?file=f.MSV000080918%2Fccms_peak%2FSteatohepatitis%20progresses%20to%20cancer%20via%20immunosuppression%20of%20HCC%20directed%20CD8%2B%20T%20cells%2FBlank_injection_RC12_01_7778.mzML&forceDownload=true",
+"https://massive.ucsd.edu/ProteoSAFe/DownloadResultFile?file=f.MSV000080918%2Fpeak%2Fmetabolomics_table_noise_thr1000_metadata.csv&forceDownload=true",
+"https://www.nature.com/articles/nature24302#additional-information",
+"https://www.nature.com/articles/nature24302/figures/5",
+"https://www.nature.com/articles/nature24302/figures/6",
+"https://www.nature.com/articles/nature24302/figures/7",
+"https://www.nature.com/articles/nature24302/figures/8",
+"https://www.nature.com/articles/nature24302/figures/9",
+"https://www.nature.com/articles/nature24302/figures/10",
+"https://www.nature.com/articles/nature24302/figures/11",
+"https://www.nature.com/articles/nature24302/figures/12",
+"https://www.nature.com/articles/nature24302/figures/13",
+"https://www.nature.com/articles/nature24302/figures/14",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM1_ESM.pdf",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM2_ESM.pdf",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM3_ESM.ppt",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM4_ESM.ppt",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM5_ESM.ppt",
+"https://static-content.springer.com/esm/art%3A10.1038%2Fnature24302/MediaObjects/41586_2017_BFnature24302_MOESM6_ESM.ppt"], analyze the entity/concept of one sample here:
+Biosample: "Steatohepatitis progresses to cancer via immunosuppression of HCC directed CD8+ T cells/Blank_injection_RC12_01_7778", which the bioproject is "MSV000080918"
+    }, and there are 2 requests for each sample here:
+Request 1: for each sample, extract the outputs of Taxonomy (find the one with the NCBI for example if it is homo sapien then it should write as Homo sapiens (NCBITaxon:9606)), Organism part/body site, Host/Subject Characteristics (should also include sex like male/femail, age, control/wild type), Collection/Experimental Conditions, Contextual/Study Design. 
+If not explicitly stated, infer the most specific related or contextually relevant value. If no information is found, write 'unknown'. Provide only Taxonomy (find the one with the NCBI for example if it is homo sapien then it should write as Homo sapiens (NCBITaxon:9606)), Organism part/body site, Host/Subject Characteristics (should also include sex like male/femail, age, control/wild type), Collection/Experimental Conditions, Contextual/Study Design. For each non-'unknown' field, write one sentence explaining how it was inferred from the text (one sentence for each) and also the source (which is mentioned as first with 'The source - ...: and its text' or the link from the given links, please keep it the way that user can click and try the link immediately when looking at the output table) in the given text that help finding the answer for that output. Format your answer so that:1. The **first line** contains only the {output_format_str} values separated by commas.2. The **second line onward** contains the explanations based on the order of the non-unknown {output_format_str} answer.
+Request 2: for each sample, extract ALL metadata attributes mentioned anywhere in the text — including tables, figure captions, methods, and supplementary material. This includes but is NOT limited to: disease status, age, sex, BMI, smoking status, medication, sample collection site, collection date, sequencing platform, DNA extraction kit, clinical scores, lab values, and ANY other patient or sample characteristics reported in the paper. IMPORTANT: Do not limit yourself to predefined fields. If the paper mentions 'number of teeth', 'bleeding on probing score', 'HbA1c level', or any other attribute — capture it. Format your answer as a list of attribute-value pairs: attribute_name: value (source: table/section where found). If a value cannot be found for this specific sample, write: attribute_name: not_found. Also have the explanation for each new attribute you found. And also for both request 1 and 2, for the sources you extracted to get the metadata, take all the results of that metadata. For example, 2 sources give 2 different outputs for one same metadata, then keep them and say conflict and say which output from which source. Also use the GO ontology standardization (https://geneontology.org/docs/ontology-documentation/, https://geneontology.org/docs/go-annotations/) for the output and the metadata field columns when you create the output table. Also use the instruction of confidence score to give me the score and reason of the score to know how reliable the outputs of the attributes of each sample and here is the information about confidence score rule (also this confidence score is for country only but customize to different attribute but still keep the same rule):
+uestion to answer this week is NOT:
+“What is the most accurate confidence score?”
+Question to answer is:
+“What is the minimum confidence signal that makes a researcher stop opening GenBank/PDFs for some rows?”
+That means:
+Interpretability > mathematical purity
+Conservative > aggressive
+Explainable > comprehensive
+If a researcher says:
+“Okay, I trust the green ones and I’ll double-check the yellow/red ones”
+You win.
+
+What you should NOT build in 1 week ❌
+From your first doc, these are too expensive right now:
+❌ Google search scraping
+❌ Multi-source averaging (X, Y, Z calibration)
+❌ Private databases (UK Biobank, 1000G)
+❌ Complex weighting math
+❌ Continuous probability precision (0.73 vs 0.76)
+These are V2+ ideas, not V1.
+
+What you SHOULD build (V1 decision)
+Build a rule-based composite confidence score
+Not ML-heavy. Not probabilistic. Signals + weights + explanation.
+This aligns perfectly with your second doc and your pilots.
+
+The V1 Confidence Score (what to ship)
+Final output per row
+Each accession gets:
+Confidence score: 0–100
+Confidence tier: High / Medium / Low
+Short explanation (1–2 bullets)
+That’s it.
+
+The ONLY signals you should include in V1
+✅ Signal 1: Direct evidence strength (MOST IMPORTANT)
+This maps directly to your GenBank / PubMed logic but simplified.
+Condition
+Score contribution
+Accession explicitly linked to country in paper/supplement
++40
+PubMed ID exists AND geo_loc_name exists
++30
+geo_loc_name exists (GenBank only)
++20
+No direct location evidence
++0
+
+No inference math yet. Just presence vs absence.
+
+✅ Signal 2: Cross-source consistency (cheap, powerful)
+Condition
+Score contribution
+Predicted country matches GenBank field
++20
+No contradiction detected
++10
+Clear contradiction detected
+−30
+
+This directly reflects researcher intuition.
+
+✅ Signal 3: Evidence density (counts, not scraping)
+Condition
+Score contribution
+≥2 linked publications
++20
+1 linked publication
++10
+0 publications
++0
+
+No PDF parsing required in V1.
+
+✅ Signal 4: Known risk flags (very fast to implement)
+Binary penalties:
+Pattern
+Penalty
+Missing key metadata fields
+−10
+Known failure accession pattern
+−20
+
+
+
+
+
+This shows honesty, which increases trust.
+
+Final score formula (simple, debuggable)
+confidence_score =
+  evidence_strength
++ consistency
++ evidence_density
+− risk_penalties
+
+clamp to [0, 100]
+No normalization.
+No probabilities.
+No softmax.
+
+Confidence tiers (this matters more than the number)
+Tier
+Score
+UI meaning
+🟢 High
+≥70
+Safe to trust
+🟡 Medium
+40–69
+Quick review recommended
+🔴 Low
+<40
+Manual verification required
+
+Researchers think in categories, not decimals.
+
+Example (this is what convinces users)
+Confidence: 82 (High)
+• Country explicitly mentioned in linked publication
+• Matches GenBank metadata
+• Multiple supporting papers
+OR
+Confidence: 38 (Low)
+• No direct location evidence found
+• Environmental sample type detected
+• Conflicting metadata across sources
+This alone removes anxiety.
+
+Finially give me the excel output for these 1 samples and format it as same as the way the file "ACK77584_analysis.xlsx" format
+
+Finally after getting the final output then use the information here to benchmark between the output you extracted of 1 sample and the real output of the same samples from the information below (again use the below info to benchmark not to extract the output for the sample from the link here: https://gemma.msl.ubc.ca/expressionExperiment/showExpressionExperiment.html?id=16604
