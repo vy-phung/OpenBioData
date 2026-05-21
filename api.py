@@ -471,13 +471,38 @@ async def analyze(req: AnalyzeRequest):
                             if u.strip()
                         ]
 
-                    pipeline_result = await _rich_pipeline(
-                        resolved_dict,
-                        niche_cases=niche_cases,
-                        other_links=std_urls or None,
-                        standardization_urls=std_urls or None,
-                        user_context_text=user_context_text,
+                    # Queue lets the pipeline push progress without blocking
+                    _progress_q: asyncio.Queue = asyncio.Queue()
+
+                    async def _pipe_progress(msg: str):
+                        await _progress_q.put(msg)
+
+                    pipeline_task = asyncio.ensure_future(
+                        _rich_pipeline(
+                            resolved_dict,
+                            niche_cases=niche_cases,
+                            other_links=std_urls or None,
+                            standardization_urls=std_urls or None,
+                            user_context_text=user_context_text,
+                            progress_cb=_pipe_progress,
+                        )
                     )
+
+                    # Stream progress messages while the pipeline task is running
+                    while not pipeline_task.done():
+                        try:
+                            msg = await asyncio.wait_for(_progress_q.get(), timeout=0.3)
+                            yield _sse("progress", {"message": msg})
+                            await asyncio.sleep(0)
+                        except asyncio.TimeoutError:
+                            await asyncio.sleep(0)
+
+                    # Drain any remaining messages
+                    while not _progress_q.empty():
+                        msg = _progress_q.get_nowait()
+                        yield _sse("progress", {"message": msg})
+
+                    pipeline_result = await pipeline_task
                     # additional_pipeline returns (accs_output, source_texts, text)
                     accs_output = (
                         pipeline_result[0]

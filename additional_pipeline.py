@@ -135,7 +135,7 @@ def fetch_standardization_schema(urls) -> dict:
 }"""
 
 # Main execution
-async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None):
+async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None):
   # output: country, sample_type, ethnic, location, money_cost, time_cost, explain
   # there can be one accession number in the accessions
   # # Prices are per 1,000 tokens
@@ -165,12 +165,21 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 _all_std_urls.append(_lnk)
     standardization_schema = fetch_standardization_schema(_all_std_urls) if _all_std_urls else {}
 
+    async def _progress(msg: str):
+        if progress_cb:
+            try:
+                await progress_cb(msg)
+            except Exception:
+                pass
+
     acc_prompts = {}
     bioproject_info = {}
     accs_output = {}
+    _total_accs = len(accessions)
     print("accessions: ", accessions)
-    for acc in accessions:
+    for _acc_idx, acc in enumerate(accessions):
       print("start gemini: ", acc)
+      await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
       start = time.time()
       total_query_cost = 0
       jsonSM, links, article_text, pubmeds, all_output, doi = {},[], "", [], "", ""
@@ -388,6 +397,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         all_accs["accession"] = accessions[acc]["accession"]
       _search_acc = (all_accs.get("biosample") or all_accs.get("accession")
                      or all_accs.get("bioproject") or acc)
+      await _progress(f"[{_acc_idx + 1}/{_total_accs}] Searching literature for {acc}…")
       more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(
           iso=None, acc=_search_acc, saveLinkFolder=saveLinkFolder, niche_cases=niche_cases)
       #if more_all_output: all_output = more_all_output
@@ -434,6 +444,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       data_preprocess.save_text_to_docx(text, file_all_path)
       acc_score["file_all_output"] = file_all_path
       acc_prompts = {acc: text}
+      await _progress(f"[{_acc_idx + 1}/{_total_accs}] Running LLM inference for {acc}…")
       print("start model")
       predicted_output_info = await model.query_document_info(
         niche_cases=niche_cases,
@@ -527,6 +538,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       # include bioproject/biosample/sra_accession columns in the output.
       acc_score["_accession_info"] = accessions[acc]
       accs_output[acc] = acc_score
+      await _progress(f"[{_acc_idx + 1}/{_total_accs}] ✓ {acc} done ({acc_score.get('time_cost', '')})")
     print(accs_output)
     return accs_output, acc_score["source_texts"], text
 

@@ -259,7 +259,7 @@
 
     <!-- Progress card -->
     <div class="card" id="progress-card">
-      <h3>Live Progress</h3>
+      <h3>Live Progress <span id="progress-timer" style="font-size:13px;font-weight:normal;color:#888;margin-left:8px;"></span></h3>
       <pre id="progress-log"></pre>
     </div>
 
@@ -693,6 +693,15 @@ async function runAnalysis() {
   const log = document.getElementById('progress-log');
   log.textContent = '';
 
+  // Elapsed-time ticker
+  const timerEl = document.getElementById('progress-timer');
+  timerEl.textContent = '0s elapsed';
+  const _timerStart = Date.now();
+  const _timerInterval = setInterval(() => {
+    const sec = Math.round((Date.now() - _timerStart) / 1000);
+    timerEl.textContent = `${sec}s elapsed`;
+  }, 1000);
+
   function logLine(msg) {
     log.textContent += msg + '\n';
     log.scrollTop = log.scrollHeight;
@@ -734,11 +743,13 @@ async function runAnalysis() {
         if (evt.type === 'progress') {
           logLine(evt.message);
         } else if (evt.type === 'error') {
+          clearInterval(_timerInterval);
           logLine('❌ ' + evt.message);
         } else if (evt.type === 'partial_result') {
           const newRows = evt.rows || [];
           partialRows.push(...newRows);
         } else if (evt.type === 'result') {
+          clearInterval(_timerInterval);
           currentRows      = evt.rows || [];
           currentExcelPath = evt.excel_path || '';
           logLine(`✅ Done — ${currentRows.length} row(s) returned.`);
@@ -763,6 +774,7 @@ async function runAnalysis() {
       }
     }
   } catch (err) {
+    clearInterval(_timerInterval);
     if (err.name === 'AbortError') {
       logLine('⏹ Stopped by user.');
       track('analysis_stopped', { partial_count: partialRows.length, duration_ms: Date.now() - analysisStartTime });
