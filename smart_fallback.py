@@ -1,12 +1,14 @@
 from Bio import Entrez, Medline
-#import model
-import mtdna_classifier
-from NER.html import extractHTML
-import data_preprocess
-import pipeline
 import aiohttp
 import asyncio
 import re
+try:
+    import mtdna_classifier
+    from NER.html import extractHTML
+    import data_preprocess
+    import pipeline
+except ImportError:
+    mtdna_classifier = extractHTML = data_preprocess = pipeline = None
 # Setup
 def fetch_ncbi(accession_number):
   try:

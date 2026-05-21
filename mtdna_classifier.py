@@ -1,13 +1,15 @@
 # mtDNA Location Classifier MVP (Google Colab)
 # Accepts accession number → Fetches PubMed ID + isolate name → Gets abstract → Predicts location
 import os
-#import streamlit as st
 import subprocess
 import re
 from Bio import Entrez
-import fitz
-import spacy
-from spacy.cli import download
+try:
+    import fitz
+    import spacy
+    from spacy.cli import download
+except ImportError:
+    fitz = spacy = download = None
 from NER.PDF import pdf
 from NER.WordDoc import wordDoc
 from NER.html import extractHTML

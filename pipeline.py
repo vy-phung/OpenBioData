@@ -1,16 +1,18 @@
-import data_preprocess
-import model
-import mtdna_classifier
-#import app
-import smart_fallback
 import pandas as pd
 from pathlib import Path
 import subprocess
-from NER.html import extractHTML
 import os
-import google.generativeai as genai
 import re
-import standardize_location
+import google.generativeai as genai
+try:
+    import data_preprocess
+    import model
+    import mtdna_classifier
+    import smart_fallback
+    import standardize_location
+    from NER.html import extractHTML
+except ImportError:
+    data_preprocess = model = mtdna_classifier = smart_fallback = standardize_location = extractHTML = None
 # Helper functions in for this pipeline
 # Track time
 import time

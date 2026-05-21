@@ -1,13 +1,14 @@
 import re
 import os
-#import streamlit as st
 import subprocess
-import re
 from Bio import Entrez
-from docx import Document
-import fitz
-import spacy
-from spacy.cli import download
+try:
+    from docx import Document
+    import fitz
+    import spacy
+    from spacy.cli import download
+except ImportError:
+    Document = fitz = spacy = download = None
 from NER.PDF import pdf
 from NER.WordDoc import wordDoc
 from NER.html import extractHTML

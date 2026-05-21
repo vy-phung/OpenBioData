@@ -1,7 +1,10 @@
 from Bio import Entrez
 import xml.etree.ElementTree as ET
-import pipeline
-import mtdna_classifier
+try:
+    import pipeline
+    import mtdna_classifier
+except ImportError:
+    pipeline = mtdna_classifier = None
 
 # def fetch_bioproject(bioproject_id):
 #     try:
