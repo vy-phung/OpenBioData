@@ -270,9 +270,18 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         row["confidence_score"] = _tc(confidence_display)
         row["sources"]          = _tc(source_text)
         row["time_cost"]        = _tc(data.get("time_cost", ""))
-        # Merge Pass 2 additional fields with per-field explanations for Sheet 2
         pass2_fields = data.get("_additional_fields") or {}
-        row["_additional_fields"] = {**pass2_fields, **extra}
+        if not niche_list:
+            # No user-specified fields: promote all Pass 2 extracted fields directly
+            # into Sheet 1 columns so the user sees them immediately.
+            # Sheet 2 will be identical to Sheet 1 (no separate extra columns needed).
+            for k, v in pass2_fields.items():
+                if k not in row:
+                    row[k] = _tc(v)
+            row["_additional_fields"] = {}
+        else:
+            # User specified fields: niche fields are Sheet 1; Pass 2 extras go to Sheet 2
+            row["_additional_fields"] = {**pass2_fields, **extra}
         rows.append(row)
 
     return rows
@@ -285,6 +294,11 @@ class AnalyzeRequest(BaseModel):
     metadata_fields: Optional[List[str]] = None
     standardization_url: Optional[str] = None  # comma-separated URLs accepted
     context_file_id: Optional[str] = None       # temp path from /upload-context
+
+
+class ChatMessageRequest(BaseModel):
+    message: str
+    state: Optional[Dict[str, Any]] = None
 
 
 class ReportRequest(BaseModel):
@@ -631,6 +645,20 @@ async def download_excel(path: str):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
+
+
+@app.post("/chat-message")
+async def chat_message(req: ChatMessageRequest):
+    """Stateless chat turn: accepts a user message + prior state, returns reply + new state."""
+    try:
+        from chat_input_parser import process_chat_message, get_initial_message, fresh_state
+        msg = (req.message or "").strip()
+        if msg == "__init__":
+            return {"reply": get_initial_message(), "state": fresh_state()}
+        reply, new_state = process_chat_message(msg, req.state)
+        return {"reply": reply, "state": new_state}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/report")
