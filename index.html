@@ -177,6 +177,25 @@
   #ctx-dropzone{border:2px dashed var(--border);border-radius:7px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;color:var(--muted);font-size:13px;line-height:1.6;background:#fafcfb}
   #ctx-dropzone:hover,#ctx-dropzone.ctx-dragover{border-color:var(--primary);background:var(--primary-light);color:var(--primary-dark)}
   #ctx-dropzone small{display:block;font-size:11px;opacity:.75;margin-top:2px}
+
+  /* ── Chat input mode ── */
+  .input-mode-toggle{display:flex;gap:6px}
+  .mode-btn{background:transparent;border:1px solid var(--border);border-radius:6px;padding:5px 13px;font-size:12px;font-weight:600;cursor:pointer;color:var(--muted);transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
+  .mode-btn.active{background:var(--primary-light);color:var(--primary-dark);border-color:var(--primary)}
+  #chat-messages{min-height:200px;max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:4px 0 12px}
+  .chat-bubble{max-width:88%;border-radius:14px;padding:10px 14px;font-size:13px;line-height:1.65;word-wrap:break-word}
+  .chat-bubble.bot{background:var(--primary-light);color:var(--text);align-self:flex-start;border-bottom-left-radius:4px}
+  .chat-bubble.user{background:var(--primary);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+  .chat-bubble.thinking{background:#f0f5f3;color:var(--muted);font-style:italic;align-self:flex-start;border-bottom-left-radius:4px}
+  .chat-bubble code{background:rgba(0,0,0,.08);padding:1px 5px;border-radius:3px;font-family:monospace;font-size:12px}
+  .chat-bubble.user code{background:rgba(255,255,255,.22)}
+  .chat-input-row{display:flex;gap:8px;margin-top:4px}
+  .chat-input-row input{flex:1;border:1px solid var(--border);border-radius:6px;padding:9px 11px;font-size:13px;font-family:inherit;background:#fafcfb;transition:border-color .2s}
+  .chat-input-row input:focus{outline:none;border-color:var(--primary)}
+  .chat-input-row input:disabled{opacity:.6}
+  #chat-send-btn{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
+  #chat-send-btn:hover{background:var(--primary-dark)}
+  #chat-send-btn:disabled{opacity:.55;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -230,39 +249,67 @@
 
     <!-- Input card -->
     <div class="card">
-      <h3>Classify Metadata</h3>
-      <div class="field">
-        <label>Accession ID(s)</label>
-        <textarea id="acc-input" rows="3" placeholder="BioProject, BioSample, GenBank, SRR/SRX — one per line or comma-separated&#10;e.g. PRJNA976261  SAMN23469632  OL757400  SRR17084312"></textarea>
-      </div>
-      <div class="field">
-        <label>Metadata fields to extract (optional)</label>
-        <textarea id="meta-fields" rows="2" placeholder="Comma-separated fields, e.g. disease_status, subject_id, sample_id, control, body_site, country, organism, specific_location, sequencing_platform, dna_extraction_kit"></textarea>
-      </div>
-      <div class="field">
-        <label>Standardization schema (optional — comma-separated CSV/GitHub URLs)</label>
-        <textarea id="std-url" rows="2" placeholder="e.g. https://github.com/waldronlab/curatedMetagenomicDataCuration/blob/master/inst/extdata/cMD_data_dictionary.csv, https://github.com/.../cMD_data_dictionary_codebook.csv"></textarea>
-      </div>
-      <div class="field">
-        <label>
-          Context file (optional)
-          <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add file</span>
-        </label>
-        <div id="ctx-upload-area" style="display:none">
-          <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload a paper, supplementary file, or any document you believe contains relevant metadata for these accessions. The AI will use it as additional context to improve extraction accuracy.</p>
-          <div id="ctx-dropzone" onclick="document.getElementById('ctx-file-input').click()" ondragover="event.preventDefault();this.classList.add('ctx-dragover')" ondragleave="this.classList.remove('ctx-dragover')" ondrop="handleCtxDrop(event)">
-            <input type="file" id="ctx-file-input" style="display:none" accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml" onchange="handleCtxFile(this.files[0])">
-            <span id="ctx-dropzone-label">Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small></span>
-          </div>
-          <div id="ctx-file-info" style="display:none;margin-top:8px;font-size:12px;display:none;align-items:center;gap:8px">
-            <span id="ctx-file-name" style="color:var(--primary-dark);font-weight:600"></span>
-            <span id="ctx-file-chars" style="color:var(--muted)"></span>
-            <button onclick="clearCtxFile()" style="background:none;border:none;color:var(--low);cursor:pointer;font-size:12px;padding:0">✕ Remove</button>
-          </div>
-          <div id="ctx-upload-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h3 style="margin-bottom:0">Classify Metadata</h3>
+        <div class="input-mode-toggle">
+          <button id="mode-form-btn" class="mode-btn active" onclick="setInputMode('form')">📋 Classic</button>
+          <button id="mode-chat-btn" class="mode-btn" onclick="setInputMode('chat')">💬 Chat Assistant</button>
         </div>
       </div>
-      <div class="btn-group">
+
+      <!-- Form mode (default) -->
+      <div id="form-mode">
+        <div class="field">
+          <label>Accession ID(s)</label>
+          <textarea id="acc-input" rows="3" placeholder="BioProject, BioSample, GenBank, SRR/SRX — one per line or comma-separated&#10;e.g. PRJNA976261  SAMN23469632  OL757400  SRR17084312"></textarea>
+        </div>
+        <div class="field">
+          <label>Metadata fields to extract
+            <span style="font-weight:400;font-size:11px;color:var(--muted);margin-left:6px">
+              Recommended — listing specific fields gives more accurate results.
+              Leave blank to auto-extract all available metadata from the sources.
+            </span>
+          </label>
+          <textarea id="meta-fields" rows="2" placeholder="Comma-separated fields, e.g. disease_status, subject_id, sample_id, control, body_site, country, organism, specific_location, sequencing_platform, dna_extraction_kit"></textarea>
+        </div>
+        <div class="field">
+          <label>Standardization schema (optional — comma-separated CSV/GitHub URLs)</label>
+          <textarea id="std-url" rows="2" placeholder="e.g. https://github.com/waldronlab/curatedMetagenomicDataCuration/blob/master/inst/extdata/cMD_data_dictionary.csv, https://github.com/.../cMD_data_dictionary_codebook.csv"></textarea>
+        </div>
+        <div class="field">
+          <label>
+            Context file (optional)
+            <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add file</span>
+          </label>
+          <div id="ctx-upload-area" style="display:none">
+            <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload a paper, supplementary file, or any document you believe contains relevant metadata for these accessions. The AI will use it as additional context to improve extraction accuracy.</p>
+            <div id="ctx-dropzone" onclick="document.getElementById('ctx-file-input').click()" ondragover="event.preventDefault();this.classList.add('ctx-dragover')" ondragleave="this.classList.remove('ctx-dragover')" ondrop="handleCtxDrop(event)">
+              <input type="file" id="ctx-file-input" style="display:none" accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml" onchange="handleCtxFile(this.files[0])">
+              <span id="ctx-dropzone-label">Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small></span>
+            </div>
+            <div id="ctx-file-info" style="display:none;margin-top:8px;font-size:12px;display:none;align-items:center;gap:8px">
+              <span id="ctx-file-name" style="color:var(--primary-dark);font-weight:600"></span>
+              <span id="ctx-file-chars" style="color:var(--muted)"></span>
+              <button onclick="clearCtxFile()" style="background:none;border:none;color:var(--low);cursor:pointer;font-size:12px;padding:0">✕ Remove</button>
+            </div>
+            <div id="ctx-upload-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+          </div>
+        </div>
+      </div><!-- /form-mode -->
+
+      <!-- Chat mode -->
+      <div id="chat-mode" style="display:none">
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+          <input id="chat-input" type="text" placeholder="Type your message…"
+                 onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage()}">
+          <button id="chat-send-btn" onclick="sendChatMessage()">Send</button>
+        </div>
+        <button onclick="resetChat()" style="margin-top:8px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer">↺ New chat</button>
+      </div><!-- /chat-mode -->
+
+      <!-- Shared button bar — submit/reset hidden in chat mode, stop managed by runAnalysis() -->
+      <div class="btn-group" style="margin-top:14px">
         <button id="submit-btn" onclick="runAnalysis()">▶ Submit &amp; Classify</button>
         <button id="stop-btn" onclick="stopAnalysis()">⏹ Stop</button>
         <button id="reset-btn" onclick="resetInputs()">↺ Reset</button>
@@ -1038,6 +1085,113 @@ function tryRestoreShared() {
     // Clean the URL so refreshing doesn't re-trigger
     history.replaceState({}, '', location.pathname);
   } catch { /* ignore malformed links */ }
+}
+
+// ── Chat Assistant Input ──────────────────────────────────────────────────────
+let inputMode        = 'form';
+let chatState        = null;
+let chatInitialized  = false;
+
+function setInputMode(mode) {
+  inputMode = mode;
+  const isChat = mode === 'chat';
+  document.getElementById('form-mode').style.display  = isChat ? 'none' : 'block';
+  document.getElementById('chat-mode').style.display  = isChat ? 'block' : 'none';
+  document.getElementById('mode-form-btn').classList.toggle('active', !isChat);
+  document.getElementById('mode-chat-btn').classList.toggle('active', isChat);
+  // In chat mode hide Submit/Reset — Stop is managed by runAnalysis() regardless
+  document.getElementById('submit-btn').style.display = isChat ? 'none' : '';
+  document.getElementById('reset-btn').style.display  = isChat ? 'none' : '';
+  if (isChat && !chatInitialized) initChat();
+  track('feature_click', { feature: 'input_mode_' + mode });
+}
+
+function _renderMd(text) {
+  return String(text)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+    .replace(/_(.*?)_/g,'<em>$1</em>')
+    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+    .replace(/\n/g,'<br>');
+}
+
+function _addChatBubble(role, text, isThinking) {
+  const box = document.getElementById('chat-messages');
+  const el  = document.createElement('div');
+  el.className = 'chat-bubble ' + role + (isThinking ? ' thinking' : '');
+  // Thinking dots use plain text; real messages get markdown rendering
+  el.innerHTML = isThinking ? escHtml(text) : _renderMd(text);
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  return el;
+}
+
+async function initChat() {
+  chatInitialized = true;
+  chatState = null;
+  document.getElementById('chat-messages').innerHTML = '';
+  const thinking = _addChatBubble('bot', 'Connecting…', true);
+  try {
+    const r = await fetch('/chat-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '__init__', state: null }),
+    });
+    const d = await r.json();
+    thinking.remove();
+    chatState = d.state;
+    _addChatBubble('bot', d.reply);
+    document.getElementById('chat-input').focus();
+  } catch {
+    thinking.innerHTML = '&#10060; Could not connect to server.';
+  }
+}
+
+async function sendChatMessage() {
+  const input   = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('chat-send-btn');
+  const text    = input.value.trim();
+  if (!text || sendBtn.disabled) return;
+
+  input.value      = '';
+  input.disabled   = true;
+  sendBtn.disabled = true;
+
+  _addChatBubble('user', text);
+  const thinking = _addChatBubble('bot', '…', true);
+
+  try {
+    const r = await fetch('/chat-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, state: chatState }),
+    });
+    const d = await r.json();
+    thinking.remove();
+    chatState = d.state;
+    _addChatBubble('bot', d.reply);
+
+    // Chat completed all 3 steps → populate form fields and run pipeline
+    if (d.state && d.state.ready_to_run) {
+      document.getElementById('acc-input').value   = (d.state.accessions      || []).join('\n');
+      document.getElementById('meta-fields').value = (d.state.metadata_fields || []).join(', ');
+      document.getElementById('std-url').value     = d.state.schema || '';
+      // Small delay so the user sees the "Starting…" bubble before progress appears
+      setTimeout(runAnalysis, 400);
+    }
+  } catch (e) {
+    thinking.innerHTML = '&#10060; Error: ' + escHtml(String(e));
+  } finally {
+    input.disabled   = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+function resetChat() {
+  chatInitialized = false;
+  chatState       = null;
+  initChat();
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────

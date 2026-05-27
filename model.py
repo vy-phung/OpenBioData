@@ -1284,11 +1284,15 @@ async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases
 
 def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
     """
-    Pass 2 — Generalized metadata extraction.
-    Prompts Gemini to pull ALL key-value metadata from the source text that
-    is NOT already covered by niche_cases (predefined fields).
+    Pass 2 — Generalized metadata extraction across ALL source texts.
 
-    Returns a dict of {field_name: value} — all strings, no None values.
+    The full multi-source context (NCBI BioSample XML + BioProject + SRA +
+    paper text) is passed in so the LLM can:
+      a) extract every available attribute, and
+      b) detect conflicts when two sources report different values for the
+         same field (marked with '##CONFLICT:' in the value string).
+
+    Returns {field_name: value} — all non-empty strings.
     Safe: always returns a dict (empty on any failure).
     """
     if not context_text or not context_text.strip():
@@ -1296,42 +1300,73 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
 
     # Fields already handled by Pass 1 — exclude from Pass 2
     exclude_fields = ['country_name', 'modern/ancient/unknown'] + list(niche_cases or [])
+    exclude_str = ', '.join(exclude_fields) if exclude_fields else 'none'
+
+    # Keep the full context so nothing is lost; trim only if truly enormous
+    MAX_CHARS = 120000
+    context_snippet = context_text if len(context_text) <= MAX_CHARS else context_text[:MAX_CHARS]
 
     generalized_prompt = (
-        "You are a scientific metadata extractor. Read the following text from a genomic database record.\n\n"
-        "Extract ALL metadata fields that describe the biological sample or specimen.\n"
-        "Include EVERY key-value pair you can find, even if not obviously biological.\n"
-        f"Do NOT include fields already in this list: {', '.join(exclude_fields)}\n\n"
-        "Return ONLY a JSON object where:\n"
-        "- Each key is the field name (lowercase, underscores for spaces, e.g. 'collection_date')\n"
-        "- Each value is the extracted value as a string\n"
-        "- If a field has no clear value, skip it entirely (do not return null or empty string)\n\n"
-        "Text to extract from:\n"
+        "You are a scientific metadata extractor specialising in NCBI genomic database records.\n\n"
+        "The source text below contains ALL available texts for this sample, separated by "
+        "'-----END OF THIS SOURCE <name> ----' markers. Sources may include:\n"
+        "  • NCBI BioSample XML (most reliable — look for <Attribute attribute_name='FIELD'>VALUE</Attribute>)\n"
+        "  • SRA experiment XML (platform, library strategy, instrument model, etc.)\n"
+        "  • BioProject description\n"
+        "  • Published paper abstract / full text\n"
+        "  • User-uploaded supplementary files\n\n"
+        "Your task: extract EVERY metadata attribute that describes the biological sample.\n"
+        "Scan ALL sources. For EACH field:\n"
+        "  - If every source agrees on the same value → output that value.\n"
+        "  - If two or more sources report DIFFERENT values → output the most specific value "
+        "    AND append '##CONFLICT: source_A=<value_A>, source_B=<value_B>' so conflicts are visible.\n\n"
+        "LOOK ESPECIALLY FOR (but extract everything you find):\n"
+        "  geo_loc_name, host, tissue, isolation_source, collection_date, sex, age, disease,\n"
+        "  treatment, organism, strain, sample_type, body_site, library_strategy, library_source,\n"
+        "  library_selection, platform, instrument_model, sequencing_platform, dna_extraction_kit,\n"
+        "  lat_lon, env_biome, env_feature, env_material, depth, altitude, temperature, pH,\n"
+        "  SRA_accession, BioSample_accession, and any other custom sample attributes.\n\n"
+        f"Do NOT include these already-extracted fields: {exclude_str}\n\n"
+        "Return ONLY a flat JSON object:\n"
+        "  - Keys  : lowercase field names, underscores for spaces (e.g. 'collection_date')\n"
+        "  - Values: the extracted/best value as a non-empty string\n"
+        "  - Omit fields whose value is null, empty, 'not applicable', 'missing', or 'unknown'\n"
+        "  - Preserve the original attribute name from NCBI XML when possible\n\n"
+        "Source text:\n"
         "---\n"
-        f"{context_text[:30000]}\n"
+        f"{context_snippet}\n"
         "---\n\n"
-        "Return only valid JSON. No explanation. No markdown. No code blocks.\n"
-        'Example: {"host_age": "45", "sequencing_platform": "Illumina NextSeq 500", "tissue_type": "oral mucosa", "collection_date": "2018"}'
+        "Return ONLY valid JSON. No markdown fences, no explanation.\n"
+        'Example: {"geo_loc_name": "USA: California", "host": "Homo sapiens", '
+        '"collection_date": "2019-03", "tissue": "blood ##CONFLICT: BioSample=blood, paper=plasma", '
+        '"sex": "male", "sequencing_platform": "Illumina NovaSeq 6000"}'
     )
 
     try:
         response_text, _ = call_llm_api(generalized_prompt)
         raw = response_text.strip()
 
-        # Strip markdown fence if model wraps output in ```json ... ```
+        # Strip markdown fences if the model wraps the output despite instructions
         if raw.startswith('```'):
             parts = raw.split('```')
             raw = parts[1] if len(parts) > 1 else raw
-            if raw.startswith('json'):
+            if raw.lower().startswith('json'):
                 raw = raw[4:]
 
+        # Find JSON object boundaries in case the model prepends/appends text
+        brace_start = raw.find('{')
+        brace_end   = raw.rfind('}')
+        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end + 1]
+
         result = json.loads(raw.strip())
-        # Ensure all values are non-empty strings; drop empties and None
+        # Ensure all values are non-empty strings; drop blanks/nulls
         cleaned = {}
+        skip_vals = {'none', 'null', 'n/a', 'na', 'missing', 'not applicable', 'unknown', ''}
         for k, v in result.items():
-            k_str = str(k).strip()
+            k_str = str(k).strip().lower().replace(' ', '_')
             v_str = str(v).strip() if v is not None else ''
-            if k_str and v_str:
+            if k_str and v_str and v_str.lower() not in skip_vals:
                 cleaned[k_str] = v_str
         return cleaned
 
@@ -1512,8 +1547,11 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       try:
           predefined_keys = set(['country_name', 'modern/ancient/unknown']
                                  + list(niche_cases or []))
-          # Use the full prompt context (contains all source texts) for richer extraction
-          pass2_context = context_for_llm if context_for_llm else ""
+          # Always use the original multi-source text (prompts[acc]) so that
+          # BioSample XML attributes and paper text are both available.
+          # Fall back to context_for_llm (smart-search result) only if no
+          # original context is available.
+          pass2_context = prompts.get(acc, "") or context_for_llm or ""
           all_additional = _extract_additional_fields(pass2_context, niche_cases or [])
           additional_only = {
               k: v for k, v in all_additional.items()
