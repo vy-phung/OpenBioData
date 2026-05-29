@@ -53,6 +53,16 @@ _NCBI_PATTERNS = [
     re.compile(r'\b[A-Z]{1,2}\d{5,8}(?:\.\d+)?\b'),             # generic GenBank
 ]
 
+# Non-NCBI database accession patterns (MassIVE, PRIDE, MetaboLights, etc.)
+_NON_NCBI_PATTERNS = [
+    re.compile(r'\bMSV\d+\b', re.IGNORECASE),    # MassIVE
+    re.compile(r'\bPXD\d+\b', re.IGNORECASE),    # PRIDE
+    re.compile(r'\bMTBLS\d+\b', re.IGNORECASE),  # MetaboLights
+    re.compile(r'\bMGYS\d+\b', re.IGNORECASE),   # MGnify
+    re.compile(r'\bEGAD\d+\b', re.IGNORECASE),   # EGA datasets
+    re.compile(r'\bEGAS\d+\b', re.IGNORECASE),   # EGA studies
+]
+
 _SCHEMA_URL_RE = re.compile(
     r'https?://[^\s<>"\']+(?:\.csv|\.tsv|\.xlsx|github\.com[^\s<>"\']*)',
     re.IGNORECASE,
@@ -75,7 +85,7 @@ _NO_RE  = re.compile(r'\b(?:no|cancel|stop|restart|reset|change|edit|back)\b', r
 
 
 def extract_ncbi_ids(text: str) -> list:
-    """Return deduplicated, ordered NCBI accession strings found in text.
+    """Return deduplicated, ordered accession strings (NCBI and known non-NCBI) found in text.
 
     Operates on uppercased text so patterns work case-insensitively.
     Word-boundary anchors handle accessions embedded in URLs naturally
@@ -85,7 +95,7 @@ def extract_ncbi_ids(text: str) -> list:
         return []
     upper = text.upper()
     seen, result = set(), []
-    for pat in _NCBI_PATTERNS:
+    for pat in _NCBI_PATTERNS + _NON_NCBI_PATTERNS:
         for m in pat.finditer(upper):
             tok = m.group(0)
             if tok not in seen:
@@ -414,10 +424,12 @@ def get_initial_message() -> str:
     return (
         "Hi! I'll help you set up a metadata analysis.\n\n"
         "**Step 1 of 3 — Accession IDs**\n"
-        "Share your NCBI accessions. You can:\n"
-        "• Paste IDs directly: `PRJNA976261`, `SRR17084312`, `SAMN23469632`\n"
+        "Share your accessions. You can:\n"
+        "• NCBI IDs: `PRJNA976261`, `SRR17084312`, `SAMN23469632`, `OL757400`\n"
+        "• Non-NCBI IDs: `MSV000080918` (MassIVE), `PXD000001` (PRIDE), `MTBLS1` (MetaboLights)\n"
         "• Paste an NCBI or PubMed URL — I'll extract the IDs\n"
         "• Describe your dataset in plain text\n\n"
+        "_For non-NCBI samples the tool skips NCBI fetch and searches the web for metadata._\n\n"
         f"_Up to {MAX_CHAT_SAMPLES} samples per run._"
     )
 
@@ -563,13 +575,17 @@ def process_chat_message(message: str, state: Optional[dict] = None) -> tuple:
                 )
             else:
                 reply = (
-                    "I couldn't find any NCBI accession IDs in your message.\n\n"
-                    "Please share IDs like:\n"
+                    "I couldn't find any accession IDs in your message.\n\n"
+                    "**NCBI IDs:**\n"
                     "• BioProject: `PRJNA976261`\n"
                     "• BioSample: `SAMN23469632`\n"
                     "• SRA run: `SRR17084312`\n"
                     "• GenBank: `OL757400`, `KU131308`\n"
                     "• ENA project: `ERP115334`\n\n"
+                    "**Non-NCBI IDs** (web search used instead of NCBI fetch):\n"
+                    "• MassIVE: `MSV000080918`\n"
+                    "• PRIDE: `PXD000001`\n"
+                    "• MetaboLights: `MTBLS1`\n\n"
                     "You can paste them, share an NCBI or PubMed URL, or describe the paper."
                 )
         return reply, state

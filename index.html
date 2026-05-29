@@ -402,6 +402,7 @@
 // ── Constants ────────────────────────────────────────────────────────────────
 const FREE_SAMPLE_LIMIT  = 10;
 const PAID_SAMPLE_LIMIT  = 30;  // after signup
+const MAX_SAMPLES        = 50;  // hard cap per run (matches api.py MAX_SAMPLES)
 
 // ── Session tracking ─────────────────────────────────────────────────────────
 const SESSION_ID = (() => {
@@ -434,8 +435,38 @@ let authMode              = 'signup';   // 'signup' | 'login'
 let authSource            = 'manual';   // what triggered the auth popup
 let ctxFileId             = null;       // temp path returned by /upload-context
 let currentAbortController = null;
+let currentRunId          = null;   // backend run_id for cancellation
 let partialRows           = [];
 let analysisStartTime     = 0;
+
+// ── Non-NCBI accession detection ─────────────────────────────────────────────
+const NON_NCBI_PATTERNS = [
+  { re: /^MSV\d+$/i,              db: 'MassIVE'     },
+  { re: /^PXD\d+$/i,              db: 'PRIDE'       },
+  { re: /^MTBLS\d+$/i,            db: 'MetaboLights'},
+  { re: /^MGYS\d+$/i,             db: 'MGnify'      },
+  { re: /^EGAD\d+$/i,             db: 'EGA'         },
+  { re: /^EGAS\d+$/i,             db: 'EGA'         },
+  { re: /^\d[A-Z0-9]{3}(_[A-Z])?$/i, db: 'PDB'    },
+];
+const NCBI_PATTERNS = [
+  /^PRJ[A-Z]{2}\d+$/i,
+  /^SAM[A-Z]{1,2}\d+$/i,
+  /^SRX\d+$/i, /^SRR\d+$/i, /^ERR\d+$/i,
+  /^[A-Z]{1,3}\d{5,8}(\.\d+)?$/i,
+  /^(NC_|OL|MT|MW|MZ|PQ|OM|MN|MK|KY|KX|KU|JN|FJ)[A-Z0-9_]+$/i,
+];
+
+function detectNonNcbiDb(tok) {
+  for (const p of NON_NCBI_PATTERNS) {
+    if (p.re.test(tok)) return p.db;
+  }
+  return null;
+}
+
+function isNcbiToken(tok) {
+  return NCBI_PATTERNS.some(p => p.test(tok));
+}
 
 // ── Context file upload ───────────────────────────────────────────────────────
 function toggleCtxUpload() {
@@ -691,6 +722,11 @@ function runSharedWorkspace() {
 
 // ── Stop & Reset ─────────────────────────────────────────────────────────────
 function stopAnalysis() {
+  // Signal backend to stop after the current sample
+  if (currentRunId) {
+    fetch('/cancel/' + encodeURIComponent(currentRunId), { method: 'POST' }).catch(() => {});
+  }
+  // Also abort the SSE connection
   if (currentAbortController) currentAbortController.abort();
 }
 
@@ -703,6 +739,93 @@ function resetInputs() {
   if (area && area.style.display !== 'none') toggleCtxUpload();
 }
 
+// ── Non-NCBI dialog ───────────────────────────────────────────────────────────
+// nonNcbiResolved is filled by the dialog before runAnalysisCore() is called.
+// Format: { acc_id: { database: str, is_project: bool } }
+let _nonNcbiResolved = {};
+
+const _PROJECT_GUIDANCE = {
+  'MassIVE': 'Go to massive.ucsd.edu → find your dataset → click "Browse Dataset" or "Data Files" tab → copy the URL from your browser (looks like: https://massive.ucsd.edu/ProteoSAFe/dataset_files.jsp?task=…).',
+  'PRIDE':   'Go to pride.ebi.ac.uk → open your dataset → click the "Files" tab → copy that page URL.',
+  'MetaboLights': 'Go to ebi.ac.uk/metabolights → open your study → navigate to the "Files" section → copy the URL.',
+  'MGnify': 'Go to ebi.ac.uk/metagenomics → open your study → go to the "Samples" tab → copy the URL.',
+};
+
+function showNonNcbiDialog(nonNcbiTokens, onConfirm) {
+  let html = `<div id="non-ncbi-overlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;overflow-y:auto;">
+    <div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:560px;width:95%;box-shadow:0 8px 32px rgba(0,0,0,.2);max-height:90vh;overflow-y:auto;">
+      <h3 style="margin:0 0 8px;font-size:17px;">Non-NCBI Accession Detected</h3>
+      <p style="margin:0 0 16px;color:#555;font-size:13px;">The following ID(s) are not standard NCBI accessions. We'll search the web for metadata instead of querying NCBI directly.</p>`;
+
+  nonNcbiTokens.forEach(({tok, db}) => {
+    const guidance = _PROJECT_GUIDANCE[db] || 'Navigate to the database project page, find the section listing individual samples or data files, and copy that URL here.';
+    const tokSafe = tok.replace(/[^a-zA-Z0-9]/g, '_');
+    html += `<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
+      <b style="font-size:14px;">${tok}</b>
+      <span style="background:#f0f4ff;color:#3b5bdb;font-size:11px;padding:2px 7px;border-radius:10px;margin-left:6px;">${db || 'Other database'}</span>
+
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+        <label style="font-size:12px;color:#444;cursor:pointer;">
+          <input type="radio" name="type_${tokSafe}" value="sample" checked
+            onchange="document.getElementById('proj_section_${tokSafe}').style.display='none'">
+          Individual sample
+        </label>
+        <label style="font-size:12px;color:#444;cursor:pointer;">
+          <input type="radio" name="type_${tokSafe}" value="project"
+            onchange="document.getElementById('proj_section_${tokSafe}').style.display='block'">
+          Project / batch (multiple samples inside)
+        </label>
+      </div>
+
+      <div style="margin-top:8px;">
+        <label style="font-size:12px;color:#444;">Database (confirm or type):
+          <input type="text" id="db_${tokSafe}" value="${db || ''}" placeholder="e.g. MassIVE, PRIDE, MGnify…"
+            style="margin-left:6px;border:1px solid #ccc;border-radius:5px;padding:3px 7px;font-size:12px;width:170px;">
+        </label>
+      </div>
+
+      <div id="proj_section_${tokSafe}" style="display:none;margin-top:10px;background:#f8fafb;border:1px solid #d0e4f7;border-radius:7px;padding:10px 12px;">
+        <p style="margin:0 0 6px;font-size:12px;color:#2563eb;font-weight:600;">📂 How to find individual sample/file URLs:</p>
+        <p style="margin:0 0 10px;font-size:11.5px;color:#444;line-height:1.5;">${guidance}</p>
+        <label style="font-size:12px;color:#333;font-weight:600;display:block;margin-bottom:4px;">
+          Dataset files page URL <span style="font-weight:normal;color:#777;">(optional — enables automatic sub-sample enumeration)</span>
+        </label>
+        <input type="text" id="filesurl_${tokSafe}" placeholder="https://massive.ucsd.edu/…"
+          style="width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:5px;padding:5px 8px;font-size:12px;margin-bottom:8px;">
+        <p style="margin:0;font-size:11px;color:#888;">
+          If the URL is left blank the tool will analyze the project ID as a whole unit.
+          For best results, paste the dataset browse/files URL so sub-samples can be enumerated automatically.
+        </p>
+      </div>
+    </div>`;
+  });
+
+  html += `<div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end;">
+    <button onclick="document.getElementById('non-ncbi-overlay').remove()" style="background:#f1f5f3;border:1px solid #ccc;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">Cancel</button>
+    <button id="non-ncbi-confirm" style="background:#1a7f5e;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-size:13px;font-weight:600;">Proceed</button>
+  </div>
+  </div></div>`;
+
+  const el = document.createElement('div');
+  el.innerHTML = html;
+  document.body.appendChild(el.firstChild);
+
+  document.getElementById('non-ncbi-confirm').onclick = () => {
+    const info = {};
+    nonNcbiTokens.forEach(({tok}) => {
+      const tokSafe = tok.replace(/[^a-zA-Z0-9]/g, '_');
+      const isProject = document.querySelector(`input[name="type_${tokSafe}"]:checked`)?.value === 'project';
+      const db = document.getElementById(`db_${tokSafe}`)?.value.trim() || '';
+      const filesUrl = isProject
+        ? (document.getElementById(`filesurl_${tokSafe}`)?.value.trim() || '')
+        : '';
+      info[tok] = { database: db, is_project: isProject, dataset_files_url: filesUrl };
+    });
+    document.getElementById('non-ncbi-overlay').remove();
+    onConfirm(info);
+  };
+}
+
 // ── Analysis ─────────────────────────────────────────────────────────────────
 async function runAnalysis() {
   const accText = document.getElementById('acc-input').value.trim();
@@ -711,7 +834,6 @@ async function runAnalysis() {
 
   if (!accText) { alert('Please enter at least one accession ID.'); return; }
 
-  // Count how many samples the user is requesting
   const tokens = accText.split(/[,\n;\s]+/).map(s => s.trim()).filter(Boolean);
   const used   = getSamplesUsed();
   const limit  = getLimit();
@@ -726,7 +848,28 @@ async function runAnalysis() {
     return;
   }
 
+  // Detect non-NCBI tokens
+  const nonNcbiTokens = tokens
+    .filter(t => !isNcbiToken(t))
+    .map(t => ({ tok: t, db: detectNonNcbiDb(t) || '' }))
+    .filter(({tok}) => tok.length >= 4);  // skip very short garbage tokens
+
+  if (nonNcbiTokens.length > 0) {
+    showNonNcbiDialog(nonNcbiTokens, (resolvedInfo) => {
+      _nonNcbiResolved = resolvedInfo;
+      _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit);
+    });
+    return;
+  }
+
+  _nonNcbiResolved = {};
+  _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit);
+}
+
+async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
   const metaFields = metaRaw ? metaRaw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean) : null;
+  const remaining  = limit - used;   // how many samples this session can still process
+  const sampleLimit = Math.min(remaining, MAX_SAMPLES);
 
   // Classify accession types for analytics without logging raw IDs
   const accTypes = {};
@@ -735,6 +878,7 @@ async function runAnalysis() {
             : t.startsWith('SAMN') || t.startsWith('SAMD') || t.startsWith('SAME') ? 'BioSample'
             : /^[SE]RR/.test(t) ? 'SRA'
             : /^[A-Z]{2}\d/.test(t) ? 'GenBank'
+            : Object.keys(_nonNcbiResolved).includes(t) ? 'NonNCBI'
             : 'other';
     accTypes[k] = (accTypes[k] || 0) + 1;
   });
@@ -748,7 +892,6 @@ async function runAnalysis() {
     has_std_url: !!stdUrl,
     has_context_file: !!ctxFileId,
     is_logged_in: !!user,
-    // Full inputs logged only for signed-in users (for UserLog sheet)
     ...(user ? {
       accession_input: accText.slice(0, 500),
       metadata_fields: metaRaw.slice(0, 300),
@@ -758,6 +901,7 @@ async function runAnalysis() {
 
   analysisStartTime = Date.now();
   partialRows = [];
+  currentRunId = crypto.randomUUID();
   currentAbortController = new AbortController();
   document.getElementById('submit-btn').disabled = true;
   document.getElementById('stop-btn').style.display = 'inline-block';
@@ -789,6 +933,9 @@ async function runAnalysis() {
         metadata_fields:     metaFields,
         standardization_url: stdUrl || null,
         context_file_id:     ctxFileId || null,
+        sample_limit:        sampleLimit,
+        run_id:              currentRunId,
+        non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
       }),
       signal: currentAbortController.signal,
     });
@@ -813,11 +960,18 @@ async function runAnalysis() {
         let evt;
         try { evt = JSON.parse(line.slice(6)); } catch { continue; }
 
-        if (evt.type === 'progress') {
+        if (evt.type === 'run_id') {
+          // Sync frontend run_id with backend (in case server generated one)
+          currentRunId = evt.run_id || currentRunId;
+        } else if (evt.type === 'progress') {
           logLine(evt.message);
         } else if (evt.type === 'error') {
           clearInterval(_timerInterval);
           logLine('❌ ' + evt.message);
+        } else if (evt.type === 'limit_reached') {
+          clearInterval(_timerInterval);
+          logLine(`⚠ Free sample limit reached (${evt.limit} samples). Sign up for more.`);
+          showAuthPopup(getUser() ? 'login' : 'signup', 'free_limit');
         } else if (evt.type === 'partial_result') {
           const newRows = evt.rows || [];
           partialRows.push(...newRows);
@@ -878,6 +1032,8 @@ async function runAnalysis() {
     document.getElementById('submit-btn').disabled = false;
     document.getElementById('stop-btn').style.display = 'none';
     currentAbortController = null;
+    currentRunId = null;
+    _nonNcbiResolved = {};
   }
 }
 

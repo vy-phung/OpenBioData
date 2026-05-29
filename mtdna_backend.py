@@ -93,16 +93,24 @@ import re
 
 def is_valid_accession(acc):
     """
-    Accept any NCBI identifier that ncbi_resolver can handle.
-    Falls back to the original GenBank regex for unrecognised strings so
-    existing file-upload behaviour is unchanged.
+    Accept any NCBI identifier that ncbi_resolver can handle,
+    OR any known non-NCBI database accession (MassIVE, PRIDE, etc.).
+    Falls back to the original GenBank regex for unrecognised strings.
     """
     try:
         from ncbi_resolver import detect_accession_type
-        return detect_accession_type(str(acc).strip()) != 'unknown'
+        if detect_accession_type(str(acc).strip()) != 'unknown':
+            return True
     except Exception:
-        # Legacy fallback regex if ncbi_resolver is unavailable
-        return bool(re.match(r'^[A-Z]{1,4}_?\d{5,}(\.\d+)?$', str(acc).strip()))
+        pass
+    try:
+        from non_ncbi_resolver import is_non_ncbi_accession
+        if is_non_ncbi_accession(str(acc).strip()):
+            return True
+    except Exception:
+        pass
+    # Legacy fallback regex if resolvers are unavailable
+    return bool(re.match(r'^[A-Z]{1,4}_?\d{5,}(\.\d+)?$', str(acc).strip()))
 
 # helper function to extract accessions
 def extract_accessions_from_input(file=None, raw_text=""):

@@ -2,7 +2,14 @@ import asyncio
 import json
 import os
 import tempfile
+import uuid
 from typing import Any, Dict, List, Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import uvicorn
 
@@ -13,6 +20,9 @@ from pydantic import BaseModel
 app = FastAPI(title="BioMetadataAudit API")
 
 MAX_SAMPLES = 50
+
+# Per-run cancellation: run_id -> asyncio.Event (set = cancelled)
+_ACTIVE_RUNS: Dict[str, asyncio.Event] = {}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -224,6 +234,13 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         if explanation_parts:
             explanation_parts.append(f"\nSources: {source_text}")
 
+        # ── Per-field source location (parsed from [Source: ...] tags in explanation) ──
+        import re as _re
+        _source_tag_re = _re.compile(r'\[Source:\s*([^\]]+)\]', _re.IGNORECASE)
+        _src_match = _source_tag_re.search(method_text or "")
+        if _src_match:
+            extra[f"{field}_source_location"] = _src_match.group(1).strip()
+
         # ── Confidence score: numeric + tier + short reason ───────────────────
         signals     = data.get("signals", {}) or {}
         in_ncbi     = signals.get("in_NCBI", False)
@@ -266,12 +283,43 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         confidence_display = f"{conf_score} ({tier_icon})" + (f" — {reason_str}" if reason_str else "")
 
         # ── Final columns ─────────────────────────────────────────────────────
+        # Build per-field source location column
+        per_field_source_lines = []
+        for field in niche_list:
+            loc_key = f"{field}_source_location"
+            if loc_key in extra:
+                per_field_source_lines.append(f"{field}: {extra[loc_key]}")
+            elif str(row.get(field, "")).lower() not in ("unknown", ""):
+                per_field_source_lines.append(f"{field}: {source_text.splitlines()[0] if source_text.splitlines() else 'see sources'}")
+        if not per_field_source_lines:
+            per_field_source_lines_text = source_text
+        else:
+            per_field_source_lines_text = "\n".join(per_field_source_lines)
+
         row["explanation"]      = _tc("\n".join(explanation_parts))
         row["confidence_score"] = _tc(confidence_display)
-        row["sources"]          = _tc(source_text)
+        row["sources"]          = _tc(per_field_source_lines_text)
         row["time_cost"]        = _tc(data.get("time_cost", ""))
-        pass2_fields = data.get("_additional_fields") or {}
-        if not niche_list:
+        pass2_fields = dict(data.get("_additional_fields") or {})
+
+        # ── Ontology annotations → add as extra columns ───────────────────────
+        ontology_annots = data.get("_ontology_annotations") or {}
+        _ONTO_LABELS = {
+            "taxonomy":               "Taxonomy (NCBITaxon ID | label)",
+            "organism_part":          "Organism Part/Body Site (UBERON ID | label)",
+            "host_characteristics":   "Host/Subject Characteristics (PATO·SO·DOID IDs | labels)",
+            "experimental_conditions":"Collection/Experimental Conditions (OBI·CHMO·MS IDs | labels)",
+            "contextual_study":       "Contextual/Study Design (GO·DOID IDs | labels)",
+        }
+        for cat, label in _ONTO_LABELS.items():
+            if cat in ontology_annots and ontology_annots[cat]:
+                items = ontology_annots[cat]
+                val = "\n".join(items) if isinstance(items, list) else str(items)
+                # Ontology columns always go to Sheet 1 (they're the requested output)
+                row[label] = _tc(val)
+                pass2_fields.pop(f"ontology_{cat}", None)  # avoid duplication in Sheet 2
+
+        if not niche_list and not ontology_annots:
             # No user-specified fields: promote all Pass 2 extracted fields directly
             # into Sheet 1 columns so the user sees them immediately.
             # Sheet 2 will be identical to Sheet 1 (no separate extra columns needed).
@@ -279,6 +327,9 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                 if k not in row:
                     row[k] = _tc(v)
             row["_additional_fields"] = {}
+        elif not niche_list and ontology_annots:
+            # Ontology mode: ontology columns already added above; extras go to Sheet 2
+            row["_additional_fields"] = pass2_fields
         else:
             # User specified fields: niche fields are Sheet 1; Pass 2 extras go to Sheet 2
             row["_additional_fields"] = {**pass2_fields, **extra}
@@ -289,11 +340,20 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
 
 # ── request models ────────────────────────────────────────────────────────────
 
+class NonNcbiInfo(BaseModel):
+    database: Optional[str] = ""          # e.g. "MassIVE", "PRIDE", user-provided
+    is_project: Optional[bool] = False
+    dataset_files_url: Optional[str] = "" # URL to dataset files page for sub-sample scraping
+
+
 class AnalyzeRequest(BaseModel):
     bioproject_id: str
     metadata_fields: Optional[List[str]] = None
-    standardization_url: Optional[str] = None  # comma-separated URLs accepted
-    context_file_id: Optional[str] = None       # temp path from /upload-context
+    standardization_url: Optional[str] = None   # comma-separated URLs accepted
+    context_file_id: Optional[str] = None        # temp path from /upload-context
+    sample_limit: Optional[int] = None           # max samples to process this run
+    non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
+    run_id: Optional[str] = None                 # client-provided run UUID for cancellation
 
 
 class ChatMessageRequest(BaseModel):
@@ -387,10 +447,26 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/cancel/{run_id}")
+async def cancel_run(run_id: str):
+    """Signal a running analysis to stop after the current sample."""
+    ev = _ACTIVE_RUNS.get(run_id)
+    if ev:
+        ev.set()
+        return {"status": "cancellation_requested", "run_id": run_id}
+    return {"status": "not_found", "run_id": run_id}
+
+
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest):
+    run_id = req.run_id or str(uuid.uuid4())
+    cancel_event = asyncio.Event()
+    _ACTIVE_RUNS[run_id] = cancel_event
+    _pipeline_task_ref: list = []  # mutable container so finally can cancel the task
+
     async def event_stream():
         try:
+            yield _sse("run_id", {"run_id": run_id})
             yield _sse("progress", {"message": "Loading backend…"})
             await asyncio.sleep(0)
 
@@ -406,6 +482,7 @@ async def analyze(req: AnalyzeRequest):
 
             niche_cases = req.metadata_fields or None
             raw_text = req.bioproject_id.strip()
+            effective_limit = req.sample_limit or MAX_SAMPLES
 
             # Load user-uploaded context file if provided
             user_context_text: Optional[str] = None
@@ -434,40 +511,129 @@ async def analyze(req: AnalyzeRequest):
                 yield _sse("error", {"message": "No valid accessions found."})
                 return
 
-            # NCBI resolution (blocking — run in thread)
-            yield _sse("progress", {"message": "Resolving accessions via NCBI…"})
-            await asyncio.sleep(0)
+            # ── Non-NCBI accession handling ───────────────────────────────────
+            # Separate tokens that belong to non-NCBI databases from NCBI ones.
+            # non_ncbi_info from request overrides auto-detection.
+            from non_ncbi_resolver import (
+                detect_non_ncbi_database, build_non_ncbi_entry, is_non_ncbi_accession,
+                scrape_project_samples,
+            )
+            non_ncbi_entries: dict = {}
+            ncbi_accessions: list = []
+            req_non_ncbi_info = req.non_ncbi_info or {}
 
+            for acc_tok in accessions:
+                if acc_tok in req_non_ncbi_info:
+                    info = req_non_ncbi_info[acc_tok]
+                    db   = info.database or detect_non_ncbi_database(acc_tok) or "unknown"
+                    files_url = (info.dataset_files_url or "").strip()
+
+                    # Project with dataset files URL → try to expand into sub-samples
+                    if info.is_project and files_url:
+                        yield _sse("progress", {
+                            "message": f"Scraping sub-samples for {acc_tok} from {files_url}…"
+                        })
+                        try:
+                            sub_samples = await asyncio.to_thread(
+                                scrape_project_samples, files_url, db, acc_tok, 20
+                            )
+                        except Exception as _scrape_exc:
+                            sub_samples = []
+                            yield _sse("progress", {
+                                "message": f"Sub-sample scrape failed ({_scrape_exc}); treating {acc_tok} as single sample."
+                            })
+
+                        if sub_samples:
+                            yield _sse("progress", {
+                                "message": f"Found {len(sub_samples)} sub-sample(s) in {acc_tok}."
+                            })
+                            for s in sub_samples:
+                                sub_acc = f"{acc_tok} | {s['name']}"
+                                sub_entry = build_non_ncbi_entry(sub_acc, db, False)
+                                # Attach parent project URL as extra context
+                                sub_entry[sub_acc]['_parent_project'] = acc_tok
+                                sub_entry[sub_acc]['_dataset_files_url'] = files_url
+                                non_ncbi_entries.update(sub_entry)
+                        else:
+                            # Fall back: treat project as single entity
+                            yield _sse("progress", {
+                                "message": (
+                                    f"Could not enumerate sub-samples automatically. "
+                                    f"Treating {acc_tok} as a single search query. "
+                                    f"Tip: paste individual sample IDs in the accession box."
+                                )
+                            })
+                            entry = build_non_ncbi_entry(acc_tok, db, True)
+                            non_ncbi_entries.update(entry)
+                    else:
+                        entry = build_non_ncbi_entry(acc_tok, db, bool(info.is_project))
+                        non_ncbi_entries.update(entry)
+                elif is_non_ncbi_accession(acc_tok):
+                    entry = build_non_ncbi_entry(acc_tok)
+                    non_ncbi_entries.update(entry)
+                else:
+                    ncbi_accessions.append(acc_tok)
+
+            # ── NCBI resolution (blocking — run in thread) ────────────────────
             resolved_dict: dict = {}
-            try:
-                from input_handler import build_pipeline_input, get_pipeline_accession
+            if ncbi_accessions:
+                yield _sse("progress", {"message": "Resolving accessions via NCBI…"})
+                await asyncio.sleep(0)
+                try:
+                    from input_handler import build_pipeline_input, get_pipeline_accession
 
-                resolved_dict, skipped = await asyncio.to_thread(
-                    build_pipeline_input, ", ".join(accessions), MAX_SAMPLES
+                    resolved_dict, skipped = await asyncio.to_thread(
+                        build_pipeline_input, ", ".join(ncbi_accessions), effective_limit
+                    )
+                    if skipped:
+                        invalid = list(invalid or []) + skipped
+                        if not resolved_dict and not non_ncbi_entries:
+                            # All NCBI accessions failed to resolve — likely rate-limited
+                            yield _sse("error", {
+                                "message": (
+                                    f"Could not retrieve BioSamples for: {', '.join(skipped)}.\n"
+                                    "NCBI may be temporarily rate-limiting requests (HTTP 429) or "
+                                    "experiencing a server error (HTTP 500). "
+                                    "Please wait a minute and try again."
+                                )
+                            })
+                            return
+                except Exception as exc:
+                    yield _sse("progress", {"message": f"NCBI resolution warning: {exc}"})
+
+            # Merge non-NCBI entries into resolved_dict
+            resolved_dict.update(non_ncbi_entries)
+
+            if non_ncbi_entries:
+                db_names = ", ".join(
+                    e.get("_source_database", "unknown")
+                    for e in non_ncbi_entries.values()
                 )
-                if skipped:
-                    invalid = list(invalid or []) + skipped
-            except Exception as exc:
-                yield _sse("progress", {"message": f"NCBI resolution warning: {exc}"})
+                yield _sse("progress", {
+                    "message": f"Added {len(non_ncbi_entries)} non-NCBI sample(s) ({db_names}) — will search web for metadata."
+                })
 
             all_rows: list = []
 
-            # Use the rich BioSample/SRA pipeline when we have resolved entries
+            # Use the rich pipeline for all resolved entries (BioSample, SRA,
+            # GenBank-only, or non-NCBI). GenBank accessions without a BioSample
+            # link still benefit from rich pipeline's web-search fallback.
             use_rich = bool(resolved_dict and any(
                 entry.get("biosample") or entry.get("experiment")
+                or entry.get("_source_database") or entry.get("accession")
                 for entry in resolved_dict.values()
             ))
 
             if use_rich:
-                if len(resolved_dict) > MAX_SAMPLES:
-                    resolved_dict = dict(list(resolved_dict.items())[:MAX_SAMPLES])
+                if len(resolved_dict) > effective_limit:
+                    resolved_dict = dict(list(resolved_dict.items())[:effective_limit])
                     yield _sse("progress", {
-                        "message": f"Capped at {MAX_SAMPLES} samples for this run."
+                        "message": f"Capped at {effective_limit} sample(s) for this run."
                     })
 
                 total = len(resolved_dict)
                 yield _sse("progress", {
-                    "message": f"Fetching BioSample/BioProject/SRA metadata for {total} sample(s)…"
+                    "message": f"Processing {total} sample(s)…"
                 })
                 await asyncio.sleep(0)
 
@@ -487,6 +653,7 @@ async def analyze(req: AnalyzeRequest):
 
                     # Queue lets the pipeline push progress without blocking
                     _progress_q: asyncio.Queue = asyncio.Queue()
+                    _samples_done = 0
 
                     async def _pipe_progress(msg: str):
                         await _progress_q.put(msg)
@@ -499,21 +666,36 @@ async def analyze(req: AnalyzeRequest):
                             standardization_urls=std_urls or None,
                             user_context_text=user_context_text,
                             progress_cb=_pipe_progress,
+                            cancel_event=cancel_event,
                         )
                     )
+                    _pipeline_task_ref.append(pipeline_task)
 
                     async def _emit_queue_item(msg):
                         """Emit a single queue item as the right SSE type."""
+                        nonlocal _samples_done
                         if isinstance(msg, dict) and "__partial_acc__" in msg:
                             partial_rows = _rows_from_new_pipeline(
                                 msg["__partial_data__"], niche_cases
                             )
+                            _samples_done += len(partial_rows)
                             yield _sse("partial_result", {"rows": partial_rows})
                         elif isinstance(msg, str):
                             yield _sse("progress", {"message": msg})
 
-                    # Stream progress messages while the pipeline task is running
+                    # Stream progress while pipeline runs; check cancel each tick
                     while not pipeline_task.done():
+                        if cancel_event.is_set():
+                            pipeline_task.cancel()
+                            yield _sse("progress", {"message": "⏹ Stop requested — cancelling…"})
+                            break
+                        if _samples_done >= effective_limit:
+                            pipeline_task.cancel()
+                            yield _sse("progress", {
+                                "message": f"⚠ Sample limit reached ({effective_limit}). Stopping."
+                            })
+                            yield _sse("limit_reached", {"limit": effective_limit})
+                            break
                         try:
                             msg = await asyncio.wait_for(_progress_q.get(), timeout=0.3)
                             async for evt in _emit_queue_item(msg):
@@ -528,17 +710,23 @@ async def analyze(req: AnalyzeRequest):
                         async for evt in _emit_queue_item(msg):
                             yield evt
 
-                    pipeline_result = await pipeline_task
-                    # additional_pipeline returns (accs_output, source_texts, text)
-                    accs_output = (
-                        pipeline_result[0]
-                        if isinstance(pipeline_result, tuple)
-                        else pipeline_result
-                    )
-                    all_rows = _rows_from_new_pipeline(accs_output, niche_cases)
-                    yield _sse("progress", {
-                        "message": f"✅ Extracted metadata for {len(all_rows)} sample(s)"
-                    })
+                    try:
+                        pipeline_result = await asyncio.wait_for(
+                            asyncio.shield(pipeline_task), timeout=2
+                        )
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pipeline_result = None
+
+                    if pipeline_result is not None:
+                        accs_output = (
+                            pipeline_result[0]
+                            if isinstance(pipeline_result, tuple)
+                            else pipeline_result
+                        )
+                        all_rows = _rows_from_new_pipeline(accs_output, niche_cases)
+                        yield _sse("progress", {
+                            "message": f"✅ Extracted metadata for {len(all_rows)} sample(s)"
+                        })
 
                 except Exception as exc:
                     yield _sse("progress", {
@@ -558,10 +746,10 @@ async def analyze(req: AnalyzeRequest):
                     if fallback_accs:
                         accessions = fallback_accs
 
-                if len(accessions) > MAX_SAMPLES:
-                    accessions = accessions[:MAX_SAMPLES]
+                if len(accessions) > effective_limit:
+                    accessions = accessions[:effective_limit]
                     yield _sse("progress", {
-                        "message": f"Capped at {MAX_SAMPLES} samples for this run."
+                        "message": f"Capped at {effective_limit} samples for this run."
                     })
 
                 total = len(accessions)
@@ -571,6 +759,15 @@ async def analyze(req: AnalyzeRequest):
                 await asyncio.sleep(0)
 
                 for i, acc in enumerate(accessions):
+                    if cancel_event.is_set():
+                        yield _sse("progress", {"message": "⏹ Stopped by user."})
+                        break
+                    if len(all_rows) >= effective_limit:
+                        yield _sse("progress", {
+                            "message": f"⚠ Sample limit reached ({effective_limit}). Stopping."
+                        })
+                        yield _sse("limit_reached", {"limit": effective_limit})
+                        break
                     yield _sse("progress", {
                         "message": f"[{i + 1}/{total}] Processing {acc}…"
                     })
@@ -620,6 +817,13 @@ async def analyze(req: AnalyzeRequest):
             import traceback, logging
             logging.error("Unhandled pipeline error: %s", traceback.format_exc())
             yield _sse("error", {"message": str(exc)})
+        finally:
+            # Always signal cancellation on exit (covers client disconnect + explicit stop)
+            # so any still-running pipeline_with_gemini loop stops at its next sample boundary.
+            cancel_event.set()
+            if _pipeline_task_ref and not _pipeline_task_ref[0].done():
+                _pipeline_task_ref[0].cancel()
+            _ACTIVE_RUNS.pop(run_id, None)
 
     return StreamingResponse(
         event_stream(),

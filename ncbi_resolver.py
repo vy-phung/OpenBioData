@@ -60,8 +60,9 @@ def detect_accession_type(accession_id: str) -> str:
     # Named GenBank prefixes
     if re.match(r'^(NC_|OL|MT|MW|MZ|PQ|OM|MN|MK|KY|KX|KU|JN|FJ)[A-Z0-9_]+$', acc):
         return 'genbank'
-    # Generic GenBank: 1-2 letters + 5-8 digits (+ optional .version)
-    if re.match(r'^[A-Z]{1,2}\d{5,8}(\.\d+)?$', acc):
+    # Generic GenBank: 1-3 letters + 5-8 digits (+ optional .version)
+    # Covers nucleotide (1-2 letters) and protein accessions (3 letters, e.g. ACK77584)
+    if re.match(r'^[A-Z]{1,3}\d{5,8}(\.\d+)?$', acc):
         return 'genbank'
 
     return 'unknown'

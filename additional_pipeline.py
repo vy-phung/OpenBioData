@@ -51,12 +51,32 @@ def _github_blob_to_raw(url: str) -> str:
     return url
 
 
+_ONTOLOGY_URL_MARKERS = [
+    'geneontology.org', 'ebi.ac.uk/ols', 'ontobee.org',
+    'bioportal.bioontology.org', 'obofoundry.org', 'ebi.ac.uk/ontologies',
+    'purl.obolibrary.org', 'purl.bioontology.org',
+]
+
+# Fields that are computed/derived stats — skip from auto-niche_cases
+_COMPUTED_FIELD_PREFIXES = ('n_', 'pct_', 'num_')
+_COMPUTED_FIELD_KEYWORDS = ('reads', 'species', 'genus', 'megan', 'mapped')
+
+
+def _is_ontology_url(url: str) -> bool:
+    return any(m in url for m in _ONTOLOGY_URL_MARKERS)
+
+
 def fetch_standardization_schema(urls) -> dict:
     """
     Fetch one or more CSV standardization files and return a rich schema dict:
       { field_name: { "description": str, "allowed_values": list } }
 
-    Handles two file types automatically:
+    Also detects ontology documentation URLs (geneontology.org, OBO, etc.) and
+    marks them so the pipeline can use an ontology-annotation pass instead of
+    CSV-based allowed-value mapping.  Ontology URLs are stored under the special
+    key '__ontology_urls__' and '__ontology_mode__' = True.
+
+    Handles two CSV file types automatically:
       1. Data dictionary CSV: columns include field name + description/definition
       2. Codebook CSV: columns include field name + allowed value + value label
          (adds allowed_values list to existing schema entries)
@@ -69,6 +89,18 @@ def fetch_standardization_schema(urls) -> dict:
         urls = [u.strip() for u in urls.split(",") if u.strip()]
 
     schema: dict = {}
+    ontology_urls_found: list = []
+
+    # Separate ontology doc URLs from CSV URLs
+    csv_urls = []
+    for url in urls:
+        if _is_ontology_url(url):
+            ontology_urls_found.append(url)
+            print(f"[standardization] Detected ontology URL (will use LLM annotation): {url}")
+        else:
+            csv_urls.append(url)
+
+    urls = csv_urls  # only process CSVs below
 
     for url in urls:
         raw_url = _github_blob_to_raw(url.strip())
@@ -124,6 +156,12 @@ def fetch_standardization_schema(urls) -> dict:
                   f"{' (codebook)' if is_codebook else ' (dictionary)'}")
         except Exception as e:
             print(f"[standardization] Could not fetch {raw_url}: {e}")
+
+    # Mark ontology mode so the pipeline can run ontology annotation
+    if ontology_urls_found:
+        schema['__ontology_mode__'] = True
+        schema['__ontology_urls__'] = ontology_urls_found
+
     return schema
 
 """accessions = { acc: {"bioproject":"",
@@ -135,7 +173,7 @@ def fetch_standardization_schema(urls) -> dict:
 }"""
 
 # Main execution
-async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None):
+async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None, cancel_event=None):
   # output: country, sample_type, ethnic, location, money_cost, time_cost, explain
   # there can be one accession number in the accessions
   # # Prices are per 1,000 tokens
@@ -152,7 +190,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
     from Bio import Entrez
     Entrez.email = "vyphung1901@gmail.com"
     # Configure Gemini if key is available (used as fallback in model.call_llm_api)
-    _gemini_key = os.getenv("NEW_GOOGLE_API_KEY")
+    _gemini_key = os.getenv("NEW_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("NEW_GEMINI_API")
     if _gemini_key:
         genai.configure(api_key=_gemini_key)
 
@@ -164,6 +202,31 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             if _lnk and _lnk not in _all_std_urls:
                 _all_std_urls.append(_lnk)
     standardization_schema = fetch_standardization_schema(_all_std_urls) if _all_std_urls else {}
+    _is_ontology_mode = bool(standardization_schema.get('__ontology_mode__'))
+
+    # Auto-populate niche_cases from schema fields when user didn't specify any
+    if standardization_schema and not niche_cases and not _is_ontology_mode:
+        _schema_fields = [
+            k for k in standardization_schema
+            if not k.startswith('__')
+            and not any(k.startswith(p) for p in _COMPUTED_FIELD_PREFIXES)
+            and not any(kw in k for kw in _COMPUTED_FIELD_KEYWORDS)
+        ]
+        if _schema_fields:
+            # Sort: put well-known bio-metadata fields first
+            _priority = {
+                'disease', 'control', 'body_site', 'organism', 'host', 'country',
+                'age', 'gender', 'sex', 'tissue', 'ancestry', 'smoking_status',
+                'sequencing_type', 'sequencing_platform', 'collection_date',
+                'collection_location', 'specific_location', 'geographic_location',
+                'latitude_longitude', 'sequencing_layout', 'dna_extraction_kit',
+                'library_prep_kit', 'disease_t2d', 'disease_periodontitis',
+                'study_name', 'PMID', 'hypoglycemic_medication', 'metabolic_control',
+            }
+            prioritized = [f for f in _schema_fields if f in _priority]
+            others = [f for f in _schema_fields if f not in _priority]
+            niche_cases = (prioritized + others)[:30]
+            print(f"[auto-niche] Using {len(niche_cases)} schema fields as niche_cases: {niche_cases}")
 
     async def _progress(msg: str):
         if progress_cb:
@@ -178,6 +241,9 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
     _total_accs = len(accessions)
     print("accessions: ", accessions)
     for _acc_idx, acc in enumerate(accessions):
+      if cancel_event is not None and cancel_event.is_set():
+          await _progress("⏹ Cancelled — stopping pipeline.")
+          break
       print("start gemini: ", acc)
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
       start = time.time()
@@ -212,49 +278,64 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         for niche in niche_cases:
           print("add niche: ", niche)
           acc_score[niche] = {}
+
+      # Detect non-NCBI samples — skip NCBI fetch entirely for these
+      _source_db  = accessions[acc].get("_source_database", "")
+      _is_project = accessions[acc].get("_is_project", False)
+      _is_non_ncbi = bool(_source_db) and not any(
+          accessions[acc].get(k) for k in ("bioproject", "biosample", "accession", "experiment")
+      )
+
+      if _is_non_ncbi:
+        await _progress(f"[{_acc_idx + 1}/{_total_accs}] Non-NCBI sample ({_source_db}) — skipping NCBI fetch for {acc}…")
+      else:
+        await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
+
       # get the data from the links of NCBI
       ncbi_texts, ncbi_text_links = {}, {}
-      ncbi_texts = NCBI.extract_NCBI_directly(acc)
+      if not _is_non_ncbi and NCBI is not None:
+        ncbi_texts = NCBI.extract_NCBI_directly(acc)
       """accessions = {"OL757400": {"bioproject":"PRJNA783802",
                         "biosample": "SAMN23469632",
                         "accession": "OL757400",
                         "experiment":"SRR17084312"},}"""
-      if accessions[acc]["bioproject"]:
+      if not _is_non_ncbi and accessions[acc].get("bioproject"):
         bioproject_id = accessions[acc]["bioproject"]
-
         print("get bioproject from acc input: ", bioproject_id)
-      for ncbi_source in accessions[acc]:
-        if ncbi_source == "bioproject" and accessions[acc]["bioproject"]:
-          if not bioproject_info:
-            print("get bioproject info")
-            bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
-            acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-          else:
-            if bioproject_id not in bioproject_info:
+
+      if not _is_non_ncbi:
+        for ncbi_source in accessions[acc]:
+          if ncbi_source == "bioproject" and accessions[acc].get("bioproject"):
+            if not bioproject_info:
+              print("get bioproject info")
               bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
               acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-            else: acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-          # check or get pubmed from bioproject
-          if not pubmeds:
-            print("inside pubmed getting and bioproject: ", bioproject_id)
-            pubmeds = acc_score["source_texts"]["NCBI_bioproject"][bioproject_id]["pubmed"]
-        elif ncbi_source == "biosample" and accessions[acc]["biosample"]:
-          biosample_id = accessions[acc]["biosample"]
-          ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
-          acc_score["source_texts"]["NCBI_biosample"] = ncbi_texts
-        elif ncbi_source == "accession" and accessions[acc]["accession"]:
-          accession_id = accessions[acc]["accession"]
-          ncbi_texts = NCBI.extract_NCBI_directly(accession_id)
-          acc_score["source_texts"]["NCBI_accession"] = ncbi_texts
-          if not pubmeds:
-            pubmed = acc_score["source_texts"]["NCBI_accession"][accession_id]["pubmed_id"]
-            if pubmed:
-              pubmeds.append(pubmed)
-            doi = acc_score["source_texts"]["NCBI_accession"][accession_id]["doi"]
-        elif ncbi_source == "experiment" and accessions[acc]["experiment"]:
-          experiment_id = accessions[acc]["experiment"]
-          ncbi_texts = NCBI.extract_NCBI_directly(experiment_id)
-          acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
+            else:
+              if bioproject_id not in bioproject_info:
+                bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
+                acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
+              else: acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
+            # check or get pubmed from bioproject
+            if not pubmeds:
+              print("inside pubmed getting and bioproject: ", bioproject_id)
+              pubmeds = acc_score["source_texts"]["NCBI_bioproject"][bioproject_id]["pubmed"]
+          elif ncbi_source == "biosample" and accessions[acc].get("biosample"):
+            biosample_id = accessions[acc]["biosample"]
+            ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
+            acc_score["source_texts"]["NCBI_biosample"] = ncbi_texts
+          elif ncbi_source == "accession" and accessions[acc].get("accession"):
+            accession_id = accessions[acc]["accession"]
+            ncbi_texts = NCBI.extract_NCBI_directly(accession_id)
+            acc_score["source_texts"]["NCBI_accession"] = ncbi_texts
+            if not pubmeds:
+              pubmed = acc_score["source_texts"]["NCBI_accession"][accession_id]["pubmed_id"]
+              if pubmed:
+                pubmeds.append(pubmed)
+              doi = acc_score["source_texts"]["NCBI_accession"][accession_id]["doi"]
+          elif ncbi_source == "experiment" and accessions[acc].get("experiment"):
+            experiment_id = accessions[acc]["experiment"]
+            ncbi_texts = NCBI.extract_NCBI_directly(experiment_id)
+            acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
 
       if acc_score["source_texts"]:
         source_kws = list(acc_score["source_texts"].keys())
@@ -389,14 +470,34 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         biosample: SAMN35361966,
         accession: None (or if not then it is KU131308)
       }"""
-      if accessions[acc]["bioproject"]:
+      if accessions[acc].get("bioproject"):
         all_accs["bioproject"] = accessions[acc]["bioproject"]
-      if accessions[acc]["biosample"]:
+      if accessions[acc].get("biosample"):
         all_accs["biosample"] = accessions[acc]["biosample"]
-      if accessions[acc]["accession"]:
+      if accessions[acc].get("accession"):
         all_accs["accession"] = accessions[acc]["accession"]
-      _search_acc = (all_accs.get("biosample") or all_accs.get("accession")
-                     or all_accs.get("bioproject") or acc)
+
+      if _is_non_ncbi:
+        # For non-NCBI samples, search using the accession + database name keywords
+        try:
+          from non_ncbi_resolver import get_search_keywords
+          _search_keywords = get_search_keywords(acc, _source_db)
+          _search_acc = _search_keywords[0]  # primary keyword = raw accession
+          # Inject extra keywords into smart_fallback search if possible
+          _extra_kws = _search_keywords[1:]
+        except Exception:
+          _search_acc = acc
+          _extra_kws = []
+        acc_score["source_texts"]["_db_hint"] = (
+            f"This sample is from the {_source_db} database. "
+            f"Accession: {acc}. "
+            + (f"Related search terms: {', '.join(_extra_kws)}." if _extra_kws else "")
+        )
+      else:
+        _search_acc = (all_accs.get("biosample") or all_accs.get("accession")
+                       or all_accs.get("bioproject") or acc)
+        _extra_kws = []
+
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Searching literature for {acc}…")
       more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(
           iso=None, acc=_search_acc, saveLinkFolder=saveLinkFolder, niche_cases=niche_cases)
@@ -524,6 +625,44 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         # Propagate Pass 2 additional fields from model.query_document_info
         if "_additional_fields" in predicted_output_info[output_acc]:
           acc_score["_additional_fields"] = predicted_output_info[output_acc]["_additional_fields"]
+
+        # ── Schema alignment pass: map all extracted fields to schema vocabulary ──
+        _schema_keys = {k for k in standardization_schema if not k.startswith('__')}
+        if _schema_keys and not _is_ontology_mode and acc_score.get("_additional_fields"):
+          try:
+            aligned = model.align_to_schema(
+                acc_score["_additional_fields"],
+                standardization_schema, acc)
+            if aligned:
+              acc_score["_additional_fields"].update(aligned)
+              print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
+          except Exception as _sa_err:
+            print(f"[schema-align] WARNING for {acc}: {_sa_err}")
+
+        # ── Ontology annotation pass (only when GO/OBO URLs were provided) ────────
+        if _is_ontology_mode:
+          try:
+            _all_extracted = {}
+            # Collect Pass 1 answers
+            for _k, _v in predicted_output_info[output_acc].get("predicted_output", {}).items():
+              if isinstance(_v, dict) and _v.get("answer", "unknown").lower() != "unknown":
+                _all_extracted[_k] = _v["answer"]
+            # Collect Pass 2 fields
+            _all_extracted.update(acc_score.get("_additional_fields", {}))
+            if _all_extracted:
+              ontology_result = model.annotate_with_ontologies(
+                  _all_extracted, text, acc)
+              if ontology_result:
+                acc_score["_ontology_annotations"] = ontology_result
+                # Also add formatted strings to _additional_fields for Sheet 2
+                for cat, items in ontology_result.items():
+                  if items:
+                    acc_score.setdefault("_additional_fields", {})[f"ontology_{cat}"] = \
+                        "\n".join(items) if isinstance(items, list) else str(items)
+                print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
+          except Exception as _ont_err:
+            print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
+
         print(f"end of this acc {acc}")
       end = time.time()
       elapsed = (end - start)

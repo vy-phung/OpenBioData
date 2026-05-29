@@ -39,7 +39,7 @@ import google.generativeai as genai
 
 #genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 #genai.configure(api_key=os.getenv("GOOGLE_API_KEY_BACKUP"))
-genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY"))
+genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("NEW_GEMINI_API"))
 
 import nltk
 from nltk.corpus import stopwords
@@ -92,30 +92,51 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
 
 
 def call_llm_api(prompt, model_name=None):
-    """Call LLM — tries Anthropic Claude first, falls back to Gemini."""
+    """Call LLM — tries Anthropic first, then each Gemini key in order."""
+    last_error = None
+
+    # --- 1. Anthropic (ANTHROPIC_API_KEY) ---
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
         try:
             import anthropic as _anthropic
             client = _anthropic.Anthropic(api_key=anthropic_key)
             msg = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
             return msg.content[0].text, None
         except Exception as e:
-            print(f"Anthropic API error: {e} — falling back to Gemini.")
+            last_error = e
+            err_str = str(e).lower()
+            if "429" in str(e) or "rate_limit" in err_str or "overloaded" in err_str:
+                raise  # let safe_call_llm retry
+            print(f"Anthropic API error: {e} — trying Gemini keys.")
 
-    # Gemini fallback
+    # --- 2. Gemini — try each key in order ---
     gemini_model = model_name or "gemini-2.5-flash-lite"
-    try:
-        m = genai.GenerativeModel(gemini_model)
-        response = m.generate_content(prompt)
-        return response.text, m
-    except Exception as e:
-        print(f"Gemini API error: {e}")
-        return "Error: Could not get response from LLM API.", None
+    gemini_keys = [
+        ("NEW_GOOGLE_API_KEY", os.getenv("NEW_GOOGLE_API_KEY")),
+        ("GOOGLE_API_KEY",     os.getenv("GOOGLE_API_KEY")),
+        ("NEW_GEMINI_API",     os.getenv("NEW_GEMINI_API")),
+    ]
+    for key_name, key_val in gemini_keys:
+        if not key_val:
+            continue
+        try:
+            genai.configure(api_key=key_val)
+            m = genai.GenerativeModel(gemini_model)
+            response = m.generate_content(prompt)
+            return response.text, m
+        except Exception as e:
+            last_error = e
+            err_str = str(e).lower()
+            if "429" in str(e) or "rate" in err_str:
+                raise  # rate limit — let safe_call_llm retry with backoff
+            print(f"Gemini error with {key_name}: {e} — trying next key.")
+
+    raise RuntimeError(f"All LLM API keys exhausted. Last error: {last_error}")
 
 
 # --- Core Document Processing Functions (All previously provided and fixed) ---
@@ -1012,7 +1033,7 @@ def safe_call_llm(prompt, model="gemini-2.5-flash-lite", max_retries=5):
             return resp_text, resp_model
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "quota" in error_msg.lower():
+            if "429" in error_msg or "quota" in error_msg.lower() or "rate" in error_msg.lower() or "overloaded" in error_msg.lower():
                 print(f"\n⚠️ Rate limit hit (attempt {attempt+1}/{max_retries}).")
 
                 retry_after = None
@@ -1140,12 +1161,17 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
       f"\nOUTPUT FORMAT (follow exactly):\n"
       f"Line 1: exactly {field_count} comma-separated values for: {output_format_str}\n"
       f"Lines 2–{field_count+1}: one sentence per field in the SAME ORDER — "
-      f"no field-name labels, no bullet points, just the sentence.\n"
+      f"no field-name labels, no bullet points, just the sentence. "
+      f"End each sentence with [Source: <source_name>, <specific location>] "
+      f"where source_name is the key from the text snippet header (e.g. NCBI_biosample, "
+      f"a URL, or user_uploaded_file) and specific location is where exactly in that source "
+      f"you found the value (e.g. 'geo_loc_name attribute', 'Methods section paragraph 2', "
+      f"'Table 1 row 3', 'Abstract sentence 2', 'Supplementary Table S1').\n"
       f"Example for 3 fields:\n"
       f"  Italy, modern, type 2 diabetes\n"
-      f"  The BioSample record states geo_loc_name: Italy: Ferrara.\n"
-      f"  Sample was collected from living subjects enrolled in 2018.\n"
-      f"  Subject belongs to the T2D+P+ group per Table 3 of the linked paper.\n"
+      f"  Geo_loc_name attribute set to Italy: Ferrara. [Source: NCBI_biosample, geo_loc_name attribute]\n"
+      f"  Subjects were living patients enrolled in 2018. [Source: https://doi.org/10.1234/x, Methods section]\n"
+      f"  Subject belongs to T2D+P+ group. [Source: https://doi.org/10.1234/x, Table 3]\n"
       f"\nText Snippets:\n{context_for_llm}")
       if acc_cleaned.lower() in context_for_llm.lower():
         accession_found_in_text = True
@@ -1218,6 +1244,154 @@ def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict
     except Exception as e:
         print(f"[standardize_with_llm] WARNING: {e}")
         return extracted_values
+
+
+def align_to_schema(extracted_dict: dict, schema: dict, acc: str) -> dict:
+    """
+    Map free-text extracted fields to the closest matching schema field names
+    and standardize their values to the schema's allowed values.
+
+    Returns {schema_field: standardized_value} only for high-confidence matches.
+    """
+    if not schema or not extracted_dict:
+        return {}
+    schema_fields = [k for k in schema if not k.startswith('__')]
+    if not schema_fields:
+        return {}
+
+    schema_lines = []
+    for f in schema_fields[:40]:
+        entry = schema.get(f, {})
+        if isinstance(entry, dict):
+            desc = entry.get('description', '')
+            allowed = entry.get('allowed_values', [])
+        else:
+            desc = str(entry)
+            allowed = []
+        line = f"  {f}"
+        if desc:
+            line += f": {desc}"
+        if allowed:
+            bool_vals = {v.strip().lower() for v in allowed}
+            if bool_vals <= {"true", "false", "0", "1", "yes", "no"}:
+                line += (f" [BOOLEAN: TRUE=control/reference, FALSE=case/disease. "
+                         f"Allowed: {', '.join(str(v) for v in allowed[:6])}]")
+            else:
+                line += f" [allowed: {', '.join(str(v) for v in allowed[:12])}]"
+        schema_lines.append(line)
+
+    ext_lines = "\n".join(f"  {k}: {v}" for k, v in list(extracted_dict.items())[:60])
+
+    prompt = (
+        f"Sample accession: {acc}\n\n"
+        "EXTRACTED METADATA (free-text field names and values):\n"
+        f"{ext_lines}\n\n"
+        "TARGET SCHEMA (canonical field names + allowed values):\n"
+        + "\n".join(schema_lines) + "\n\n"
+        "Task: For each extracted field, find the best-matching schema field name.\n"
+        "Standardize the value to the nearest allowed value when one is listed.\n"
+        "Rules:\n"
+        "1. Only include fields where you're confident of the match.\n"
+        "2. For BOOLEAN fields: if the sample is clearly a case/disease/treatment → FALSE. "
+        "If clearly a control/reference → TRUE.\n"
+        "3. Never invent values not in the allowed list.\n"
+        "4. If a value matches an allowed entry regardless of case/punctuation, use the "
+        "exact allowed value string.\n"
+        "Return ONLY a JSON object: {\"schema_field_name\": \"standardized_value\"}.\n"
+        "No markdown fences, no explanation.\n"
+    )
+
+    try:
+        response_text, _ = call_llm_api(prompt)
+        raw = response_text.strip()
+        if raw.startswith('```'):
+            parts = raw.split('```')
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.lower().startswith('json'):
+                raw = raw[4:]
+        brace_start = raw.find('{')
+        brace_end   = raw.rfind('}')
+        if brace_start != -1 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end + 1]
+        result = json.loads(raw.strip())
+        return {k: str(v).strip()
+                for k, v in result.items()
+                if k in schema and v is not None and str(v).strip()}
+    except Exception as e:
+        print(f"[align_to_schema] WARNING: {e}")
+        return {}
+
+
+def annotate_with_ontologies(extracted_dict: dict, context_text: str, acc: str) -> dict:
+    """
+    Group extracted metadata into 5 biological ontology categories and assign
+    standard ontology IDs (NCBITaxon, UBERON, OBI, CHMO, MS, GO, DOID, PATO, SO).
+
+    Returns dict with 5 category keys, each a list of 'ONTOLOGY:ID | label' strings.
+    """
+    if not extracted_dict and not context_text:
+        return {}
+
+    extracted_str = "\n".join(
+        f"  {k}: {v}" for k, v in list(extracted_dict.items())[:40]
+    )
+    ctx_snippet = context_text[:10000] if len(context_text) > 10000 else context_text
+
+    prompt = (
+        f"Sample: {acc}\n\n"
+        "Extracted metadata:\n"
+        f"{extracted_str}\n\n"
+        "Source text excerpt:\n"
+        f"{ctx_snippet}\n\n"
+        "Task: Annotate this biological sample metadata with standard ontology IDs.\n\n"
+        "Use IDs from these ontologies:\n"
+        "  NCBITaxon — organism taxonomy (e.g. NCBITaxon:10090 | Mus musculus)\n"
+        "  UBERON    — anatomical parts / tissues / body sites\n"
+        "  OBI       — assay / instrument / sample preparation types\n"
+        "  CHMO      — chemical methods / chromatography\n"
+        "  MS        — mass spectrometry terms (Proteomics Standards Initiative)\n"
+        "  GO        — biological processes / molecular functions / cellular components\n"
+        "  DOID      — human diseases\n"
+        "  PATO      — phenotypic qualities (age, sex, genotype)\n"
+        "  SO        — sequence ontology (genotype, mutation type)\n\n"
+        "Assign terms to exactly these 5 categories:\n"
+        "  taxonomy              — organism species / strain\n"
+        "  organism_part         — body site, tissue, organ, anatomical region\n"
+        "  host_characteristics  — sex, age, disease status, genotype, phenotype\n"
+        "  experimental_conditions — assay type, instrument, extraction method, data format\n"
+        "  contextual_study      — biological process, study design, disease context\n\n"
+        "Format each entry as 'ONTOLOGY:ID | label'.\n"
+        "Include multiple entries per category when warranted (one per line in the list).\n"
+        "Return ONLY valid JSON with exactly these 5 keys:\n"
+        "{\n"
+        '  "taxonomy": ["NCBITaxon:10090 | Mus musculus"],\n'
+        '  "organism_part": ["UBERON:0006909 | lumen of digestive tract"],\n'
+        '  "host_characteristics": ["PATO:0000384 | male", "DOID:9352 | type 2 diabetes"],\n'
+        '  "experimental_conditions": ["OBI:0000470 | mass spectrometry assay"],\n'
+        '  "contextual_study": ["GO:0006955 | immune response"]\n'
+        "}\n"
+        "No markdown fences. Return only valid JSON.\n"
+    )
+
+    try:
+        response_text, _ = call_llm_api(prompt)
+        raw = response_text.strip()
+        if raw.startswith('```'):
+            parts = raw.split('```')
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.lower().startswith('json'):
+                raw = raw[4:]
+        brace_start = raw.find('{')
+        brace_end   = raw.rfind('}')
+        if brace_start != -1 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end + 1]
+        result = json.loads(raw.strip())
+        expected = {'taxonomy', 'organism_part', 'host_characteristics',
+                    'experimental_conditions', 'contextual_study'}
+        return {k: v for k, v in result.items() if k in expected}
+    except Exception as e:
+        print(f"[annotate_with_ontologies] WARNING: {e}")
+        return {}
 
 
 async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases=None, limit_context=250000):
@@ -1385,7 +1559,7 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     print("inside the model.query_doc_info")
     outputs, links, accession_found_in_text = {}, [], False
     
-    genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY"))    
+    genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("NEW_GEMINI_API"))
     # Gemini 2.5 Flash-Lite pricing per 1,000 tokens
     PRICE_PER_1K_INPUT_LLM = 0.00010      # $0.10 per 1M input tokens
     PRICE_PER_1K_OUTPUT_LLM = 0.00040     # $0.40 per 1M output tokens

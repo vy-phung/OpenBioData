@@ -73,11 +73,19 @@ def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
     skipped = []
 
     for token in tokens:
+        # Stop early once we've hit the cap — avoids slow NCBI expansion
+        # when the user's remaining quota is small.
+        if len(all_resolved) >= max_samples:
+            log.info("build_pipeline_input: cap=%d reached, skipping remaining tokens", max_samples)
+            break
+
         acc_type = detect_accession_type(token)
         log.info("build_pipeline_input: resolving '%s' (type=%s)", token, acc_type)
 
+        # Pass remaining slots so BioProject expansion doesn't over-fetch
+        remaining_slots = max_samples - len(all_resolved)
         try:
-            resolved = resolve_accessions(token, max_samples=max_samples)
+            resolved = resolve_accessions(token, max_samples=remaining_slots)
         except Exception as e:
             log.warning("build_pipeline_input: resolve_accessions failed for '%s': %s",
                         token, e)
@@ -95,6 +103,8 @@ def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
         #   - the only non-empty field is 'accession' echoing the original input
         # (GenBank accessions with no BioSample are valid and should be kept.)
         for samn_key, entry in resolved.items():
+            if len(all_resolved) >= max_samples:
+                break
             bioproject  = str(entry.get("bioproject",  "") or "").strip()
             biosample   = str(entry.get("biosample",   "") or "").strip()
             experiment  = str(entry.get("experiment",  "") or "").strip()
