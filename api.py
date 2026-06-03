@@ -102,34 +102,34 @@ def _log_analytics(event: str, session_id: str, email: str, properties: dict, us
         (user_agent or "")[:200],
     ])
 
-    # ── UserLog sheet: detailed log for signed-in users only ──────────────────
-    if email:
-        user_log_ws = _open_or_create_worksheet(
-            wb, "UserLog",
-            [
-                "timestamp", "email", "event",
-                "accession_input", "metadata_fields",
-                "sample_count", "duration_sec", "feature_clicked",
-                "has_std_url", "has_context_file",
-                "accession_types", "session_id",
-            ]
-        )
-        p = properties or {}
-        duration_sec = round(p.get("duration_ms", 0) / 1000, 1) if p.get("duration_ms") else ""
-        user_log_ws.append_row([
-            ts,
-            email[:120],
-            event[:60],
-            (p.get("accession_input") or "")[:500],
-            (p.get("metadata_fields") or "")[:300],
-            p.get("sample_count", ""),
-            duration_sec,
-            (p.get("feature") or "")[:80],
-            "yes" if p.get("has_std_url") else ("no" if "has_std_url" in p else ""),
-            "yes" if p.get("has_context_file") else ("no" if "has_context_file" in p else ""),
-            json.dumps(p.get("accession_types") or {}),
-            session_id[:36],
-        ])
+    # ── UserLog sheet: all users (anonymous identified by session_id) ─────────
+    user_log_ws = _open_or_create_worksheet(
+        wb, "UserLog",
+        [
+            "timestamp", "email", "event",
+            "accession_input", "metadata_fields",
+            "sample_count", "duration_sec", "feature_clicked",
+            "has_std_url", "has_context_file",
+            "accession_types", "session_id",
+        ]
+    )
+    p = properties or {}
+    duration_sec = round(p.get("duration_ms", 0) / 1000, 1) if p.get("duration_ms") else ""
+    log_email = email[:120] if email else f"anon:{session_id[:16]}"
+    user_log_ws.append_row([
+        ts,
+        log_email,
+        event[:60],
+        (p.get("accession_input") or "")[:500],
+        (p.get("metadata_fields") or "")[:300],
+        p.get("sample_count", ""),
+        duration_sec,
+        (p.get("feature") or "")[:80],
+        "yes" if p.get("has_std_url") else ("no" if "has_std_url" in p else ""),
+        "yes" if p.get("has_context_file") else ("no" if "has_context_file" in p else ""),
+        json.dumps(p.get("accession_types") or {}),
+        session_id[:36],
+    ])
 
     # ── Users sheet: one row per signup ───────────────────────────────────────
     if event == "signup" and email:
@@ -356,6 +356,7 @@ class AnalyzeRequest(BaseModel):
     sample_limit: Optional[int] = None           # max samples to process this run
     non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
+    email: Optional[str] = ""                    # signed-in user email for usage tracking
 
 
 class ChatMessageRequest(BaseModel):
@@ -831,6 +832,18 @@ async def analyze(req: AnalyzeRequest):
                 },
             )
 
+            # Track per-user usage for signed-in users (fire-and-forget)
+            if req.email and all_rows:
+                sample_ids = [
+                    r.get("biosample_accession") or r.get("genbank_accession") or ""
+                    for r in all_rows
+                ]
+                sample_ids = [s for s in sample_ids if s]
+                if sample_ids:
+                    asyncio.ensure_future(
+                        asyncio.to_thread(_update_user_usage_in_gsheet, req.email, sample_ids)
+                    )
+
         except Exception as exc:
             import traceback, logging
             logging.error("Unhandled pipeline error: %s", traceback.format_exc())
@@ -947,6 +960,122 @@ async def track(req: TrackRequest, request: Request):
     return {"status": "ok"}
 
 
+def _get_user_config_from_gsheet(email: str) -> dict:
+    """Return {permitted_samples, usage_count, samples} for a signed-in user.
+
+    If the user has no row in UserUsage yet, one is created with the global
+    paid_limit as the default permitted_samples.
+    """
+    fallback = {"permitted_samples": 30, "usage_count": 0, "samples": []}
+    if not email:
+        return fallback
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        raw = os.environ.get("GCP_CREDS_JSON", "")
+        if not raw:
+            return fallback
+        creds_dict = json.loads(raw)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        wb = client.open("Report")
+
+        # Read global paid_limit to use as default permitted_samples for new users
+        paid_limit = 30
+        try:
+            cfg_ws = wb.worksheet("Config")
+            for row in cfg_ws.get_all_records():
+                if str(row.get("key", "")).strip() == "paid_limit":
+                    try:
+                        paid_limit = int(row.get("value", 30))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+        ws = _open_or_create_worksheet(
+            wb, "UserUsage",
+            ["email", "usage_count", "permitted_samples", "samples"]
+        )
+        rows = ws.get_all_records()
+        email_lower = email.strip().lower()
+
+        for row in rows:
+            if str(row.get("email", "")).strip().lower() == email_lower:
+                usage_count = int(row.get("usage_count") or 0)
+                permitted = int(row.get("permitted_samples") or paid_limit)
+                samples_str = str(row.get("samples") or "")
+                samples_list = [s.strip() for s in samples_str.split(",") if s.strip()]
+                return {"permitted_samples": permitted, "usage_count": usage_count, "samples": samples_list}
+
+        # New user: create their row with defaults
+        ws.append_row([email.strip(), 0, paid_limit, ""])
+        return {"permitted_samples": paid_limit, "usage_count": 0, "samples": []}
+    except Exception:
+        return fallback
+
+
+def _update_user_usage_in_gsheet(email: str, new_samples: list) -> None:
+    """Increment usage_count and append accession IDs for this user in UserUsage sheet."""
+    if not email or not new_samples:
+        return
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        raw = os.environ.get("GCP_CREDS_JSON", "")
+        if not raw:
+            return
+        creds_dict = json.loads(raw)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        wb = client.open("Report")
+
+        paid_limit = 30
+        try:
+            cfg_ws = wb.worksheet("Config")
+            for cfg_row in cfg_ws.get_all_records():
+                if str(cfg_row.get("key", "")).strip() == "paid_limit":
+                    try:
+                        paid_limit = int(cfg_row.get("value", 30))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+        ws = _open_or_create_worksheet(
+            wb, "UserUsage",
+            ["email", "usage_count", "permitted_samples", "samples"]
+        )
+        rows = ws.get_all_records()
+        email_lower = email.strip().lower()
+
+        for i, row in enumerate(rows, start=2):  # row 1 is the header
+            if str(row.get("email", "")).strip().lower() == email_lower:
+                old_count = int(row.get("usage_count") or 0)
+                old_samples = str(row.get("samples") or "").strip()
+                new_count = old_count + len(new_samples)
+                new_samples_str = ", ".join(new_samples)
+                combined = (old_samples + ", " + new_samples_str) if old_samples else new_samples_str
+                ws.update_cell(i, 2, new_count)
+                ws.update_cell(i, 4, combined)
+                return
+
+        # No existing row — create one
+        ws.append_row([email.strip(), len(new_samples), paid_limit, ", ".join(new_samples)])
+    except Exception:
+        pass  # never crash the pipeline for tracking
+
+
 def _get_config_from_gsheet() -> dict:
     """Read free_limit and paid_limit from the Config sheet in the Report workbook."""
     defaults = {"free_limit": 10, "paid_limit": 30}
@@ -996,6 +1125,19 @@ async def get_config():
     """Return sample limits. Admin can edit these in the Config sheet of the Report workbook."""
     cfg = await asyncio.to_thread(_get_config_from_gsheet)
     return cfg
+
+
+@app.get("/user-config")
+async def get_user_config(email: str = ""):
+    """Return per-user permitted_samples, usage_count, and samples list.
+
+    Signed-in users call this on login. Admin controls permitted_samples
+    by editing the UserUsage sheet in the Report workbook.
+    """
+    if not email:
+        return {"permitted_samples": 30, "usage_count": 0, "samples": []}
+    data = await asyncio.to_thread(_get_user_config_from_gsheet, email)
+    return data
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)

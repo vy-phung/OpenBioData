@@ -728,6 +728,17 @@ async function handleAuth() {
   btn.disabled = false;
   closeAuthPopup();
   updateAuthButton();
+
+  // Fetch per-user limit from server and sync local usage count
+  try {
+    const uc = await fetch('/user-config?email=' + encodeURIComponent(email)).then(r => r.json());
+    if (typeof uc.permitted_samples === 'number') PAID_SAMPLE_LIMIT = uc.permitted_samples;
+    // Sync server-side usage count into localStorage so the counter is accurate
+    if (typeof uc.usage_count === 'number') {
+      localStorage.setItem(_samplesKey(), uc.usage_count);
+    }
+  } catch (_) {}
+
   updateFreeCounter();
   renderHistory();
   // If results are already showing, refresh the download button (removes lock icon after sign-up)
@@ -989,11 +1000,9 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
     has_std_url: !!stdUrl,
     has_context_file: !!ctxFileId,
     is_logged_in: !!user,
-    ...(user ? {
-      accession_input: accText.slice(0, 500),
-      metadata_fields: metaRaw.slice(0, 300),
-      feature: 'analysis_run',
-    } : {}),
+    accession_input: accText.slice(0, 500),
+    metadata_fields: metaRaw.slice(0, 300),
+    feature: 'analysis_run',
   });
 
   analysisStartTime = Date.now();
@@ -1033,6 +1042,7 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
         sample_limit:        sampleLimit,
         run_id:              currentRunId,
         non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
+        email:               getUser()?.email || '',
       }),
       signal: currentAbortController.signal,
     });
@@ -1092,11 +1102,9 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
             sample_count: currentRows.length,
             duration_ms: Date.now() - analysisStartTime,
             has_excel: !!currentExcelPath,
-            ...(_u ? {
-              accession_input: accText.slice(0, 500),
-              metadata_fields: metaRaw.slice(0, 300),
-              feature: 'analysis_run',
-            } : {}),
+            accession_input: accText.slice(0, 500),
+            metadata_fields: metaRaw.slice(0, 300),
+            feature: 'analysis_run',
           });
           addHistory(accText, metaRaw, stdUrl, currentRows.length);
           renderResults(currentRows);
@@ -1559,8 +1567,19 @@ async function loadConfig() {
     const cfg = await resp.json();
     if (typeof cfg.free_limit === 'number') FREE_SAMPLE_LIMIT = cfg.free_limit;
     if (typeof cfg.paid_limit === 'number') PAID_SAMPLE_LIMIT = cfg.paid_limit;
-    updateFreeCounter();
   } catch { /* use hardcoded defaults if server unreachable */ }
+
+  // If already logged in, fetch per-user limit and sync usage count
+  const existingUser = getUser();
+  if (existingUser?.email) {
+    try {
+      const uc = await fetch('/user-config?email=' + encodeURIComponent(existingUser.email)).then(r => r.json());
+      if (typeof uc.permitted_samples === 'number') PAID_SAMPLE_LIMIT = uc.permitted_samples;
+      if (typeof uc.usage_count === 'number') localStorage.setItem(_samplesKey(), uc.usage_count);
+    } catch (_) {}
+  }
+
+  updateFreeCounter();
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
