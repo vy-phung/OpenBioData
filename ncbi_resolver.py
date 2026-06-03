@@ -20,7 +20,11 @@ Output format for every entry:
 
 import re
 import time
+import json as _json
+import os
 import xml.etree.ElementTree as ET
+import urllib.request as _urllib_req
+import urllib.error as _urllib_err
 
 from Bio import Entrez
 
@@ -33,8 +37,12 @@ _NCBI_API_KEY = None   # e.g. 'abc123def456...'
 if _NCBI_API_KEY:
     Entrez.api_key = _NCBI_API_KEY
 
-_SLEEP = 0.15       # seconds between every NCBI API call (raise to 0.4 if rate-limited)
+_SLEEP = 0.35       # seconds between every NCBI API call (safe for 3 req/s unauthenticated limit)
 MAX_SAMPLES = 50    # safety cap for BioProject -> BioSample expansion
+_NCBI_API_KEY = os.environ.get("NCBI_API_KEY") or _NCBI_API_KEY
+if _NCBI_API_KEY:
+    Entrez.api_key = _NCBI_API_KEY
+    _SLEEP = 0.12   # 10 req/s with API key
 
 
 # ── 1. Identifier detection ────────────────────────────────────────────────────
@@ -82,6 +90,73 @@ def _empty_record(accession: str = '') -> dict:
 
 def _safe_sleep():
     time.sleep(_SLEEP)
+
+
+def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0) -> bytes:
+    """HTTP GET with retry on 429/500/503 responses."""
+    delay = base_delay
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            with _urllib_req.urlopen(url, timeout=30) as resp:
+                return resp.read()
+        except _urllib_err.HTTPError as exc:
+            last_exc = exc
+            if exc.code in (429, 500, 503) and attempt < max_retries:
+                print(f'  [NCBI] HTTP {exc.code} — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
+                time.sleep(delay)
+                delay *= 2
+            else:
+                raise
+        except Exception:
+            raise
+    raise last_exc  # type: ignore
+
+
+def _resolve_via_ena(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> dict:
+    """
+    ENA Portal API fallback for European BioProjects (PRJEB prefix) whose
+    samples are NOT linked to NCBI biosample via the [BioProject] field.
+
+    Returns {samea_id: record_dict} keyed by ENA BioSample accession (SAMEA...).
+    Sets bioproject + experiment (ERR run accession) directly from ENA data.
+    Returns {} on any failure.
+    """
+    url = (
+        f'https://www.ebi.ac.uk/ena/portal/api/filereport'
+        f'?accession={bioproject_id}&result=read_run'
+        f'&fields=run_accession,sample_accession'
+        f'&limit={max_samples}&format=json'
+    )
+    try:
+        raw = _urlopen_with_retry(url)
+        _safe_sleep()
+        data = _json.loads(raw.decode('utf-8', errors='replace'))
+    except Exception as exc:
+        print(f'  [ENA] {bioproject_id}: {exc}')
+        return {}
+
+    sample_to_run: dict = {}
+    for rec in data or []:
+        sam = (rec.get('sample_accession') or '').strip()
+        run = (rec.get('run_accession') or '').strip()
+        if sam and sam.startswith('SAM') and sam not in sample_to_run:
+            sample_to_run[sam] = run
+
+    if not sample_to_run:
+        print(f'  [ENA] No samples found for {bioproject_id} via ENA API')
+        return {}
+
+    print(f'  [ENA] Found {len(sample_to_run)} sample(s) for {bioproject_id} via ENA API')
+    result = {}
+    for sam_id, run_id in list(sample_to_run.items())[:max_samples]:
+        result[sam_id] = {
+            'bioproject': bioproject_id,
+            'biosample':  sam_id,
+            'accession':  '',
+            'experiment': run_id,
+        }
+    return result
 
 
 def get_bioproject_from_biosample(biosample_id: str) -> str:
@@ -310,15 +385,13 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
     SAMN accessions from each run's ExpXml summary field.
     Returns a deduplicated list of SAMN accession strings.
     """
-    import urllib.request, json as _json
     samn_ids = []
     seen = set()
     try:
         url = (f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
                f'?db=sra&term={bioproject_id}[bioproject]&retmax={MAX_SAMPLES}'
                f'&retmode=json&email={Entrez.email}')
-        with urllib.request.urlopen(url, timeout=30) as resp:
-            data = _json.loads(resp.read().decode('utf-8', errors='replace'))
+        data = _json.loads(_urlopen_with_retry(url).decode('utf-8', errors='replace'))
         _safe_sleep()
         sra_ids = data['esearchresult']['idlist']
         if not sra_ids:
@@ -328,8 +401,7 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
         # Batch esummary to get ExpXml which contains BioSample accession
         url2 = (f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi'
                 f'?db=sra&id={",".join(sra_ids)}&retmode=json&email={Entrez.email}')
-        with urllib.request.urlopen(url2, timeout=30) as resp2:
-            data2 = _json.loads(resp2.read().decode('utf-8', errors='replace'))
+        data2 = _json.loads(_urlopen_with_retry(url2).decode('utf-8', errors='replace'))
         _safe_sleep()
         for uid, rec in data2.get('result', {}).items():
             if uid == 'uids':
@@ -356,10 +428,11 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
       2. Raw elink bioproject->biosample via Entrez HTTP URL
       3. SRA fallback: esearch SRA with [bioproject] and parse BioSample from
          ExpXml (required for SRA-only projects like metagenomics BioProjects)
+      4. ENA API fallback (for PRJEB projects not mirrored in NCBI biosample DB)
 
     Returns multi-entry dict keyed by BioSample ID (up to max_samples).
     """
-    import urllib.request, urllib.parse
+    import urllib.parse
     print(f'  [BioProject] Resolving {bioproject_id} (cap={max_samples})...')
     biosample_ids = []
 
@@ -403,8 +476,7 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
                 })
                 url = (f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/'
                        f'elink.fcgi?{params}')
-                with urllib.request.urlopen(url, timeout=30) as resp:
-                    raw = resp.read().decode('utf-8', errors='replace')
+                raw = _urlopen_with_retry(url).decode('utf-8', errors='replace')
                 _safe_sleep()
                 # Only extract IDs inside the biosample LinkSetDb block (not SRA or other dbs)
                 bs_uids_raw = []
@@ -454,6 +526,16 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
     if not biosample_ids:
         print(f'  [BioProject] Trying SRA fallback for {bioproject_id}...')
         biosample_ids = _biosample_ids_from_sra(bioproject_id)
+
+    # ── Strategy 4: ENA API fallback (for PRJEB projects not mirrored in NCBI) ──
+    # PRJEB projects have SAMEA samples that may not be linked to [BioProject] in
+    # NCBI's biosample DB. The ENA Portal API always has the authoritative list.
+    if not biosample_ids and bioproject_id.upper().startswith('PRJEB'):
+        print(f'  [BioProject] Trying ENA API fallback for {bioproject_id}...')
+        ena_result = _resolve_via_ena(bioproject_id, max_samples)
+        if ena_result:
+            print(f'  [BioProject] {bioproject_id} -> {len(ena_result)} samples via ENA API')
+            return ena_result
 
     if not biosample_ids:
         print(f'  [BioProject] WARNING: no BioSamples found for {bioproject_id}')

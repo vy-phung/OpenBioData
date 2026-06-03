@@ -143,6 +143,81 @@ def get_project_guidance(database: str) -> str:
     return _PROJECT_GUIDANCE.get(database, _DEFAULT_PROJECT_GUIDANCE)
 
 
+# ── Dataset-level metadata fetch ─────────────────────────────────────────────
+
+def fetch_dataset_metadata(project_id: str, database: str = '') -> str:
+    """
+    Fetch rich dataset-level metadata from the database API and return it as
+    plain text suitable for insertion into the LLM context.
+
+    Currently supports MassIVE via the GNPS ProXI v0.1 endpoint.
+    Returns '' when the fetch fails or the database is unsupported.
+    """
+    if _req is None:
+        return ''
+    db = (database or detect_non_ncbi_database(project_id) or '').upper()
+    if 'MASSIVE' not in db and not project_id.upper().startswith('MSV'):
+        return ''
+
+    msv_id = project_id.upper().split(' | ')[0].strip()
+    url = f"https://gnps.ucsd.edu/ProteoSAFe/proxi/v0.1/datasets/{msv_id}"
+    try:
+        resp = _req.get(url, timeout=15, headers={'User-Agent': 'BioMetadataAudit/1.0',
+                                                   'Accept': 'application/json'})
+        if resp.status_code != 200:
+            return ''
+        data = resp.json()
+    except Exception as exc:
+        print(f"[fetch_dataset_metadata] {url}: {exc}")
+        return ''
+
+    lines = [f"MassIVE Dataset Metadata for {msv_id}:"]
+    if data.get('title'):
+        lines.append(f"  Title: {data['title']}")
+    if data.get('summary'):
+        lines.append(f"  Summary: {data['summary']}")
+
+    species_list = []
+    for sp_group in (data.get('species') or []):
+        name_entry = next((e for e in sp_group if e.get('accession') == 'MS:1001469'), None)
+        taxid_entry = next((e for e in sp_group if e.get('accession') == 'MS:1001467'), None)
+        if name_entry:
+            species_str = name_entry.get('value', '')
+            if taxid_entry:
+                species_str += f" (NCBITaxon:{taxid_entry.get('value', '')})"
+            species_list.append(species_str)
+    if species_list:
+        lines.append(f"  Species: {'; '.join(species_list)}")
+
+    kw_values = [e.get('value', '') for e in (data.get('keywords') or []) if e.get('value')]
+    if kw_values:
+        lines.append(f"  Keywords: {', '.join(kw_values)}")
+
+    instrument_names = [e.get('value') or e.get('name', '') for e in (data.get('instruments') or [])]
+    if instrument_names:
+        lines.append(f"  Instruments: {', '.join(instrument_names)}")
+
+    pub_list = []
+    for ref in (data.get('publications') or []):
+        # Skip "no manuscript" placeholder accessions (e.g. MS:1002853)
+        if ref.get('accession') == 'MS:1002853':
+            continue
+        doi = ref.get('doi') or ''
+        pmid = ref.get('pmid') or ''
+        title_r = ref.get('title', '')
+        entry = title_r
+        if doi:
+            entry += f" (DOI: {doi})"
+        elif pmid:
+            entry += f" (PMID: {pmid})"
+        if entry.strip():
+            pub_list.append(entry.strip())
+    if pub_list:
+        lines.append(f"  Publications: {'; '.join(pub_list)}")
+
+    return '\n'.join(lines)
+
+
 # ── Sub-sample scraping ───────────────────────────────────────────────────────
 
 def _scrape_massive(url: str, msv_id: str, max_samples: int) -> list:

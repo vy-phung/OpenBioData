@@ -173,6 +173,31 @@
   .auth-benefits li{margin-bottom:4px;padding-left:4px}
   .auth-benefits li::before{content:'✓ ';font-weight:700}
 
+  /* ── Feedback modal ── */
+  #feedback-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:300;align-items:flex-end;justify-content:center;padding-bottom:0}
+  #feedback-overlay.open{display:flex}
+  #feedback-modal{background:#fff;border-radius:14px 14px 0 0;padding:28px 28px 24px;width:100%;max-width:560px;box-shadow:0 -6px 36px rgba(0,0,0,.18);position:relative;animation:slideUp .3s ease}
+  @keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}
+  #feedback-modal .fb-close{position:absolute;top:14px;right:16px;background:none;border:none;font-size:20px;cursor:pointer;color:#888;line-height:1}
+  #feedback-modal .fb-close:hover{color:#333}
+  #feedback-modal h3{font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px}
+  #feedback-modal .fb-sub{font-size:12px;color:var(--muted);margin-bottom:18px}
+  .fb-question{margin-bottom:16px}
+  .fb-question label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px}
+  .fb-stars{display:flex;gap:6px;margin-bottom:4px}
+  .fb-star{font-size:22px;cursor:pointer;color:#ddd;transition:color .15s;line-height:1;border:none;background:none;padding:0}
+  .fb-star.active,.fb-star:hover,.fb-star:focus{color:#f5a623}
+  .fb-pill-row{display:flex;flex-wrap:wrap;gap:6px}
+  .fb-pill{border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-size:12px;cursor:pointer;background:#fafcfb;color:var(--muted);transition:background .15s,border-color .15s,color .15s;white-space:nowrap}
+  .fb-pill.selected{background:var(--primary-light);border-color:var(--primary);color:var(--primary-dark);font-weight:600}
+  #fb-freetext{width:100%;border:1px solid var(--border);border-radius:6px;padding:9px;font-size:13px;font-family:inherit;resize:vertical;min-height:64px;margin-top:4px}
+  #fb-freetext:focus{outline:none;border-color:var(--primary)}
+  #fb-actions{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+  #fb-skip{background:#f1f5f3;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:7px 16px;font-size:13px;font-weight:600;cursor:pointer}
+  #fb-submit{background:var(--primary);border:none;color:#fff;border-radius:6px;padding:7px 20px;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s}
+  #fb-submit:hover{background:var(--primary-dark)}
+  #fb-submit:disabled{opacity:.55;cursor:not-allowed}
+  #fb-status{font-size:12px;color:var(--muted);margin-top:6px;text-align:right;min-height:16px}
   /* ── Context file upload ── */
   #ctx-dropzone{border:2px dashed var(--border);border-radius:7px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;color:var(--muted);font-size:13px;line-height:1.6;background:#fafcfb}
   #ctx-dropzone:hover,#ctx-dropzone.ctx-dragover{border-color:var(--primary);background:var(--primary-light);color:var(--primary-dark)}
@@ -359,6 +384,59 @@
   </div>
 </div>
 
+<!-- Feedback modal (slides up from bottom after analysis) -->
+<div id="feedback-overlay">
+  <div id="feedback-modal">
+    <button class="fb-close" onclick="closeFeedback()">×</button>
+    <h3>How did it go? 🎉</h3>
+    <p class="fb-sub">Your results are ready — quick 30-second feedback helps us improve.</p>
+
+    <div class="fb-question">
+      <label>How impactful are these results for your research?</label>
+      <div class="fb-stars" id="fb-impact-stars">
+        <button class="fb-star" data-val="1" onclick="setStars('fb-impact-stars',1)" aria-label="1 star">★</button>
+        <button class="fb-star" data-val="2" onclick="setStars('fb-impact-stars',2)" aria-label="2 stars">★</button>
+        <button class="fb-star" data-val="3" onclick="setStars('fb-impact-stars',3)" aria-label="3 stars">★</button>
+        <button class="fb-star" data-val="4" onclick="setStars('fb-impact-stars',4)" aria-label="4 stars">★</button>
+        <button class="fb-star" data-val="5" onclick="setStars('fb-impact-stars',5)" aria-label="5 stars">★</button>
+      </div>
+    </div>
+
+    <div class="fb-question">
+      <label>What's your next step after these results?</label>
+      <div class="fb-pill-row" id="fb-next-step">
+        <button class="fb-pill" onclick="togglePill(this)">Download &amp; share with team</button>
+        <button class="fb-pill" onclick="togglePill(this)">Run more samples</button>
+        <button class="fb-pill" onclick="togglePill(this)">Manual curation check</button>
+        <button class="fb-pill" onclick="togglePill(this)">Add to a publication</button>
+        <button class="fb-pill" onclick="togglePill(this)">Feed into bioinformatics pipeline</button>
+        <button class="fb-pill" onclick="togglePill(this)">Just exploring</button>
+      </div>
+    </div>
+
+    <div class="fb-question">
+      <label>How high is the priority of this tool in your workflow?</label>
+      <div class="fb-pill-row" id="fb-priority">
+        <button class="fb-pill" onclick="selectPill('fb-priority',this)">Critical — I need this weekly</button>
+        <button class="fb-pill" onclick="selectPill('fb-priority',this)">High — saves me hours</button>
+        <button class="fb-pill" onclick="selectPill('fb-priority',this)">Medium — nice to have</button>
+        <button class="fb-pill" onclick="selectPill('fb-priority',this)">Just evaluating</button>
+      </div>
+    </div>
+
+    <div class="fb-question">
+      <label>Any feature requests or questions? (optional)</label>
+      <textarea id="fb-freetext" placeholder="e.g. I wish it could also extract sequencing depth, or: Can it handle VCF files?"></textarea>
+    </div>
+
+    <div id="fb-status"></div>
+    <div id="fb-actions">
+      <button id="fb-skip" onclick="closeFeedback()">Skip</button>
+      <button id="fb-submit" onclick="submitFeedback()">Send feedback</button>
+    </div>
+  </div>
+</div>
+
 <!-- Auth / Signup modal -->
 <div id="auth-overlay">
   <div id="auth-modal">
@@ -374,6 +452,7 @@
       <li>20 samples per run (vs 10 free)</li>
       <li>Download biosample_metadata.xlsx</li>
       <li>Search history saved in your workspace</li>
+      <li>Rerun past analyses for free — history items never count twice</li>
       <li>Share workspace with collaborators</li>
     </ul>
 
@@ -399,10 +478,10 @@
 </div>
 
 <script>
-// ── Constants ────────────────────────────────────────────────────────────────
-const FREE_SAMPLE_LIMIT  = 10;
-const PAID_SAMPLE_LIMIT  = 30;  // after signup
-const MAX_SAMPLES        = 50;  // hard cap per run (matches api.py MAX_SAMPLES)
+// ── Constants (overridden by /config on load) ─────────────────────────────────
+let FREE_SAMPLE_LIMIT  = 10;
+let PAID_SAMPLE_LIMIT  = 30;  // after signup
+const MAX_SAMPLES      = 50;  // hard cap per run (matches api.py MAX_SAMPLES)
 
 // ── Session tracking ─────────────────────────────────────────────────────────
 const SESSION_ID = (() => {
@@ -438,6 +517,7 @@ let currentAbortController = null;
 let currentRunId          = null;   // backend run_id for cancellation
 let partialRows           = [];
 let analysisStartTime     = 0;
+let _lastRestoredAcc      = null;   // set when user clicks a history item; cleared on run
 
 // ── Non-NCBI accession detection ─────────────────────────────────────────────
 const NON_NCBI_PATTERNS = [
@@ -535,8 +615,13 @@ function getUser()   { try { return JSON.parse(localStorage.getItem('bma_user') 
 function setUser(u)  { localStorage.setItem('bma_user', JSON.stringify(u)); }
 function clearUser() { localStorage.removeItem('bma_user'); }
 
-function getSamplesUsed() { return parseInt(localStorage.getItem('bma_samples_used') || '0', 10); }
-function addSamplesUsed(n){ localStorage.setItem('bma_samples_used', getSamplesUsed() + n); }
+// Per-user counter: each email gets its own key so switching accounts resets the count
+function _samplesKey() {
+  const u = getUser();
+  return u ? `bma_samples_used_${u.email}` : 'bma_samples_used';
+}
+function getSamplesUsed() { return parseInt(localStorage.getItem(_samplesKey()) || '0', 10); }
+function addSamplesUsed(n){ localStorage.setItem(_samplesKey(), getSamplesUsed() + n); }
 
 function getLimit()  { return getUser() ? PAID_SAMPLE_LIMIT : FREE_SAMPLE_LIMIT; }
 
@@ -609,8 +694,8 @@ function setAuthMode(mode) {
   const isSignup = mode === 'signup';
   document.getElementById('auth-title').textContent       = isSignup ? 'Create your free account' : 'Welcome back';
   document.getElementById('auth-subtitle').innerHTML      = isSignup
-    ? 'You\'re using BioMetadataAudit free tier.<br>Sign up to unlock <strong>20 more samples per run</strong> and <strong>download Excel files</strong>.'
-    : 'Log in to access your workspace and full sample quota.';
+    ? 'You\'re using BioMetadataAudit free tier.<br>Sign up to unlock <strong>20 more samples per run</strong>, <strong>download Excel files</strong>, and <strong>rerun history analyses for free</strong>.'
+    : 'Log in to access your workspace, full sample quota, and free history reruns.';
   document.getElementById('auth-name-field').style.display = isSignup ? 'block' : 'none';
   document.getElementById('auth-submit-btn').textContent  = isSignup ? 'Create free account' : 'Log in';
   document.getElementById('auth-mode-switch').innerHTML   = isSignup
@@ -645,6 +730,8 @@ async function handleAuth() {
   updateAuthButton();
   updateFreeCounter();
   renderHistory();
+  // If results are already showing, refresh the download button (removes lock icon after sign-up)
+  if (currentRows.length) renderResults(currentRows);
 
   // Flash success
   const counter = document.getElementById('free-counter');
@@ -693,6 +780,7 @@ function restoreHistory(i) {
   document.getElementById('acc-input').value   = item.acc;
   document.getElementById('meta-fields').value = item.fields || '';
   document.getElementById('std-url').value     = item.url   || '';
+  _lastRestoredAcc = item.acc;  // mark as history re-run so samples won't be counted
   track('feature_click', { feature: 'restore_history', accession_input: item.acc.slice(0, 100) });
 }
 function shareWorkspace() {
@@ -838,7 +926,15 @@ async function runAnalysis() {
   const used   = getSamplesUsed();
   const limit  = getLimit();
 
-  if (used >= limit) {
+  // History re-runs don't count toward the limit and are never blocked.
+  // For logged-in users: any accession already in their history is a free re-run.
+  let isHistoryRerun = (accText === _lastRestoredAcc);
+  _lastRestoredAcc = null;
+  if (!isHistoryRerun && getUser()) {
+    isHistoryRerun = getHistory().some(h => h.acc.trim() === accText.trim());
+  }
+
+  if (!isHistoryRerun && used >= limit) {
     track('free_limit_hit', { samples_used: used, limit });
     showAuthPopup(getUser() ? 'login' : 'signup', 'free_limit');
     document.getElementById('auth-subtitle').innerHTML =
@@ -857,18 +953,19 @@ async function runAnalysis() {
   if (nonNcbiTokens.length > 0) {
     showNonNcbiDialog(nonNcbiTokens, (resolvedInfo) => {
       _nonNcbiResolved = resolvedInfo;
-      _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit);
+      _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun);
     });
     return;
   }
 
   _nonNcbiResolved = {};
-  _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit);
+  _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun);
 }
 
-async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
+async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun = false) {
   const metaFields = metaRaw ? metaRaw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean) : null;
-  const remaining  = limit - used;   // how many samples this session can still process
+  // History re-runs don't consume quota — allow up to MAX_SAMPLES
+  const remaining  = isHistoryRerun ? MAX_SAMPLES : (limit - used);
   const sampleLimit = Math.min(remaining, MAX_SAMPLES);
 
   // Classify accession types for analytics without logging raw IDs
@@ -975,6 +1072,11 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
         } else if (evt.type === 'partial_result') {
           const newRows = evt.rows || [];
           partialRows.push(...newRows);
+          // Count each sample as it completes so stops/errors are still tracked
+          if (!isHistoryRerun && newRows.length > 0) {
+            addSamplesUsed(newRows.length);
+            updateFreeCounter();
+          }
           // Show results card immediately as samples complete
           currentRows = [...partialRows];
           document.getElementById('results-card').style.display = 'block';
@@ -997,9 +1099,9 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
             } : {}),
           });
           addHistory(accText, metaRaw, stdUrl, currentRows.length);
-          addSamplesUsed(currentRows.length);
-          updateFreeCounter();
           renderResults(currentRows);
+          _fbState.shown = false;
+          setTimeout(openFeedback, 2500);
         } else if (evt.type === 'error') {
           track('analysis_error', { message: (evt.message || '').slice(0, 120) });
         }
@@ -1015,8 +1117,6 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
         currentRows      = partialRows;
         currentExcelPath = '';
         addHistory(accText, metaRaw, stdUrl, partialRows.length);
-        addSamplesUsed(partialRows.length);
-        updateFreeCounter();
         renderResults(partialRows);
       } else {
         logLine('No samples were completed before stopping.');
@@ -1039,19 +1139,51 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit) {
 
 // ── Download handler (gated behind signup) ────────────────────────────────────
 function handleDownload() {
-  if (!currentExcelPath) return;
   if (!getUser()) {
     showAuthPopup('signup', 'download_gate');
     document.getElementById('auth-subtitle').innerHTML =
       'Sign up to <strong>download your results as Excel</strong> and unlock 20 samples per run.';
     return;
   }
-  const url = '/download-excel?path=' + encodeURIComponent(currentExcelPath);
-  track('download', { sample_count: currentRows.length });
-  const a   = document.createElement('a');
-  a.href     = url;
-  a.download = 'biosample_metadata.xlsx';
-  a.click();
+  if (!currentRows.length) return;
+  if (currentExcelPath) {
+    // Server already generated the file during the run — direct download
+    track('download', { sample_count: currentRows.length });
+    const a   = document.createElement('a');
+    a.href     = '/download-excel?path=' + encodeURIComponent(currentExcelPath);
+    a.download = 'biosample_metadata.xlsx';
+    a.click();
+  } else {
+    // No pre-built file (e.g. run was stopped) — generate on demand from current rows
+    _generateAndDownload();
+  }
+}
+
+async function _generateAndDownload() {
+  const dlBtn = document.getElementById('download-btn');
+  const origText = dlBtn.textContent;
+  dlBtn.textContent = '⏳ Generating…';
+  dlBtn.disabled = true;
+  try {
+    const resp = await fetch('/generate-excel', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ rows: currentRows }),
+    });
+    if (!resp.ok) { alert('Could not generate Excel (server error ' + resp.status + ')'); return; }
+    const data = await resp.json();
+    currentExcelPath = data.path;
+    track('download', { sample_count: currentRows.length });
+    const a   = document.createElement('a');
+    a.href     = '/download-excel?path=' + encodeURIComponent(currentExcelPath);
+    a.download = 'biosample_metadata.xlsx';
+    a.click();
+  } catch (err) {
+    alert('Could not generate Excel: ' + err.message);
+  } finally {
+    dlBtn.textContent = origText;
+    dlBtn.disabled = false;
+  }
 }
 
 // ── Results rendering ─────────────────────────────────────────────────────────
@@ -1085,8 +1217,8 @@ function renderResults(rows) {
 
   const dlBtn      = document.getElementById('download-btn');
   const lockNote   = document.getElementById('download-lock-note');
-  if (currentExcelPath) {
-    dlBtn.disabled       = false;
+  if (rows.length > 0) {
+    dlBtn.disabled         = false;
     lockNote.style.display = getUser() ? 'none' : 'inline';
   }
 }
@@ -1350,6 +1482,68 @@ function resetChat() {
   initChat();
 }
 
+// ── Feedback modal ────────────────────────────────────────────────────────────
+const _fbState = { impact: 0, nextSteps: [], priority: '', freetext: '', shown: false };
+
+function openFeedback() {
+  if (_fbState.shown) return;
+  _fbState.shown = true;
+  document.getElementById('feedback-overlay').classList.add('open');
+}
+
+function closeFeedback() {
+  document.getElementById('feedback-overlay').classList.remove('open');
+  track('feedback_skipped', { impact: _fbState.impact, priority: _fbState.priority });
+}
+
+function setStars(containerId, val) {
+  _fbState.impact = val;
+  const stars = document.querySelectorAll(`#${containerId} .fb-star`);
+  stars.forEach(s => s.classList.toggle('active', Number(s.dataset.val) <= val));
+}
+
+function togglePill(el) {
+  el.classList.toggle('selected');
+  const label = el.textContent.trim();
+  if (el.classList.contains('selected')) {
+    if (!_fbState.nextSteps.includes(label)) _fbState.nextSteps.push(label);
+  } else {
+    _fbState.nextSteps = _fbState.nextSteps.filter(s => s !== label);
+  }
+}
+
+function selectPill(containerId, el) {
+  document.querySelectorAll(`#${containerId} .fb-pill`).forEach(p => p.classList.remove('selected'));
+  el.classList.add('selected');
+  _fbState.priority = el.textContent.trim();
+}
+
+async function submitFeedback() {
+  _fbState.freetext = document.getElementById('fb-freetext').value.trim();
+  document.getElementById('fb-submit').disabled = true;
+  document.getElementById('fb-status').textContent = 'Sending…';
+  try {
+    await fetch('/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        impact: _fbState.impact,
+        next_steps: _fbState.nextSteps,
+        priority: _fbState.priority,
+        freetext: _fbState.freetext,
+        sample_count: currentRows.length,
+        email: getUser() || '',
+      }),
+    });
+    track('feedback_submitted', { impact: _fbState.impact, priority: _fbState.priority });
+    document.getElementById('fb-status').textContent = '✅ Thank you! Your feedback shapes our roadmap.';
+    setTimeout(closeFeedback, 1800);
+  } catch {
+    document.getElementById('fb-status').textContent = '❌ Could not send — thank you anyway!';
+    setTimeout(closeFeedback, 1800);
+  }
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 function escHtml(str) {
   return String(str)
@@ -1357,11 +1551,24 @@ function escHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ── Config (load limits from Google Drive Config sheet) ───────────────────────
+async function loadConfig() {
+  try {
+    const resp = await fetch('/config');
+    if (!resp.ok) return;
+    const cfg = await resp.json();
+    if (typeof cfg.free_limit === 'number') FREE_SAMPLE_LIMIT = cfg.free_limit;
+    if (typeof cfg.paid_limit === 'number') PAID_SAMPLE_LIMIT = cfg.paid_limit;
+    updateFreeCounter();
+  } catch { /* use hardcoded defaults if server unreachable */ }
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 updateAuthButton();
 updateFreeCounter();
 renderHistory();
 tryRestoreShared();
+loadConfig();
 track('page_load', {
   referrer_domain: document.referrer ? new URL(document.referrer).hostname : '',
   is_mobile: /Mobi|Android/i.test(navigator.userAgent),

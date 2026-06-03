@@ -768,4 +768,117 @@ def get_doi_via_europepmc(pmid):
     if not results:
         return None
     return results[0].get('doi')
+
+
+def fetch_ena_study_text(study_id: str) -> str:
+    """
+    Fetch ENA study/project metadata as plain text.
+    Works for PRJEB, ERP, and secondary study accessions.
+    Returns a text block suitable for adding to source_texts.
+    Returns '' on any failure.
+    """
+    if not study_id:
+        return ''
+
+    headers = {'User-Agent': 'BioMetadataAudit/1.0 (mailto:vyphung1901@gmail.com)'}
+    lines = []
+
+    # Primary: ENA browser XML (PROJECT_SET format used by PRJEB/ERP)
+    try:
+        r = requests.get(
+            f'https://www.ebi.ac.uk/ena/browser/api/xml/{study_id}',
+            headers=headers,
+            timeout=15,
+        )
+        if r.status_code == 200 and r.text.strip():
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(r.text)
+            # Handle both STUDY_SET (ERP) and PROJECT_SET (PRJEB) structures
+            project = root.find('.//PROJECT') or root.find('.//STUDY')
+            if project is not None:
+                center = project.get('center_name', '')
+                if center:
+                    lines.append(f"ENA Study: {study_id} (Center: {center})")
+                else:
+                    lines.append(f"ENA Study: {study_id}")
+                # Title
+                title_el = (root.find('.//TITLE') or root.find('.//NAME'))
+                if title_el is not None and title_el.text:
+                    lines.append(f"  Title: {title_el.text.strip()}")
+                # Description / abstract
+                desc_el = (root.find('.//DESCRIPTION') or root.find('.//STUDY_ABSTRACT'))
+                if desc_el is not None and desc_el.text:
+                    lines.append(f"  Description: {desc_el.text.strip()}")
+                # Linked publications
+                for xref in root.findall('.//XREF_LINK'):
+                    db = xref.findtext('DB', '')
+                    id_ = xref.findtext('ID', '')
+                    if db.upper() in ('PUBMED', 'PMID') and id_:
+                        lines.append(f"  PubMed: {id_}")
+                # Related accessions (ERP secondary ID)
+                for sec in root.findall('.//SECONDARY_ID'):
+                    if sec.text:
+                        lines.append(f"  Secondary ID: {sec.text.strip()}")
+    except Exception as exc:
+        print(f"[fetch_ena_study_text] XML fetch failed for {study_id}: {exc}")
+
+    # Secondary: ENA Portal API (returns tabular JSON)
+    if not lines:
+        try:
+            r2 = requests.get(
+                'https://www.ebi.ac.uk/ena/portal/api/search',
+                params={
+                    'query': f'study_accession="{study_id}"',
+                    'result': 'study',
+                    'fields': 'study_title,study_description,scientific_name,center_name,first_public',
+                    'format': 'json',
+                },
+                headers=headers,
+                timeout=15,
+            )
+            if r2.status_code == 200 and r2.text.strip() not in ('', '[]'):
+                rows = r2.json()
+                if rows:
+                    row = rows[0]
+                    lines.append(f"ENA Study: {study_id}")
+                    for field in ('study_title', 'study_description', 'scientific_name', 'center_name', 'first_public'):
+                        val = row.get(field, '')
+                        if val:
+                            lines.append(f"  {field}: {val}")
+        except Exception as exc:
+            print(f"[fetch_ena_study_text] portal API failed for {study_id}: {exc}")
+
+    return '\n'.join(lines) if lines else ''
+
+
+def fetch_ena_biosample_text(biosample_id: str) -> str:
+    """
+    Convert a fetched ENA BioSample JSON dict to a flat text block.
+    Falls back to the existing fetch_ena_biosample_metadata function.
+    Returns '' on failure.
+    """
+    try:
+        data = fetch_ena_biosample_metadata(biosample_id)
+        if not data or isinstance(data, str):
+            return str(data) if data else ''
+        lines = [f"ENA BioSample: {biosample_id}"]
+        if data.get('name'):
+            lines.append(f"  Name: {data['name']}")
+        if data.get('taxId'):
+            lines.append(f"  TaxID: {data['taxId']}")
+        characteristics = data.get('characteristics', {})
+        for field, values in characteristics.items():
+            if values and isinstance(values, list):
+                text_vals = [v.get('text', '') for v in values if isinstance(v, dict) and v.get('text')]
+                if text_vals:
+                    lines.append(f"  {field}: {'; '.join(text_vals)}")
+        ext_refs = data.get('externalReferences', [])
+        for ref in ext_refs:
+            url = ref.get('url', '')
+            if url:
+                lines.append(f"  External reference: {url}")
+        return '\n'.join(lines)
+    except Exception as exc:
+        print(f"[fetch_ena_biosample_text] {biosample_id}: {exc}")
+        return ''
       

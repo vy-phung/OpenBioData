@@ -240,7 +240,12 @@ async def fetch_all(links, timeout=15):
 
 async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts, all_output):
     print(link)
-    if len(data_preprocess.normalize_for_overlap(all_output)) > 600000:
+    # Guard: if data_preprocess is unavailable, skip link processing gracefully
+    if data_preprocess is None:
+        print(f"[process_link_allOutput] data_preprocess not available — skipping {link}")
+        return str(all_output) if all_output else ""
+
+    if len(data_preprocess.normalize_for_overlap(str(all_output))) > 600000:
         print("break here")
         return all_output   # nothing more for this link
 
@@ -250,6 +255,8 @@ async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts,
     if linksWithTexts and link in linksWithTexts and linksWithTexts[link]!="":
         print("yeah art_text available")
         text_link = linksWithTexts[link]
+        if isinstance(text_link, dict):
+            text_link = text_link.get("all_output", "") or str(text_link)
     else:
         try:
             print("start preprocess and extract text")
@@ -263,19 +270,16 @@ async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts,
             asyncio.to_thread(data_preprocess.extract_table, link, saveLinkFolder),
             timeout=10
         )
-        print("this is len of table link: ", len(str(table_links)))
+        print("this is len of table link: ", len(str(tables_link)))
     except Exception:
         tables_link = []
 
     # --- merge ---
     try:
         print("just merge text and tables")
-        print("len of text link before mergin: ", len(text_link))
-        print("len of table link before merge: ", len(", ".join(tables_link)))
-        try:
-          final_input_link = text_link + ", ".join(tables_link)
-        except:  
-          final_input_link = str(text_link) + str(tables_link)
+        text_link_str = str(text_link) if text_link else ""
+        tables_str = ", ".join(str(t) for t in tables_link) if tables_link else ""
+        final_input_link = text_link_str + tables_str
     except Exception:
         print("no succeed here in preprocess docu")
         final_input_link = ""
@@ -285,6 +289,7 @@ async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts,
         if len(final_input_link) > 1000000:
             final_input_link = final_input_link[:1000000]
 
+    all_output = str(all_output) if all_output else ""
     all_output += data_preprocess.normalize_for_overlap(all_output) + final_input_link
 
     return all_output

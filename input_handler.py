@@ -153,8 +153,14 @@ def get_pipeline_accession(entry: dict, fallback: str = "") -> str:
 
     if accession:
         return accession
-    if experiment:
+    # ERR/ERX are ENA-specific run IDs that NCBI cannot look up.
+    # For those entries, prefer the SAMEA biosample (EBI can fetch it);
+    # for NCBI SRR/SRX runs, experiment is still preferred (more metadata).
+    _is_ena_run = experiment.upper().startswith(("ERR", "ERX", "ERS"))
+    if experiment and not _is_ena_run:
         return experiment
     if biosample:
         return biosample
+    if experiment:
+        return experiment
     return fallback or str(entry.get("bioproject", "") or "").strip()

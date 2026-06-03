@@ -291,70 +291,108 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       else:
         await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
 
-      # get the data from the links of NCBI
+      # ── Step 1: Fetch data from the sample's primary database ────────────────
+      # Each sub-step is wrapped so one failure does not block the others.
       ncbi_texts, ncbi_text_links = {}, {}
       if not _is_non_ncbi and NCBI is not None:
-        ncbi_texts = NCBI.extract_NCBI_directly(acc)
-      """accessions = {"OL757400": {"bioproject":"PRJNA783802",
-                        "biosample": "SAMN23469632",
-                        "accession": "OL757400",
-                        "experiment":"SRR17084312"},}"""
+        try:
+          ncbi_texts = NCBI.extract_NCBI_directly(acc)
+        except Exception as _e:
+          print(f"[DB fetch] direct NCBI fetch for {acc} failed: {_e}")
+
       if not _is_non_ncbi and accessions[acc].get("bioproject"):
         bioproject_id = accessions[acc]["bioproject"]
         print("get bioproject from acc input: ", bioproject_id)
 
-      if not _is_non_ncbi:
+      if not _is_non_ncbi and NCBI is not None:
         for ncbi_source in accessions[acc]:
-          if ncbi_source == "bioproject" and accessions[acc].get("bioproject"):
-            if not bioproject_info:
-              print("get bioproject info")
-              bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
-              acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-            else:
-              if bioproject_id not in bioproject_info:
+          try:
+            if ncbi_source == "bioproject" and accessions[acc].get("bioproject"):
+              if not bioproject_info:
+                print("get bioproject info")
                 bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
+              else:
+                if bioproject_id not in bioproject_info:
+                  bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
+              if bioproject_id in (bioproject_info or {}):
                 acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-              else: acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
-            # check or get pubmed from bioproject
-            if not pubmeds:
-              print("inside pubmed getting and bioproject: ", bioproject_id)
-              pubmeds = acc_score["source_texts"]["NCBI_bioproject"][bioproject_id]["pubmed"]
-          elif ncbi_source == "biosample" and accessions[acc].get("biosample"):
-            biosample_id = accessions[acc]["biosample"]
-            ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
-            acc_score["source_texts"]["NCBI_biosample"] = ncbi_texts
-          elif ncbi_source == "accession" and accessions[acc].get("accession"):
-            accession_id = accessions[acc]["accession"]
-            ncbi_texts = NCBI.extract_NCBI_directly(accession_id)
-            acc_score["source_texts"]["NCBI_accession"] = ncbi_texts
-            if not pubmeds:
-              pubmed = acc_score["source_texts"]["NCBI_accession"][accession_id]["pubmed_id"]
-              if pubmed:
-                pubmeds.append(pubmed)
-              doi = acc_score["source_texts"]["NCBI_accession"][accession_id]["doi"]
-          elif ncbi_source == "experiment" and accessions[acc].get("experiment"):
-            experiment_id = accessions[acc]["experiment"]
-            ncbi_texts = NCBI.extract_NCBI_directly(experiment_id)
-            acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
+                if not pubmeds:
+                  pubmeds = list(acc_score["source_texts"]["NCBI_bioproject"][bioproject_id].get("pubmed", []) or [])
+            elif ncbi_source == "biosample" and accessions[acc].get("biosample"):
+              biosample_id = accessions[acc]["biosample"]
+              ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
+              acc_score["source_texts"]["NCBI_biosample"] = ncbi_texts
+            elif ncbi_source == "accession" and accessions[acc].get("accession"):
+              accession_id = accessions[acc]["accession"]
+              ncbi_texts = NCBI.extract_NCBI_directly(accession_id)
+              acc_score["source_texts"]["NCBI_accession"] = ncbi_texts
+              if not pubmeds:
+                _acc_data = (ncbi_texts or {}).get(accession_id, {})
+                if isinstance(_acc_data, dict):
+                  pubmed = _acc_data.get("pubmed_id", "")
+                  if pubmed:
+                    pubmeds.append(pubmed)
+                  doi = _acc_data.get("doi", "") or doi
+            elif ncbi_source == "experiment" and accessions[acc].get("experiment"):
+              experiment_id = accessions[acc]["experiment"]
+              ncbi_texts = NCBI.extract_NCBI_directly(experiment_id)
+              acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
+          except Exception as _e:
+            print(f"[DB fetch] {ncbi_source} fetch failed for {acc}: {_e}")
+
+      # ── Step 1b: ENA-specific fetch for PRJEB/SAMEA samples ─────────────────
+      # Fetch study-level and biosample-level metadata directly from EBI APIs.
+      # This runs independently so database unavailability does not stop the pipeline.
+      _biosample_id = accessions[acc].get("biosample", "")
+      _bp_id = accessions[acc].get("bioproject", "") if not _is_non_ncbi else ""
+      if not _is_non_ncbi and NCBI is not None:
+        if _biosample_id.upper().startswith("SAMEA") or _biosample_id.upper().startswith("SAME"):
+          try:
+            _ena_bs_text = NCBI.fetch_ena_biosample_text(_biosample_id)
+            if _ena_bs_text:
+              acc_score["source_texts"][f"ENA_biosample_{_biosample_id}"] = _ena_bs_text
+              acc_score["signals"]["in_NCBI"] = True
+              print(f"[ENA] Fetched biosample text for {_biosample_id} ({len(_ena_bs_text)} chars)")
+          except Exception as _e:
+            print(f"[ENA] biosample fetch failed for {_biosample_id}: {_e}")
+
+        if _bp_id and _bp_id.upper().startswith("PRJEB"):
+          try:
+            _ena_study_text = NCBI.fetch_ena_study_text(_bp_id)
+            if _ena_study_text:
+              acc_score["source_texts"][f"ENA_study_{_bp_id}"] = _ena_study_text
+              acc_score["signals"]["in_NCBI"] = True
+              print(f"[ENA] Fetched study text for {_bp_id} ({len(_ena_study_text)} chars)")
+          except Exception as _e:
+            print(f"[ENA] study fetch failed for {_bp_id}: {_e}")
 
       if acc_score["source_texts"]:
         source_kws = list(acc_score["source_texts"].keys())
         for s in source_kws:
-          if "NCBI" in s:
+          if "NCBI" in s or "ENA" in s:
             acc_score["signals"]["in_NCBI"] = True
             break
-      print("source text after ncbi: ", acc_score["source_texts"])
+      print("source text after ncbi: ", list(acc_score["source_texts"].keys()))
       # set up step: create the folder to save document
       # firstly get the doi url from pubmed id which is from bioproject
       if pubmeds:
         id_folder = "_".join(pubmeds)
+        acc_score["signals"]["has_pubmed"] = True
+        # Use pre-resolved pubmed_dois from bioproject data when available (avoids redundant API calls)
+        _bp_data = (acc_score.get("source_texts", {})
+                    .get("NCBI_bioproject", {})
+                    .get(bioproject_id, {}))
+        _bp_doi_map = {d["pmid"]: d["doi"] for d in _bp_data.get("pubmed_dois", [])}
+        _seen_doi_urls = set(links)
         for pubID in pubmeds:
-          id = str(pubID)
-          # save in signals that pubmed exists
-          acc_score["signals"]["has_pubmed"] = True
-          if not doi:
-            doi = NCBI.get_doi_via_europepmc(id)
-          links.append('https://doi.org/' + doi)
+          pub_doi = _bp_doi_map.get(str(pubID)) or NCBI.get_doi_via_europepmc(str(pubID))
+          if pub_doi:
+            doi_url = 'https://doi.org/' + pub_doi
+            if doi_url not in _seen_doi_urls:
+              _seen_doi_urls.add(doi_url)
+              links.append(doi_url)
+            if not doi:
+              doi = pub_doi
       else:
         id_folder = "DirectSubmission"
 
@@ -381,95 +419,96 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       if other_links: links += other_links
       all_links = copy.deepcopy(links)
       print("all_links: ", all_links)
+      # ── Step 2: Fetch text from DOI/publication links ─────────────────────────
+      # Each DOI is processed independently; any failure skips that link.
       if links:
-        for link in links: # this includes the doi, other links parameter, sup_links from doi
-          if 'https://doi.org/' in link: # check doi first
-            # get the file to create listOfFile for each id
+        for link in links:
+          if 'https://doi.org/' in link:
             print("link of doi: ", link)
-            if extractHTML is None:
-                continue  # HTML extractor unavailable (lightweight deploy) — skip this link
-            html = extractHTML.HTML(htmlContent=None, htmlLink=link, htmlFile="")
-            jsonSM = html.getSupMaterial()
-            article_text = await html.async_getListSection() # html.getListSection()
-            if len(article_text) == 0:
-              # try crossAPI
-              metadata_text = html.fetch_crossref_metadata(link)
-              if metadata_text:
-                print(f"✅ CrossRef metadata fetched for {link}")
-                other_explain = "Because full-text is restricted by the publisher, our system uses abstracts and metadata to remain compliant while still supporting exploratory analysis, search, and literature linking."
-                article_text = html.mergeTextInJson(metadata_text)
-              # also try searching pubmed with the title and extract abstract and add to article text
-              # Step 1: Search for the paper
-              print("search the paper's abstract on pubmed")
-              try:
-                #handle = Entrez.esearch(db="pubmed", term=doi, retmax=1)
-                handle = Entrez.esearch(db="pubmed", term=f"{doi}[doi]", retmax=1)
-                record = Entrez.read(handle)
-                id_list = record.get("IdList", [])
-
-                if not id_list:
-                    print("No PubMed results found.")
-                else:
+            try:
+              if extractHTML is None:
+                continue  # HTML extractor unavailable — skip
+              html = extractHTML.HTML(htmlContent=None, htmlLink=link, htmlFile="")
+              jsonSM = html.getSupMaterial()
+              article_text = await html.async_getListSection()
+              if len(article_text) == 0:
+                metadata_text = html.fetch_crossref_metadata(link)
+                if metadata_text:
+                  print(f"✅ CrossRef metadata fetched for {link}")
+                  article_text = html.mergeTextInJson(metadata_text)
+                # Try PubMed abstract
+                print("search the paper's abstract on pubmed")
+                _link_doi = link.replace('https://doi.org/', '') if 'https://doi.org/' in link else doi
+                try:
+                  handle = Entrez.esearch(db="pubmed", term=f"{_link_doi}[doi]", retmax=1)
+                  record = Entrez.read(handle)
+                  id_list = record.get("IdList", [])
+                  if id_list:
                     pubmed_id = id_list[0]
                     fetch_handle = Entrez.efetch(db="pubmed", id=pubmed_id, rettype="xml", retmode="xml")
                     fetch_record = Entrez.read(fetch_handle)
-
-                    # Safe extraction
                     article = fetch_record.get("PubmedArticle", [])
-                    if not article:
-                        print("No PubmedArticle entry returned.")
-                    else:
-                        article = article[0]  # the real payload
-                        try:
-                            abstract_sections = (
-                                article["MedlineCitation"]["Article"]
-                                .get("Abstract", {})
-                                .get("AbstractText", [])
-                            )
-                            full_abstract = " ".join(str(s) for s in abstract_sections)
+                    if article:
+                      article = article[0]
+                      abstract_sections = (
+                          article.get("MedlineCitation", {})
+                          .get("Article", {})
+                          .get("Abstract", {})
+                          .get("AbstractText", [])
+                      ) or []
+                      full_abstract = " ".join(str(s) for s in abstract_sections)
+                      if full_abstract.strip():
+                        print(f"Abstract found (len={len(full_abstract)}):")
+                        article_text += full_abstract
+                except Exception as _pme:
+                  print(f"PubMed search failed for DOI {link}: {_pme}")
 
-                            if full_abstract.strip():
-                                print("Abstract found (len={}):".format(len(full_abstract)))
-                                #print(full_abstract)
-                                article_text += full_abstract
-                            else:
-                                print("This article has **no abstract available on PubMed**.")
+              if article_text:
+                _blocked = ("just a moment" in article_text.lower()
+                            or "403 forbidden" in article_text.lower())
+                if not _blocked:
+                  acc_score["source_texts"][link] = article_text
 
-                        except KeyError:
-                            print("Abstract field missing in this PubMed record.")
-              except RuntimeError as e:
-                  print(f"PubMed search failed for DOI {doi}: {e}")
-              except Exception as e:
-                  print(f"Unexpected error during PubMed search: {e}")
+              # Process supplementary/linked files from the DOI page
+              if jsonSM:
+                try:
+                  sup_links = sum((jsonSM[key] for key in jsonSM if jsonSM[key] is not None), [])
+                  if sup_links:
+                    all_links += sup_links
+                    for l in sup_links:
+                      try:
+                        more_all_output = await pipeline.process_link_allOutput(
+                            link=l, iso=None, acc=acc,
+                            saveLinkFolder=saveLinkFolder,
+                            linksWithTexts=acc_score["source_texts"],
+                            all_output="")
+                        if more_all_output:
+                          acc_score["source_texts"][l] = more_all_output
+                        print(f"len new output of sup_link {l}: {len(more_all_output or '')}")
+                      except Exception as _sl_err:
+                        print(f"[sup_link] {l} failed: {_sl_err}")
+                except Exception as _sm_err:
+                  print(f"[supplementary] processing failed for {link}: {_sm_err}")
+            except Exception as _doi_err:
+              print(f"[DOI fetch] {link} failed: {_doi_err}")
 
-            if article_text:
-              if "Just a moment...Enable JavaScript and cookies to continue".lower() not in article_text.lower() or "403 Forbidden Request".lower() not in article_text.lower():
-                acc_score["source_texts"][link] = article_text
-                #all_output += article_text
-            if jsonSM:
-              sup_links = sum((jsonSM[key] for key in jsonSM),[])
-              if sup_links:
-                all_links += sup_links
-                for l in sup_links:
-                  #acc_score["source_texts"][l] = ""
-                  more_all_output = await pipeline.process_link_allOutput(link=l, iso=None, acc=acc, saveLinkFolder=saveLinkFolder, linksWithTexts=acc_score["source_texts"], all_output="")
-                  acc_score["source_texts"][l] = more_all_output
-                  print(f"len new output  of sup_link {l}: {len(more_all_output)}")
-          else: # if other links not doi
-            if other_links:
-                all_links += other_links
-                for l in other_links:
-                  #acc_score["source_texts"][l] = ""
-                  more_all_output = await pipeline.process_link_allOutput(link=l, iso=None, acc=acc, saveLinkFolder=saveLinkFolder, linksWithTexts=acc_score["source_texts"], all_output="")
-                  acc_score["source_texts"][l] = more_all_output
-                  print(f"len new all output after sup link {l}: {len(more_all_output)}")
-      # links that are not included before and need smart search
+          else:  # non-DOI links (user-provided extra links)
+            if other_links and link in other_links:
+              try:
+                more_all_output = await pipeline.process_link_allOutput(
+                    link=link, iso=None, acc=acc,
+                    saveLinkFolder=saveLinkFolder,
+                    linksWithTexts=acc_score["source_texts"],
+                    all_output="")
+                if more_all_output:
+                  acc_score["source_texts"][link] = more_all_output
+                print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
+              except Exception as _el_err:
+                print(f"[extra_link] {link} failed: {_el_err}")
+      # ── Step 3: Build keyword context for web search ─────────────────────────
+      # Determine the best search term and any extra metadata, regardless of
+      # whether the database fetch above succeeded or failed.
       all_accs = {}
-      """Example: accessions = {
-        bioproject: PRJNA976261,
-        biosample: SAMN35361966,
-        accession: None (or if not then it is KU131308)
-      }"""
       if accessions[acc].get("bioproject"):
         all_accs["bioproject"] = accessions[acc]["bioproject"]
       if accessions[acc].get("biosample"):
@@ -478,81 +517,182 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         all_accs["accession"] = accessions[acc]["accession"]
 
       if _is_non_ncbi:
-        # For non-NCBI samples, search using the accession + database name keywords
+        _parent_project = accessions[acc].get("_parent_project", "")
+        _base_acc = acc.split(" | ")[0].strip() if " | " in acc else acc
+        _project_id = _parent_project or _base_acc
         try:
           from non_ncbi_resolver import get_search_keywords
-          _search_keywords = get_search_keywords(acc, _source_db)
-          _search_acc = _search_keywords[0]  # primary keyword = raw accession
-          # Inject extra keywords into smart_fallback search if possible
+          _search_keywords = get_search_keywords(_project_id, _source_db)
+          _search_acc = _search_keywords[0]
           _extra_kws = _search_keywords[1:]
         except Exception:
-          _search_acc = acc
+          _search_acc = _project_id
           _extra_kws = []
-        acc_score["source_texts"]["_db_hint"] = (
+        _db_hint_text = (
             f"This sample is from the {_source_db} database. "
-            f"Accession: {acc}. "
+            f"Project accession: {_project_id}. "
+            + (f"Sub-sample/file identifier: {acc}. " if acc != _project_id else "")
             + (f"Related search terms: {', '.join(_extra_kws)}." if _extra_kws else "")
         )
+        try:
+            from non_ncbi_resolver import fetch_dataset_metadata
+            _api_meta = fetch_dataset_metadata(_project_id, _source_db)
+            if _api_meta:
+                _db_hint_text += "\n" + _api_meta
+        except Exception as _meta_err:
+            print(f"[non_ncbi fetch_dataset_metadata] {_meta_err}")
+        acc_score["source_texts"]["_db_hint"] = _db_hint_text
       else:
         _search_acc = (all_accs.get("biosample") or all_accs.get("accession")
                        or all_accs.get("bioproject") or acc)
         _extra_kws = []
 
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Searching literature for {acc}…")
-      more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(
-          iso=None, acc=_search_acc, saveLinkFolder=saveLinkFolder, niche_cases=niche_cases)
-      #if more_all_output: all_output = more_all_output
-      if more_linksWithTexts: acc_score["source_texts"].update(more_linksWithTexts)
-      if more_links: all_links = more_links
+      # ── Step 3 (continued): Web search — runs ALWAYS, independent of DB fetch ─
+      # Even if database fetch (Step 1) failed entirely, this step still runs
+      # and collects text from Google/PubMed/EuropePMC results.
+      _extra_search_meta = {}
+      _bp_src = {}
+      if bioproject_id:
+        _bp_src = (acc_score.get("source_texts", {})
+                   .get("NCBI_bioproject", {})
+                   .get(bioproject_id, {}))
+        if isinstance(_bp_src, dict):
+          _pub_titles = [t for t in _bp_src.get("publications", []) or []
+                         if t and str(t).lower() not in ("unknown", "")]
+          if _pub_titles:
+            _extra_search_meta["title"] = _pub_titles[0]
+            if len(_pub_titles) > 1:
+              _extra_search_meta["alt_titles"] = _pub_titles[1:]
+      _extra_search_meta["bioproject_id"] = all_accs.get("bioproject", "")
+      _extra_search_meta["experiment_id"] = all_accs.get("experiment",
+                                             accessions[acc].get("experiment", ""))
+      try:
+        more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(
+            iso=None, acc=_search_acc, saveLinkFolder=saveLinkFolder, niche_cases=niche_cases,
+            extra_metadata=_extra_search_meta)
+        # Store web-search extracted texts under clearly labelled source keys
+        if more_linksWithTexts:
+          for _ws_link, _ws_text in more_linksWithTexts.items():
+            _label = f"web_search_{_ws_link}"
+            acc_score["source_texts"][_label] = _ws_text
+        if more_links:
+          all_links = list(all_links) + [l for l in more_links if l not in all_links]
+      except Exception as _ws_err:
+        print(f"[web search] failed for {acc}: {_ws_err}")
 
       if user_context_text:
         acc_score["source_texts"]["user_uploaded_file"] = user_context_text
 
+      # ── Step 4: Build combined text from ALL sources ───────────────────────
+      # Converts each source entry to a string (handles dict, list, None gracefully)
+      # and labels it clearly so the LLM knows which source it came from.
       text = ""
-      for source in acc_score["source_texts"]:
-        # check if the extracted text of that source too long or not
-        source_text = acc_score["source_texts"][source]
-        print(f"len of {source}: {len(source_text)}")
-        if len(source_text) > 1000000:
-          # reduce the text
-          source_text = data_preprocess.normalize_for_overlap(source_text)
-          if len(source_text) > 1000000:
-            print("REDUCE CONTEXT FOR LLM MODEL")
-            reduce_context_for_llm = data_preprocess.build_context_for_llm([source_text], acc, niche_cases, 500000)
-            if reduce_context_for_llm:
-              print("reduce context for llm")
-              source_text = reduce_context_for_llm
-            else:
-              print("no reduce context for llm despite>1M")
-              source_text = source_text[:500000]
-        print(f"add text of {source} into big text")
-        text += f'The source - {source}: {source_text}' + f"-----END OF THIS SOURCE {source} ----\n"
-      if text and len(text) > 1000000:
-        text = data_preprocess.normalize_for_overlap(text)
-        if len(text) > 1000000:
-          print("REDUCE CONTEXT FOR LLM MODEL")
-          reduce_context_for_llm = data_preprocess.build_context_for_llm([source_text], acc, niche_cases, 500000)
-          if reduce_context_for_llm:
-            print("reduce context for llm")
-            source_text = reduce_context_for_llm
+      for source in list(acc_score["source_texts"].keys()):
+        try:
+          source_text = acc_score["source_texts"][source]
+          # Convert any non-string type to string
+          if source_text is None:
+            source_text = ""
+          elif isinstance(source_text, (dict, list)):
+            source_text = str(source_text)
           else:
-            print("no reduce context for llm despite>1M")
-            source_text = source_text[:1000000]
+            source_text = str(source_text)
+          print(f"len of {source}: {len(source_text)}")
+          if data_preprocess is not None and len(source_text) > 1000000:
+            source_text = data_preprocess.normalize_for_overlap(source_text)
+            if len(source_text) > 1000000:
+              print("REDUCE CONTEXT FOR LLM MODEL")
+              reduce_context_for_llm = data_preprocess.build_context_for_llm(
+                  [source_text], acc, niche_cases, 500000)
+              if reduce_context_for_llm:
+                source_text = reduce_context_for_llm
+              else:
+                source_text = source_text[:500000]
+          elif len(source_text) > 1000000:
+            source_text = source_text[:500000]
+          print(f"add text of {source} into big text")
+          text += f'The source - {source}: {source_text}' + f"-----END OF THIS SOURCE {source} ----\n"
+        except Exception as _st_err:
+          print(f"[source text] failed to process {source}: {_st_err}")
+
+      # 800 000 chars ≈ 170 K tokens — safely under Anthropic's 200 K token limit.
+      # Gemini handles up to 1 M tokens, but keeping this limit avoids Anthropic 400s
+      # so the cheaper Anthropic path works and we don't fall through to the Gemini fallback.
+      _CTX_CHAR_LIMIT = 800000
+      if text and len(text) > _CTX_CHAR_LIMIT:
+        if data_preprocess is not None:
+          text = data_preprocess.normalize_for_overlap(text)
+          if len(text) > _CTX_CHAR_LIMIT:
+            text = text[:_CTX_CHAR_LIMIT]
+        else:
+          text = text[:_CTX_CHAR_LIMIT]
       print("length of final all_text: ", len(text))
-      # add text into acc_prompts for multi batch cause they are context for llm for each prompt
       print("start to save the all output and its length: ", len(text))
       file_all_path = saveLinkFolder + "/extracted_text_" + acc + ".docx"
-      data_preprocess.save_text_to_docx(text, file_all_path)
+      try:
+        if data_preprocess is not None:
+          data_preprocess.save_text_to_docx(text, file_all_path)
+          print(f"✅ Saved DOCX locally: {file_all_path}")
+        else:
+          # Fallback: write plain text if docx library unavailable
+          txt_path = file_all_path.replace(".docx", ".txt")
+          with open(txt_path, "w", encoding="utf-8") as _f:
+            _f.write(text)
+          file_all_path = txt_path
+          print(f"✅ Saved TXT locally (docx unavailable): {file_all_path}")
+      except Exception as _save_err:
+        print(f"⚠ Save failed (non-critical): {_save_err}")
       acc_score["file_all_output"] = file_all_path
+
+      # ── Upload extracted text DOCX to Google Drive ────────────────────────────
+      # Path: mtDNA-Location-Classifer/data/<pubmed_id or DirectSubmission>/<safe_acc>.docx
+      try:
+        if pipeline is not None and hasattr(pipeline, 'drive_service') and pipeline.drive_service:
+          _drive_svc = pipeline.drive_service
+          _safe_doc_name = pipeline.sanitize_filename(acc, 80) + ".docx"
+          _data_folder_id = (getattr(pipeline, 'GDRIVE_DATA_FOLDER_NAME', '')
+                             or os.environ.get('GDRIVE_DATA_FOLDER_NAME', ''))
+          if not _data_folder_id:
+            # Navigate by name: find mtDNA-Location-Classifer then data/
+            _root_q = ("name='mtDNA-Location-Classifer' and "
+                       "mimeType='application/vnd.google-apps.folder' and trashed=false")
+            _root_res = _drive_svc.files().list(q=_root_q, spaces='drive', fields='files(id)').execute()
+            _root_files = _root_res.get('files', [])
+            if _root_files:
+              _root_id = _root_files[0]['id']
+              _data_folder_id = pipeline.get_or_create_drive_folder('data', parent_id=_root_id)
+          if _data_folder_id:
+            _sub_id = pipeline.get_or_create_drive_folder(str(id_folder), parent_id=_data_folder_id)
+            _upload_result = pipeline.upload_file_to_drive(file_all_path, _safe_doc_name, _sub_id)
+            if _upload_result:
+              print(f"✅ Saved DOCX to Google Drive: data/{id_folder}/{_safe_doc_name}")
+            else:
+              print("⚠ Google Drive upload returned no file ID")
+          else:
+            print("⚠ Google Drive folder 'mtDNA-Location-Classifer/data' not found — skipping Drive upload")
+        else:
+          print("⚠ Google Drive service not configured (GCP_CREDS_JSON not set) — DOCX saved locally only")
+      except Exception as _gdrive_err:
+        print(f"⚠ Google Drive upload failed (non-critical): {_gdrive_err}")
+
       acc_prompts = {acc: text}
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Running LLM inference for {acc}…")
       print("start model")
-      predicted_output_info = await model.query_document_info(
-        niche_cases=niche_cases,
-        saveLinkFolder=saveLinkFolder,
-        llm_api_function=model.call_llm_api,
-        prompts=acc_prompts,
-        standardization_schema=standardization_schema)
+      try:
+        predicted_output_info = await model.query_document_info(
+          niche_cases=niche_cases,
+          saveLinkFolder=saveLinkFolder,
+          llm_api_function=model.call_llm_api,
+          prompts=acc_prompts,
+          standardization_schema=standardization_schema)
+      except Exception as _qdi_err:
+        print(f"[LLM] query_document_info failed for {acc}: {_qdi_err}")
+        await _progress(f"[{_acc_idx + 1}/{_total_accs}] ⚠ LLM inference failed for {acc} — saving partial result.")
+        accs_output[acc] = acc_score
+        if progress_cb:
+          await progress_cb({"__partial_acc__": acc, "__partial_data__": {acc: acc_score}})
+        continue
       for output_acc in predicted_output_info:
         # update everything from the output of model for each accession
         # firstly update predicted output of an accession

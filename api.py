@@ -194,6 +194,8 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         # ── Per-field values + collect explanation parts ──────────────────────
         explanation_parts: list = []
         extra: dict = {}          # per-field explanation detail for Sheet 2
+        method_text = ""          # initialized here so it's always defined even when niche_list is empty
+        field = None
 
         for field in niche_list:
             field_data = data.get(field, {}) or {}
@@ -373,6 +375,19 @@ class TrackRequest(BaseModel):
     properties: Optional[Dict[str, Any]] = None
     email: Optional[str] = ""
     user_agent: Optional[str] = ""
+
+
+class FeedbackRequest(BaseModel):
+    impact: int = 0
+    next_steps: Optional[list] = None
+    priority: Optional[str] = ""
+    freetext: Optional[str] = ""
+    sample_count: Optional[int] = 0
+    email: Optional[str] = ""
+
+
+class GenerateExcelRequest(BaseModel):
+    rows: List[Dict[str, Any]]
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -799,7 +814,10 @@ async def analyze(req: AnalyzeRequest):
                     await asyncio.to_thread(
                         save_to_excel, all_rows, "", "", excel_path, False
                     )
+                    if not os.path.isfile(excel_path):
+                        excel_path = ""
                 except Exception as exc:
+                    excel_path = ""
                     yield _sse("progress", {"message": f"Excel generation failed: {exc}"})
 
             out_rows = _serialize_rows(all_rows)
@@ -851,6 +869,28 @@ async def download_excel(path: str):
     )
 
 
+@app.post("/generate-excel")
+async def generate_excel_endpoint(req: GenerateExcelRequest):
+    """Generate an Excel file on-demand from a list of row dicts (used when
+    the run was stopped before the server built the file, or if inline
+    generation failed)."""
+    if not req.rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+    try:
+        from mtdna_backend import save_to_excel
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Backend not loaded: {exc}")
+    tmp = tempfile.mkdtemp()
+    excel_path = os.path.join(tmp, "biometadata_results.xlsx")
+    try:
+        await asyncio.to_thread(save_to_excel, req.rows, "", "", excel_path, False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excel generation failed: {exc}")
+    if not os.path.isfile(excel_path):
+        raise HTTPException(status_code=500, detail="Excel file was not created")
+    return {"path": excel_path}
+
+
 @app.post("/chat-message")
 async def chat_message(req: ChatMessageRequest):
     """Stateless chat turn: accepts a user message + prior state, returns reply + new state."""
@@ -876,6 +916,22 @@ async def report(req: ReportRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/feedback")
+async def feedback(req: FeedbackRequest):
+    try:
+        msg = (
+            f"[FEEDBACK] impact={req.impact}/5 | priority={req.priority} | "
+            f"next_steps={req.next_steps} | samples={req.sample_count} | "
+            f"email={req.email} | freetext={req.freetext}"
+        )
+        await asyncio.to_thread(
+            _log_to_gsheet, req.email or "", "FEEDBACK", msg
+        )
+    except Exception:
+        pass
+    return {"status": "ok"}
+
+
 @app.post("/track")
 async def track(req: TrackRequest, request: Request):
     # Fire-and-forget: never fail the client on analytics errors
@@ -889,6 +945,57 @@ async def track(req: TrackRequest, request: Request):
     except Exception:
         pass
     return {"status": "ok"}
+
+
+def _get_config_from_gsheet() -> dict:
+    """Read free_limit and paid_limit from the Config sheet in the Report workbook."""
+    defaults = {"free_limit": 10, "paid_limit": 30}
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        raw = os.environ.get("GCP_CREDS_JSON", "")
+        if not raw:
+            return defaults
+        creds_dict = json.loads(raw)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        wb = client.open("Report")
+
+        config_ws = _open_or_create_worksheet(
+            wb, "Config",
+            ["key", "value", "description"]
+        )
+        rows = config_ws.get_all_records()
+
+        if not rows:
+            config_ws.append_row(["free_limit", "10", "Max samples for guest (not signed-in) users"])
+            config_ws.append_row(["paid_limit", "30", "Max samples for signed-in users"])
+            return defaults
+
+        result = dict(defaults)
+        for row in rows:
+            key = str(row.get("key", "")).strip()
+            val = row.get("value", "")
+            if key in ("free_limit", "paid_limit"):
+                try:
+                    result[key] = int(val)
+                except (ValueError, TypeError):
+                    pass
+        return result
+    except Exception:
+        return defaults
+
+
+@app.get("/config")
+async def get_config():
+    """Return sample limits. Admin can edit these in the Config sheet of the Report workbook."""
+    cfg = await asyncio.to_thread(_get_config_from_gsheet)
+    return cfg
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)

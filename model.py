@@ -92,7 +92,14 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
 
 
 def call_llm_api(prompt, model_name=None):
-    """Call LLM — tries Anthropic first, then each Gemini key in order."""
+    """Call LLM — tries Anthropic first, then each Gemini key in order.
+    Set env var SKIP_LLM_API=true to skip all LLM calls (returns 'unknown' placeholders
+    for testing NCBI resolution without consuming API credits).
+    """
+    if os.getenv('SKIP_LLM_API', '').lower() in ('1', 'true', 'yes'):
+        print('[SKIP_LLM_API] LLM call skipped (test mode) — returning unknown placeholders')
+        return 'unknown, unknown', None
+
     last_error = None
 
     # --- 1. Anthropic (ANTHROPIC_API_KEY) ---
@@ -1394,9 +1401,13 @@ def annotate_with_ontologies(extracted_dict: dict, context_text: str, acc: str) 
         return {}
 
 
-async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases=None, limit_context=250000):
+async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases=None, limit_context=250000, extra_metadata=None):
   linksWithTexts, links, context_for_llm = {}, [], ""
   meta_expand = smart_fallback.fetch_ncbi(acc)
+  if extra_metadata:
+    for k, v in extra_metadata.items():
+      if v and str(v).lower() not in ("unknown", ""):
+        meta_expand[k] = v
   raw_tem_links = smart_fallback.smart_google_search(acc, meta_expand)
   tem_links = pipeline.unique_preserve_order(raw_tem_links)
   print("this is tem links with acc: ", tem_links)
@@ -1643,58 +1654,52 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
         outputs[acc]["links"] = links  
       else:
         context_for_llm = prompts[acc]
+      # Collect unknown fields and known fields in one pass
+      unknown_fields = []
       for key in metadata_list:
-        answer = metadata_list[key]["answer"] 
-        if answer.lower() in " ".join(["unknown", "unspecified","could not get response from llm api.", "undefined"]):
-          print("have to do again")
-          again_output_format = key
-          print("output format:", again_output_format)
-          general_knowledge_prompt = (
-        f"Given the following text snippets, analyze the entity/concept of this accession number {acc_cleaned} "
-        #f"or the mitochondrial DNA sample if these identifiers are not explicitly found. "
-        f"Identify and extract {again_output_format}"
-        f"If not explicitly stated, infer the most specific related or contextually relevant value. "
-        f"If no information is found, write 'unknown'. "
-        f"Provide only {again_output_format}. "
-        f"For non-'unknown' field in {again_output_format}, write one sentence explaining how it was inferred from the text "
-        f"Format your answer so that:\n"
-        f"1. The **first line** contains only the {again_output_format} answer.\n"
-        f"2. The **second line onward** contains the explanations based on the non-unknown {again_output_format} answer.\n"
-        f"\nText Snippets:\n{context_for_llm}")
-          print("len of general prompt:", len(general_knowledge_prompt))
-          if general_knowledge_prompt:    
-            print("use 2.5 flash gemini")
-            llm_response_text, model_instance = call_llm_api(general_knowledge_prompt)
-            print("\n--- DEBUG INFO FOR RAG ---")
-            print("Retrieved Context Sent to LLM (first 500 chars):")
-            print(context_for_llm[:500] + "..." if len(context_for_llm) > 500 else context_for_llm)
-            print("\nRaw LLM Response:")
-            print(llm_response_text)
-            print("--- END DEBUG INFO ---")
-            llm_cost = 0
-            if model_instance:
-                try:
-                    input_llm_tokens = global_llm_model_for_counting_tokens.count_tokens(prompt_for_llm).total_tokens
-                    output_llm_tokens = global_llm_model_for_counting_tokens.count_tokens(llm_response_text).total_tokens
-                    print(f"  DEBUG: LLM Input tokens: {input_llm_tokens}")
-                    print(f"  DEBUG: LLM Output tokens: {output_llm_tokens}")
-                    llm_cost = (input_llm_tokens / 1000) * PRICE_PER_1K_INPUT_LLM + \
-                                (output_llm_tokens / 1000) * PRICE_PER_1K_OUTPUT_LLM
-                    print(f"  DEBUG: Estimated LLM cost: ${llm_cost:.6f}")
-                except Exception as e:
-                    print(f"  DEBUG: Error counting LLM tokens: {e}")
-                    llm_cost = 0
-
-            total_query_cost += current_embedding_cost + llm_cost
-            print("total query cost in again: ", total_query_cost)
-            metadata_list_niche = parse_multi_sample_llm_output(llm_response_text, again_output_format)
-            print(f"metadata list output for {again_output_format}: {metadata_list}")
-            for key_niche in metadata_list_niche:
-              if key_niche not in outputs.keys():
-                output_acc[key_niche] = metadata_list_niche[key_niche]
-                        
+        answer = metadata_list[key]["answer"]
+        if answer.lower() in ("unknown", "unspecified", "could not get response from llm api.", "undefined"):
+          unknown_fields.append(key)
         else:
-            output_acc[key] = metadata_list[key]  
+          output_acc[key] = metadata_list[key]
+
+      # ── Batched retry for all unknown fields in ONE LLM call (saves credits) ──
+      if unknown_fields:
+        print(f"have to retry for {len(unknown_fields)} unknown field(s) in one batch call: {unknown_fields}")
+        again_fmt = ", ".join(unknown_fields)
+        batch_retry_prompt = (
+          f"Given the following text snippets, analyze accession {acc_cleaned}.\n"
+          f"Extract these specific fields: {again_fmt}\n"
+          f"If a field is not explicitly stated, infer the most specific value from context.\n"
+          f"Write 'unknown' only if the information is truly absent.\n"
+          f"\nOUTPUT FORMAT (follow exactly):\n"
+          f"Line 1: exactly {len(unknown_fields)} comma-separated values in this order: {again_fmt}\n"
+          f"Lines 2+: one sentence per field explaining how each non-unknown value was found.\n"
+          f"\nText Snippets:\n{context_for_llm[:120000]}"
+        )
+        print(f"len of batch retry prompt: {len(batch_retry_prompt)}")
+        try:
+          retry_response, retry_model = call_llm_api(batch_retry_prompt)
+          print("Batch retry LLM response:", retry_response[:300])
+          llm_cost = 0
+          if retry_model:
+            try:
+              in_toks = global_llm_model_for_counting_tokens.count_tokens(batch_retry_prompt).total_tokens
+              out_toks = global_llm_model_for_counting_tokens.count_tokens(retry_response).total_tokens
+              llm_cost = (in_toks / 1000) * PRICE_PER_1K_INPUT_LLM + (out_toks / 1000) * PRICE_PER_1K_OUTPUT_LLM
+              print(f"  DEBUG: batch retry cost: ${llm_cost:.6f}")
+            except Exception:
+              pass
+          total_query_cost += llm_cost
+          retry_metadata = parse_multi_sample_llm_output(retry_response, again_fmt)
+          for key_niche, val in retry_metadata.items():
+            if key_niche not in outputs:
+              output_acc[key_niche] = val
+        except Exception as _retry_err:
+          print(f"Batch retry LLM call failed: {_retry_err}")
+          # Keep unknown placeholders for these fields
+          for uf in unknown_fields:
+            output_acc[uf] = {"answer": "unknown", f"{uf}_explanation": "unknown"}
       # ── LLM-based standardization pass ───────────────────────────────────
       # Run after extraction; maps free-text values to canonical schema values.
       if standardization_schema and output_acc:

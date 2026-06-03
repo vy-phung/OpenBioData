@@ -260,8 +260,25 @@ def smart_google_queries(accession_id, metadata: dict):
             queries.append(f'"{accession_id}" "{year}"')
     print("done institution")
     if title and title!='unknown' and title not in ["Unpublished","Direct Submission"]:
-      queries.append(f'"{title}"')  
-    print("done title")    
+      queries.append(f'"{title}"')
+    print("done title")
+
+    # Additional searches for related identifiers (bioproject, experiment, publication titles)
+    bioproject_id = metadata.get("bioproject_id", "")
+    if bioproject_id and bioproject_id != accession_id:
+      queries.append(f'"{bioproject_id}"')
+      queries.append(f'"{bioproject_id}" site:ncbi.nlm.nih.gov')
+      queries.append(f'"{bioproject_id}" site:europepmc.org')
+
+    experiment_id = metadata.get("experiment_id", "")
+    if experiment_id and experiment_id not in (accession_id, ""):
+      queries.append(f'"{experiment_id}"')
+
+    alt_titles = metadata.get("alt_titles", [])
+    for alt_title in alt_titles[:2]:
+      if alt_title and alt_title not in ["unknown", "Unpublished", "Direct Submission"]:
+        queries.append(f'"{alt_title}"')
+
     return queries
 
 
