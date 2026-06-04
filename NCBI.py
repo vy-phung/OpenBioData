@@ -98,7 +98,9 @@ def fetch_bioproject(bioproject_id):
         "publications": [],
         "pubmed": [],
         "pubmed_dois": [],
-        "biosamples": []
+        "biosamples": [],
+        "umbrella_projects": [],   # parent/umbrella BioProject accessions
+        "external_links": [],      # "Related Resources" URLs from BioProject page
     }
 
     # ── Extract numeric ID directly from accession string ──────────────────
@@ -159,6 +161,33 @@ def fetch_bioproject(bioproject_id):
                     pmid = pub.get("id")
                     if pmid:
                         outputs["pubmed"].append(pmid)
+
+            # Umbrella / parent BioProject links
+            # BioProject XML can encode the "member of" relationship in several ways
+            for proj_link in root.findall(".//ProjectLinks/ProjectLink"):
+                hier = proj_link.find("Hierarchical")
+                if hier is not None and hier.get("member_of", "").lower() == "yes":
+                    pid_ref = proj_link.find("ProjectIDRef")
+                    if pid_ref is not None:
+                        parent_acc = pid_ref.get("accession", "")
+                        if parent_acc and parent_acc != bioproject_id:
+                            if parent_acc not in outputs["umbrella_projects"]:
+                                outputs["umbrella_projects"].append(parent_acc)
+
+            # External / related-resource URLs (e.g. "State of Hawaii DOH" links)
+            for ext in root.findall(".//ExternalLink"):
+                url_el = ext.find("URL")
+                if url_el is not None and url_el.text and url_el.text.startswith("http"):
+                    if url_el.text not in outputs["external_links"]:
+                        outputs["external_links"].append(url_el.text)
+            # Also check <DBXref> style links
+            for xref in root.findall(".//DBXref"):
+                db = xref.findtext("DB", "")
+                xid = xref.findtext("ID", "")
+                if db.lower() == "url" and xid.startswith("http"):
+                    if xid not in outputs["external_links"]:
+                        outputs["external_links"].append(xid)
+
         except ET.ParseError as e:
             print(f"XML parse error: {e}")
 

@@ -25,6 +25,7 @@ import os
 import xml.etree.ElementTree as ET
 import urllib.request as _urllib_req
 import urllib.error as _urllib_err
+import http.client as _http_client
 
 from Bio import Entrez
 
@@ -93,9 +94,9 @@ def _safe_sleep():
 
 
 def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0) -> bytes:
-    """HTTP GET with retry on 429/500/503 responses."""
+    """HTTP GET with retry on 429/500/503 and transient network errors."""
     delay = base_delay
-    last_exc = None
+    last_exc: Exception = RuntimeError("no attempts made")
     for attempt in range(max_retries + 1):
         try:
             with _urllib_req.urlopen(url, timeout=30) as resp:
@@ -108,9 +109,17 @@ def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0)
                 delay *= 2
             else:
                 raise
+        except (_http_client.IncompleteRead, ConnectionError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                print(f'  [NCBI] Network error ({type(exc).__name__}) — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
+                time.sleep(delay)
+                delay *= 2
+            else:
+                raise
         except Exception:
             raise
-    raise last_exc  # type: ignore
+    raise last_exc
 
 
 def _resolve_via_ena(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> dict:
@@ -393,7 +402,11 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
                f'&retmode=json&email={Entrez.email}')
         data = _json.loads(_urlopen_with_retry(url).decode('utf-8', errors='replace'))
         _safe_sleep()
-        sra_ids = data['esearchresult']['idlist']
+        # Use .get() guards — NCBI may omit 'idlist' in error/empty responses
+        esresult = data.get('esearchresult') or {}
+        sra_ids = esresult.get('idlist') or []
+        if not isinstance(sra_ids, list):
+            sra_ids = []
         if not sra_ids:
             return []
         print(f'  [BioProject-SRA] Found {len(sra_ids)} SRA records for {bioproject_id}')
@@ -406,8 +419,9 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
         for uid, rec in data2.get('result', {}).items():
             if uid == 'uids':
                 continue
-            exp_xml = rec.get('expxml', '')
-            sam_match = re.search(r'SAM[A-Z]+\d+', exp_xml)
+            # NCBI SRA esummary JSON uses lowercase 'expxml'
+            exp_xml = rec.get('expxml', '') or rec.get('ExpXml', '') or rec.get('ExpXML', '')
+            sam_match = re.search(r'SAM[A-Z]+\d+', str(exp_xml))
             if sam_match:
                 sam = sam_match.group(0)
                 if sam not in seen:
@@ -459,6 +473,55 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
                     biosample_ids.append(acc)
     except Exception as e:
         print(f'  [BioProject] Strategy 1 failed: {e}')
+
+    # ── Strategy 1B: raw HTTP biosample esearch fallback (when Biopython fails) ──
+    # NCBI sometimes returns "Database is not supported: biosample" to Biopython's
+    # XML-mode requests; the JSON-mode raw URL is a more direct and resilient path.
+    if not biosample_ids:
+        try:
+            import urllib.parse as _urlparse
+            s1b_url = (
+                f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
+                f'?db=biosample&term={_urlparse.quote(bioproject_id + "[BioProject]")}'
+                f'&retmax={max_samples}&retmode=json&email={Entrez.email}'
+            )
+            s1b_data = _json.loads(
+                _urlopen_with_retry(s1b_url).decode('utf-8', errors='replace')
+            )
+            _safe_sleep()
+            s1b_uids = (s1b_data.get('esearchresult') or {}).get('idlist') or []
+            if not isinstance(s1b_uids, list):
+                s1b_uids = []
+            if s1b_uids:
+                print(f'  [BioProject] Strategy 1B found {len(s1b_uids)} UIDs via raw URL')
+                try:
+                    handle = Entrez.esummary(db='biosample', id=','.join(s1b_uids))
+                    summary_1b = Entrez.read(handle); handle.close()
+                    _safe_sleep()
+                    for doc in summary_1b['DocumentSummarySet']['DocumentSummary']:
+                        acc = doc.get('Accession', '')
+                        if acc.startswith('SAM') and acc not in biosample_ids:
+                            biosample_ids.append(acc)
+                except Exception:
+                    # Biopython esummary also failed — try raw JSON esummary
+                    s1b_sum_url = (
+                        f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi'
+                        f'?db=biosample&id={",".join(s1b_uids)}&retmode=json&email={Entrez.email}'
+                    )
+                    s1b_sum_data = _json.loads(
+                        _urlopen_with_retry(s1b_sum_url).decode('utf-8', errors='replace')
+                    )
+                    _safe_sleep()
+                    result_map = s1b_sum_data.get('result') or {}
+                    for uid in s1b_uids:
+                        doc = result_map.get(uid) or {}
+                        acc = (doc.get('accession') or '').strip()
+                        if acc.startswith('SAM') and acc not in biosample_ids:
+                            biosample_ids.append(acc)
+                if biosample_ids:
+                    print(f'  [BioProject] Strategy 1B yielded {len(biosample_ids)} biosample accessions')
+        except Exception as e:
+            print(f'  [BioProject] Strategy 1B failed: {e}')
 
     # ── Strategy 2: raw elink bioproject->biosample ────────────────────────────
     if not biosample_ids:
