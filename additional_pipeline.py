@@ -107,6 +107,72 @@ def fetch_standardization_schema(urls) -> dict:
         try:
             resp = _requests.get(raw_url, timeout=15)
             resp.raise_for_status()
+
+            # Detect HTML responses (e.g. protocols.io, web pages) — not parseable as CSV.
+            # These URLs are still passed as other_links so the LLM can read them as context.
+            content_type = resp.headers.get('content-type', '').lower()
+            first_bytes  = resp.text.lstrip()[:100].lower()
+            is_html = ('text/html' in content_type
+                       or first_bytes.startswith('<!doctype')
+                       or first_bytes.startswith('<html'))
+            if is_html:
+                print(f"[standardization] '{raw_url}' returned an HTML page (not a CSV). "
+                      f"Checking for known protocol schemas; also passing as LLM context.")
+                schema.setdefault('__web_context_urls__', []).append(url)
+
+                # ── Known protocol → hard-coded OHE field set ─────────────────
+                # protocols.io pages are JS-rendered so the raw HTML has no
+                # readable content. Detect known protocol URLs by pattern and
+                # inject the fields they define directly.
+                _OHE_FIELDS = {
+                    # NCBI One Health Enteric (OHE) mandatory/conditional fields
+                    # Source: GenFS Metadata Cleanup Challenge protocol (protocols.io)
+                    "source_type":          {"description": "Type of sample source (e.g. food, human, animal, environment)", "allowed_values": ["food", "human", "animal", "environment", "water", "veterinary", "other"]},
+                    "collected_by":         {"description": "Name of the organization or person who collected the sample", "allowed_values": []},
+                    "sequenced_by":         {"description": "Name of the organization or person who performed sequencing", "allowed_values": []},
+                    "project_name":         {"description": "Name of the project or surveillance program (e.g. GenomeTrakr)", "allowed_values": []},
+                    "purpose_of_sampling":  {"description": "Why the sample was collected (e.g. surveillance, outbreak investigation, research)", "allowed_values": ["surveillance", "outbreak investigation", "research", "regulatory compliance", "other"]},
+                    "isolation_source":     {"description": "The most specific material from which the sample was isolated — always use the exact product/substrate name (e.g. 'Frozen Yellowfin Tuna', 'Enoki mushrooms', 'blood', 'environmental swab'). Do NOT generalize to broad categories like 'food product'.", "allowed_values": []},
+                    "host":                 {"description": "Host organism ONLY for human or animal isolates (e.g. 'Homo sapiens', 'Sus scrofa'). Output 'unknown' for food/environmental samples — do NOT use the food item as the host.", "allowed_values": ["Homo sapiens", "unknown"]},
+                    "food_origin":          {"description": "Country or region of origin for the food product (food isolates only)", "allowed_values": []},
+                }
+                _is_ohe_protocol = (
+                    "protocols.io" in raw_url
+                    and any(kw in raw_url.lower() for kw in ("genfs", "genomeTrakr", "one-health", "ohe", "metadata-cleanup", "metadata_cleanup"))
+                ) or (
+                    "protocols.io" in raw_url  # any protocols.io page gets OHE fields as a reasonable default
+                )
+                if _is_ohe_protocol:
+                    _added = 0
+                    for _f, _fmeta in _OHE_FIELDS.items():
+                        if _f not in schema:
+                            schema[_f] = _fmeta
+                            _added += 1
+                    if _added:
+                        print(f"[standardization] Injected {_added} OHE field(s) from known protocol: {list(_OHE_FIELDS)[:10]}")
+                else:
+                    # Generic HTML: try regex on raw text (works if page is SSR)
+                    _STOP_WORDS = {
+                        'the', 'and', 'for', 'with', 'not', 'that', 'this', 'are', 'from',
+                        'your', 'will', 'each', 'all', 'any', 'one', 'use', 'per', 'lab',
+                        'can', 'has', 'its', 'may', 'add', 'new', 'tab', 'row', 'must',
+                        'file', 'only', 'also', 'more', 'then', 'both', 'text', 'date',
+                        'last', 'see', 'our', 'step',
+                    }
+                    _html_fields = re.findall(
+                        r'(?:^|[\n\r])\s*[-•*]\s+([a-z][a-z0-9_]{2,})\s*(?:\(.*?\))?\s*(?:$|[\n\r])',
+                        resp.text,
+                    )
+                    _added = 0
+                    for _f in _html_fields:
+                        if _f in _STOP_WORDS or _f in schema:
+                            continue
+                        schema[_f] = {"description": f"Field from {url}", "allowed_values": []}
+                        _added += 1
+                    if _added:
+                        print(f"[standardization] Extracted {_added} field(s) from HTML page text")
+                continue
+
             lines   = resp.text.splitlines()
             reader  = _csv.DictReader(lines)
             headers = reader.fieldnames or []
@@ -235,6 +301,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             except Exception:
                 pass
 
+    # Notify api.py of the resolved niche_cases BEFORE first sample so
+    # partial-result rows are built with the correct field list.
+    if niche_cases:
+        await _progress({"__auto_niche_cases__": niche_cases})
+
     acc_prompts = {}
     bioproject_info = {}
     accs_output = {}
@@ -249,6 +320,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       start = time.time()
       total_query_cost = 0
       jsonSM, links, article_text, pubmeds, all_output, doi = {},[], "", [], "", ""
+      _bioproject_extra_links: list = []  # non-DOI links added programmatically (umbrella, external resources)
       acc_score = {"query_cost":total_query_cost,
                    "time_cost":None,
                    "source":links,
@@ -316,8 +388,24 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
               if bioproject_id in (bioproject_info or {}):
                 acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
+                _bp_data_now = bioproject_info[bioproject_id]
                 if not pubmeds:
-                  pubmeds = list(acc_score["source_texts"]["NCBI_bioproject"][bioproject_id].get("pubmed", []) or [])
+                  pubmeds = list(_bp_data_now.get("pubmed", []) or [])
+                # ── Fetch umbrella/parent BioProject (e.g. GenomeTrakr umbrella) ──
+                for _umbrella_acc in (_bp_data_now.get("umbrella_projects") or []):
+                  try:
+                    _umbrella_info = NCBI.extract_NCBI_directly(_umbrella_acc)
+                    if _umbrella_info:
+                      acc_score["source_texts"][f"NCBI_umbrella_{_umbrella_acc}"] = _umbrella_info
+                      print(f"[umbrella] Fetched umbrella project {_umbrella_acc}")
+                  except Exception as _ue:
+                    print(f"[umbrella] fetch failed for {_umbrella_acc}: {_ue}")
+                # ── Queue external/related-resource URLs for link fetching ──────
+                for _ext_url in (_bp_data_now.get("external_links") or []):
+                  if _ext_url and _ext_url not in links:
+                    links.append(_ext_url)
+                    _bioproject_extra_links.append(_ext_url)
+                    print(f"[external_link] Queued related resource: {_ext_url}")
             elif ncbi_source == "biosample" and accessions[acc].get("biosample"):
               biosample_id = accessions[acc]["biosample"]
               ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
@@ -492,8 +580,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             except Exception as _doi_err:
               print(f"[DOI fetch] {link} failed: {_doi_err}")
 
-          else:  # non-DOI links (user-provided extra links)
-            if other_links and link in other_links:
+          else:  # non-DOI links: user-provided extra links + programmatic BioProject links
+            _fetch_this_link = (
+                (other_links and link in other_links)
+                or link in _bioproject_extra_links
+            )
+            if _fetch_this_link:
               try:
                 more_all_output = await pipeline.process_link_allOutput(
                     link=link, iso=None, acc=acc,
@@ -501,7 +593,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     linksWithTexts=acc_score["source_texts"],
                     all_output="")
                 if more_all_output:
-                  acc_score["source_texts"][link] = more_all_output
+                  _link_label = f"external_{link}" if link in _bioproject_extra_links else link
+                  acc_score["source_texts"][_link_label] = more_all_output
                 print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
               except Exception as _el_err:
                 print(f"[extra_link] {link} failed: {_el_err}")
@@ -820,6 +913,9 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] ✓ {acc} done ({acc_score.get('time_cost', '')})")
       # Signal a partial result so api.py can stream the row to the browser immediately
       await _progress({"__partial_acc__": acc, "__partial_data__": {acc: acc_score}})
+    # Store the final auto-detected niche_cases so api.py can pass them to
+    # _rows_from_new_pipeline for proper per-field citation display.
+    accs_output["__niche_cases__"] = niche_cases or []
     print(accs_output)
     return accs_output, acc_score["source_texts"], text
 

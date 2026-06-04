@@ -192,6 +192,9 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             row["genbank_accession"] = genbank_acc
 
         # ── Per-field values + collect explanation parts ──────────────────────
+        import re as _re
+        _source_tag_re = _re.compile(r'\[Source:\s*([^\]]+)\]', _re.IGNORECASE)
+
         explanation_parts: list = []
         extra: dict = {}          # per-field explanation detail for Sheet 2
         method_text = ""          # initialized here so it's always defined even when niche_list is empty
@@ -227,6 +230,10 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                     display_method = display_method.split(". ")[0] + "."
                 explanation_parts.append(f"[{field}] {value} — {display_method}")
                 extra[f"{field}_explanation"] = method_text
+                # Extract [Source: source_name, specific_location] tag per field
+                _src_match = _source_tag_re.search(method_text)
+                if _src_match:
+                    extra[f"{field}_source_location"] = _src_match.group(1).strip()
             else:
                 explanation_parts.append(f"[{field}] {value}")
 
@@ -235,13 +242,6 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         source_text = "\n".join(source_list) if source_list else "No external links"
         if explanation_parts:
             explanation_parts.append(f"\nSources: {source_text}")
-
-        # ── Per-field source location (parsed from [Source: ...] tags in explanation) ──
-        import re as _re
-        _source_tag_re = _re.compile(r'\[Source:\s*([^\]]+)\]', _re.IGNORECASE)
-        _src_match = _source_tag_re.search(method_text or "")
-        if _src_match:
-            extra[f"{field}_source_location"] = _src_match.group(1).strip()
 
         # ── Confidence score: numeric + tier + short reason ───────────────────
         signals     = data.get("signals", {}) or {}
@@ -285,18 +285,23 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         confidence_display = f"{conf_score} ({tier_icon})" + (f" — {reason_str}" if reason_str else "")
 
         # ── Final columns ─────────────────────────────────────────────────────
-        # Build per-field source location column
+        # Build per-field source location column: shows value + exactly where it came from
         per_field_source_lines = []
         for field in niche_list:
+            field_val = str(row.get(field, ""))
+            if field_val.lower() in ("unknown", ""):
+                continue
             loc_key = f"{field}_source_location"
             if loc_key in extra:
-                per_field_source_lines.append(f"{field}: {extra[loc_key]}")
-            elif str(row.get(field, "")).lower() not in ("unknown", ""):
-                per_field_source_lines.append(f"{field}: {source_text.splitlines()[0] if source_text.splitlines() else 'see sources'}")
+                per_field_source_lines.append(f"{field} = {field_val!r}  ← [{extra[loc_key]}]")
+            else:
+                # No [Source:] tag parsed — fall back to listing all source keys
+                per_field_source_lines.append(f"{field} = {field_val!r}  ← see sources")
         if not per_field_source_lines:
             per_field_source_lines_text = source_text
         else:
-            per_field_source_lines_text = "\n".join(per_field_source_lines)
+            # Append the full source list at the end so URLs are visible
+            per_field_source_lines_text = "\n".join(per_field_source_lines) + "\n\nAll sources:\n" + source_text
 
         row["explanation"]      = _tc("\n".join(explanation_parts))
         row["confidence_score"] = _tc(confidence_display)
@@ -687,12 +692,21 @@ async def analyze(req: AnalyzeRequest):
                     )
                     _pipeline_task_ref.append(pipeline_task)
 
+                    # effective_niche starts as user-specified niche_cases; will be
+                    # updated to auto-detected OHE fields once pipeline returns.
+                    _effective_niche: list = list(niche_cases or [])
+
                     async def _emit_queue_item(msg):
                         """Emit a single queue item as the right SSE type."""
                         nonlocal _samples_done
-                        if isinstance(msg, dict) and "__partial_acc__" in msg:
+                        if isinstance(msg, dict) and "__auto_niche_cases__" in msg:
+                            # Pipeline resolved auto-niche fields — update effective list
+                            # so subsequent partial rows use the proper field list.
+                            if not niche_cases:
+                                _effective_niche[:] = msg["__auto_niche_cases__"] or []
+                        elif isinstance(msg, dict) and "__partial_acc__" in msg:
                             partial_rows = _rows_from_new_pipeline(
-                                msg["__partial_data__"], niche_cases
+                                msg["__partial_data__"], _effective_niche or None
                             )
                             _samples_done += len(partial_rows)
                             yield _sse("partial_result", {"rows": partial_rows})
@@ -739,7 +753,11 @@ async def analyze(req: AnalyzeRequest):
                             if isinstance(pipeline_result, tuple)
                             else pipeline_result
                         )
-                        all_rows = _rows_from_new_pipeline(accs_output, niche_cases)
+                        # Prefer user-specified niche_cases; fall back to auto-detected
+                        # OHE fields from the pipeline (stored under __niche_cases__).
+                        _auto_niche = accs_output.pop("__niche_cases__", None) or []
+                        _effective_niche = list(niche_cases or _auto_niche)
+                        all_rows = _rows_from_new_pipeline(accs_output, _effective_niche or None)
                         yield _sse("progress", {
                             "message": f"✅ Extracted metadata for {len(all_rows)} sample(s)"
                         })
