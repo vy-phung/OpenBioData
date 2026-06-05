@@ -94,7 +94,21 @@
 
   /* ── Progress ── */
   #progress-card{display:none}
-  #progress-log{background:#0f1e1a;color:#7eecd4;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;border-radius:7px;padding:14px;min-height:80px;max-height:220px;overflow-y:auto;line-height:1.7;white-space:pre-wrap}
+  #progress-columns{display:flex;gap:14px;align-items:flex-start}
+  #progress-log{flex:1;min-width:0;background:#0f1e1a;color:#7eecd4;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;border-radius:7px;padding:14px;min-height:80px;max-height:220px;overflow-y:auto;line-height:1.7;white-space:pre-wrap}
+  /* ── Links panel ── */
+  #links-panel{width:290px;flex-shrink:0;background:#0f1e1a;border-radius:7px;padding:12px 14px;max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:0}
+  #links-panel-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  #links-panel-title{font-size:11px;font-weight:700;color:#7eecd4;font-family:'Cascadia Code','Fira Code',monospace;letter-spacing:.5px;text-transform:uppercase}
+  #links-panel-count{font-size:11px;color:#3d7a68;font-family:'Cascadia Code','Fira Code',monospace}
+  .links-acc-block{margin-bottom:8px}
+  .links-acc-label{font-size:10px;font-weight:700;color:#3d7a68;font-family:'Cascadia Code','Fira Code',monospace;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+  .links-entry{display:flex;align-items:baseline;gap:4px;margin-bottom:2px}
+  .links-entry .links-stage{font-size:10px;color:#2a5c4e;font-family:'Cascadia Code','Fira Code',monospace;white-space:nowrap;flex-shrink:0}
+  .links-entry a{color:#5de0c0;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;text-decoration:none;word-break:break-all;line-height:1.4}
+  .links-entry a:hover{color:#7eecd4;text-decoration:underline}
+  .links-entry .links-file{color:#b0d4c8;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;word-break:break-all;line-height:1.4}
+  .links-divider{border:none;border-top:1px solid #1e3d33;margin:6px 0}
 
   /* ── Results ── */
   #results-card{display:none}
@@ -343,8 +357,20 @@
 
     <!-- Progress card -->
     <div class="card" id="progress-card">
-      <h3>Live Progress <span id="progress-timer" style="font-size:13px;font-weight:normal;color:#888;margin-left:8px;"></span></h3>
-      <pre id="progress-log"></pre>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <h3 style="margin-bottom:0">Live Progress</h3>
+        <span id="progress-timer" style="font-size:13px;font-weight:normal;color:#888;"></span>
+      </div>
+      <div id="progress-columns">
+        <pre id="progress-log"></pre>
+        <div id="links-panel">
+          <div id="links-panel-header">
+            <span id="links-panel-title">Sources found</span>
+            <span id="links-panel-count">0 links</span>
+          </div>
+          <div id="links-list"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Results card -->
@@ -513,6 +539,8 @@ let reportTarget          = { accession: '', rowIndex: -1 };
 let authMode              = 'signup';   // 'signup' | 'login'
 let authSource            = 'manual';   // what triggered the auth popup
 let ctxFileId             = null;       // temp path returned by /upload-context
+let ctxFileName           = null;       // original filename of uploaded context file
+let _linksState           = {};         // acc → {links: Set, user_file: str|null}
 let currentAbortController = null;
 let currentRunId          = null;   // backend run_id for cancellation
 let partialRows           = [];
@@ -590,6 +618,7 @@ async function handleCtxFile(file) {
     }
     const data = await resp.json();
     ctxFileId = data.context_file_id;
+    ctxFileName = data.filename || null;
     nameEl.textContent  = data.filename;
     charsEl.textContent = `(${data.chars.toLocaleString()} chars extracted)`;
     infoEl.style.display = 'flex';
@@ -603,6 +632,7 @@ async function handleCtxFile(file) {
 
 function clearCtxFile() {
   ctxFileId = null;
+  ctxFileName = null;
   document.getElementById('ctx-file-input').value = '';
   document.getElementById('ctx-file-info').style.display = 'none';
   document.getElementById('ctx-upload-status').textContent = '';
@@ -925,6 +955,64 @@ function showNonNcbiDialog(nonNcbiTokens, onConfirm) {
   };
 }
 
+// ── Links panel ──────────────────────────────────────────────────────────────
+const STAGE_LABELS = {
+  initial:      '[NCBI]',
+  supplementary:'[SUPP]',
+  web_search:   '[WEB ]',
+};
+
+function updateLinksPanel(evt) {
+  const acc       = evt.acc || '?';
+  const links     = evt.links || [];
+  const stage     = evt.stage || '';
+  const userFile  = evt.user_file || null;
+
+  if (!_linksState[acc]) _linksState[acc] = { links: new Set(), user_file: null, order: [] };
+  const state = _linksState[acc];
+  if (userFile) state.user_file = userFile;
+  const newLinks = links.filter(l => !state.links.has(l));
+  newLinks.forEach(l => { state.links.add(l); state.order.push({ url: l, stage }); });
+
+  // Re-render the whole list
+  const container = document.getElementById('links-list');
+  container.innerHTML = '';
+  let totalLinks = 0;
+
+  for (const [a, s] of Object.entries(_linksState)) {
+    if (s.order.length === 0 && !s.user_file) continue;
+    const block = document.createElement('div');
+    block.className = 'links-acc-block';
+    const label = document.createElement('div');
+    label.className = 'links-acc-label';
+    label.textContent = a;
+    block.appendChild(label);
+
+    if (s.user_file) {
+      const row = document.createElement('div');
+      row.className = 'links-entry';
+      row.innerHTML = `<span class="links-stage">[FILE]</span><span class="links-file">📄 ${s.user_file}</span>`;
+      block.appendChild(row);
+      totalLinks++;
+    }
+
+    s.order.forEach(({ url, stage: st }) => {
+      const row = document.createElement('div');
+      row.className = 'links-entry';
+      const stageLabel = STAGE_LABELS[st] || `[${st.toUpperCase().slice(0,4)}]`;
+      row.innerHTML = `<span class="links-stage">${stageLabel}</span><a href="${url}" target="_blank" rel="noopener">${url}</a>`;
+      block.appendChild(row);
+      totalLinks++;
+    });
+
+    container.appendChild(block);
+  }
+
+  document.getElementById('links-panel-count').textContent =
+    totalLinks === 1 ? '1 link' : `${totalLinks} links`;
+  container.scrollTop = container.scrollHeight;
+}
+
 // ── Analysis ─────────────────────────────────────────────────────────────────
 async function runAnalysis() {
   const accText = document.getElementById('acc-input').value.trim();
@@ -1015,6 +1103,10 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
   document.getElementById('results-card').style.display  = 'none';
   const log = document.getElementById('progress-log');
   log.textContent = '';
+  // Reset links panel
+  document.getElementById('links-list').innerHTML = '';
+  document.getElementById('links-panel-count').textContent = '0 links';
+  _linksState = {};
 
   // Elapsed-time ticker
   const timerEl = document.getElementById('progress-timer');
@@ -1039,6 +1131,7 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
         metadata_fields:     metaFields,
         standardization_url: stdUrl || null,
         context_file_id:     ctxFileId || null,
+        context_file_name:   ctxFileName || null,
         sample_limit:        sampleLimit,
         run_id:              currentRunId,
         non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
@@ -1070,6 +1163,8 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
         if (evt.type === 'run_id') {
           // Sync frontend run_id with backend (in case server generated one)
           currentRunId = evt.run_id || currentRunId;
+        } else if (evt.type === 'links_update') {
+          updateLinksPanel(evt);
         } else if (evt.type === 'progress') {
           logLine(evt.message);
         } else if (evt.type === 'error') {

@@ -358,6 +358,7 @@ class AnalyzeRequest(BaseModel):
     metadata_fields: Optional[List[str]] = None
     standardization_url: Optional[str] = None   # comma-separated URLs accepted
     context_file_id: Optional[str] = None        # temp path from /upload-context
+    context_file_name: Optional[str] = None      # original filename of uploaded context file
     sample_limit: Optional[int] = None           # max samples to process this run
     non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
@@ -688,6 +689,7 @@ async def analyze(req: AnalyzeRequest):
                             user_context_text=user_context_text,
                             progress_cb=_pipe_progress,
                             cancel_event=cancel_event,
+                            user_file_label=req.context_file_name or None,
                         )
                     )
                     _pipeline_task_ref.append(pipeline_task)
@@ -704,6 +706,8 @@ async def analyze(req: AnalyzeRequest):
                             # so subsequent partial rows use the proper field list.
                             if not niche_cases:
                                 _effective_niche[:] = msg["__auto_niche_cases__"] or []
+                        elif isinstance(msg, dict) and "__links_update__" in msg:
+                            yield _sse("links_update", msg["__links_update__"])
                         elif isinstance(msg, dict) and "__partial_acc__" in msg:
                             partial_rows = _rows_from_new_pipeline(
                                 msg["__partial_data__"], _effective_niche or None
