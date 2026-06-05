@@ -239,7 +239,7 @@ def fetch_standardization_schema(urls) -> dict:
 }"""
 
 # Main execution
-async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None, cancel_event=None):
+async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None, cancel_event=None, user_file_label=None):
   # output: country, sample_type, ethnic, location, money_cost, time_cost, explain
   # there can be one accession number in the accessions
   # # Prices are per 1,000 tokens
@@ -507,6 +507,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       if other_links: links += other_links
       all_links = copy.deepcopy(links)
       print("all_links: ", all_links)
+      await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "initial", "user_file": user_file_label}})
       # ── Step 2: Fetch text from DOI/publication links ─────────────────────────
       # Each DOI is processed independently; any failure skips that link.
       if links:
@@ -598,6 +599,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
               except Exception as _el_err:
                 print(f"[extra_link] {link} failed: {_el_err}")
+      await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "supplementary", "user_file": user_file_label}})
       # ── Step 3: Build keyword context for web search ─────────────────────────
       # Determine the best search term and any extra metadata, regardless of
       # whether the database fetch above succeeded or failed.
@@ -671,6 +673,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             acc_score["source_texts"][_label] = _ws_text
         if more_links:
           all_links = list(all_links) + [l for l in more_links if l not in all_links]
+        await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "web_search", "user_file": user_file_label}})
       except Exception as _ws_err:
         print(f"[web search] failed for {acc}: {_ws_err}")
 
