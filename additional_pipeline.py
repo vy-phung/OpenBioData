@@ -218,6 +218,14 @@ def fetch_standardization_schema(urls) -> dict:
                     schema[field]["allowed_values"].append(val)
                 rows_read += 1
 
+            # Store raw schema text so standardization prompts can reference it directly.
+            # Capped at 8000 chars to stay within prompt budgets.
+            _raw_snippet = resp.text[:8000]
+            existing = schema.get('__schema_text__', '')
+            schema['__schema_text__'] = (
+                (existing + f"\n\n--- Schema from {url} ---\n{_raw_snippet}").strip()
+                if existing else f"--- Schema from {url} ---\n{_raw_snippet}"
+            )
             print(f"[standardization] Loaded {rows_read} rows / {len(schema)} fields from {raw_url}"
                   f"{' (codebook)' if is_codebook else ' (dictionary)'}")
         except Exception as e:
@@ -260,14 +268,20 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
     if _gemini_key:
         genai.configure(api_key=_gemini_key)
 
-    # Fetch standardization schema from provided CSV URLs
-    # Merge standardization_urls (dedicated param) and other_links (may include std URLs)
+    # Fetch standardization schema from provided CSV URLs.
+    # standardization_urls are schema-definition files — they must NOT be added to the
+    # metadata-extraction context (links/source_texts), only used for standardization.
+    # other_links may contain non-schema context URLs; they stay separate.
     _all_std_urls = list(standardization_urls or [])
     if other_links:
         for _lnk in other_links:
             if _lnk and _lnk not in _all_std_urls:
                 _all_std_urls.append(_lnk)
+    # Keep schema URLs in a frozen set so we can exclude them from source context later
+    _schema_url_set: set = set(_all_std_urls)
     standardization_schema = fetch_standardization_schema(_all_std_urls) if _all_std_urls else {}
+    # Extract and remove raw schema text from schema dict (used only in standardization prompt)
+    _global_schema_text: str = standardization_schema.pop('__schema_text__', '') or ''
     _is_ontology_mode = bool(standardization_schema.get('__ontology_mode__'))
 
     # Auto-populate niche_cases from schema fields when user didn't specify any
@@ -504,7 +518,21 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       #   if not all_output:
       #     text_all, table_all, document_title_all = model.read_docx_text(file_all_path)
       #     all_output = data_preprocess.normalize_for_overlap(text_all) + "\n" + data_preprocess.normalize_for_overlap(". ".join(table_all))
-      if other_links: links += other_links
+      # Add other_links that are NOT schema/standardization URLs to the fetch list.
+      # Schema URLs are only for standardization — they must not pollute source context.
+      if other_links:
+          for _ol in other_links:
+              if _ol and _ol not in _schema_url_set and _ol not in links:
+                  links.append(_ol)
+      # Save schema_text to the temp folder so it's available for reference
+      if _global_schema_text and saveLinkFolder:
+          try:
+              _schema_file = os.path.join(saveLinkFolder, "schema_reference.txt")
+              with open(_schema_file, "w", encoding="utf-8") as _sf:
+                  _sf.write(_global_schema_text)
+              print(f"[schema] Saved schema reference text to {_schema_file}")
+          except Exception as _ste:
+              print(f"[schema] Could not save schema text: {_ste}")
       all_links = copy.deepcopy(links)
       print("all_links: ", all_links)
       await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "initial", "user_file": user_file_label}})
@@ -680,6 +708,32 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       if user_context_text:
         acc_score["source_texts"]["user_uploaded_file"] = user_context_text
 
+      # ── Check for inaccessible paper links and warn the user ──────────────
+      _paper_link_markers = ("doi.org", "pubmed.ncbi.nlm.nih", "europepmc.org",
+                              "ncbi.nlm.nih.gov/pmc", "biorxiv.org", "medrxiv.org")
+      _source_keys = set(acc_score.get("source_texts", {}).keys())
+      _inaccessible_links = []
+      for _pl in all_links:
+        if any(m in _pl for m in _paper_link_markers):
+          # Consider it inaccessible if it has no corresponding source text
+          _has_text = any(
+              k == _pl or k.startswith(f"web_search_{_pl}") or k.startswith(f"external_{_pl}")
+              for k in _source_keys
+          )
+          if not _has_text:
+            _inaccessible_links.append(_pl)
+      if _inaccessible_links:
+        await _progress({
+            "__links_warning__": {
+                "acc": acc,
+                "inaccessible": _inaccessible_links,
+                "message": (
+                    "Cannot access paper(s) — they may require a subscription or block server "
+                    "access. Upload the PDF(s) directly to improve accuracy."
+                ),
+            }
+        })
+
       # ── Step 4: Build combined text from ALL sources ───────────────────────
       # Converts each source entry to a string (handles dict, list, None gracefully)
       # and labels it clearly so the LLM knows which source it came from.
@@ -776,12 +830,16 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Running LLM inference for {acc}…")
       print("start model")
       try:
+        # Inject schema_text into standardization_schema so standardize_with_llm can use it
+        _schema_for_model = dict(standardization_schema)
+        if _global_schema_text:
+            _schema_for_model['__schema_text__'] = _global_schema_text
         predicted_output_info = await model.query_document_info(
           niche_cases=niche_cases,
           saveLinkFolder=saveLinkFolder,
           llm_api_function=model.call_llm_api,
           prompts=acc_prompts,
-          standardization_schema=standardization_schema)
+          standardization_schema=_schema_for_model)
       except Exception as _qdi_err:
         print(f"[LLM] query_document_info failed for {acc}: {_qdi_err}")
         await _progress(f"[{_acc_idx + 1}/{_total_accs}] ⚠ LLM inference failed for {acc} — saving partial result.")
@@ -796,8 +854,14 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         method_used = predicted_output_info[output_acc]["method_used"]
         for pred_out in predicted_outputs:
           print("the pred out: ", pred_out)
-          # only for country, we have to standardize
-          if pred_out.lower() == "country":
+          # only for country, we have to standardize (match "country" or "country_name")
+          if pred_out.lower() in ("country", "country_name"):
+            # Normalize: always store under whichever key exists in acc_score
+            _country_key = pred_out if pred_out in acc_score else (
+                "country" if "country" in acc_score else pred_out
+            )
+            if _country_key not in acc_score:
+                acc_score[_country_key] = {}
             country = predicted_outputs[pred_out]["answer"]
             country_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
             if country_explanation: country_explanation = "-" + country_explanation
@@ -812,21 +876,21 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               if country.lower() != "unknown":
                 stand_country = standardize_location.smart_country_lookup(country.lower())
                 if stand_country.lower() != "not found":
-                  if stand_country.lower() in acc_score[pred_out]:
+                  if stand_country.lower() in acc_score[_country_key]:
                     if country_explanation:
-                      acc_score[pred_out][stand_country.lower()].append(method_used + country_explanation)
+                      acc_score[_country_key][stand_country.lower()].append(method_used + country_explanation)
                   else:
-                    acc_score[pred_out][stand_country.lower()] = [method_used + country_explanation]
+                    acc_score[_country_key][stand_country.lower()] = [method_used + country_explanation]
                   # predicted country is non unknown
                   acc_score["signals"]["predicted_output"] = True #stand_country.lower()
                 else:
-                  if country.lower() in acc_score[pred_out]:
+                  if country.lower() in acc_score[_country_key]:
                     if country_explanation:
                       if len(method_used + country_explanation) > 0:
-                        acc_score[pred_out][country.lower()].append(method_used + country_explanation)
+                        acc_score[_country_key][country.lower()].append(method_used + country_explanation)
                   else:
                     if len(method_used + country_explanation) > 0:
-                      acc_score[pred_out][country.lower()] = [method_used + country_explanation]
+                      acc_score[_country_key][country.lower()] = [method_used + country_explanation]
                   # predicted country is non unknown
                   acc_score["signals"]["predicted_output"] = True #country.lower()
             else:
@@ -904,9 +968,15 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       elapsed = (end - start)
       acc_score["time_cost"] = f"{elapsed:.3f} seconds"
       final_source_links = acc_score["source"]
+      # Collect source keys, excluding schema/standardization URLs which are not metadata sources
+      _raw_source_keys = list(acc_score["source_texts"].keys())
+      _filtered_source_keys = [
+          k for k in _raw_source_keys
+          if k not in _schema_url_set and not any(k == u or k.startswith(f"external_{u}") for u in _schema_url_set)
+      ]
       if final_source_links:
-        final_source_links += list(acc_score["source_texts"].keys())
-      else: final_source_links = list(acc_score["source_texts"].keys())
+        final_source_links += _filtered_source_keys
+      else: final_source_links = _filtered_source_keys
       acc_score["source"] = pipeline.unique_preserve_order(final_source_links)
       acc_score["signals"]["num_publications"] += len(acc_score["source"])
       # Store the NCBI accession identifiers so downstream row-builders can

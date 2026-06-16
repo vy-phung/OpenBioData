@@ -947,7 +947,11 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
     first_line = raw_lines[0].strip() if raw_lines else ""
     explanation_lines_raw = [x for x in raw_lines[1:] if x.strip()]
 
-    output_answers = re.split(r",\s*", first_line)
+    # Use pipe ' | ' as primary separator (avoids splitting comma-containing CONFLICT values)
+    if ' | ' in first_line:
+        output_answers = [x.strip() for x in first_line.split(' | ')]
+    else:
+        output_answers = re.split(r",\s*", first_line)
     output_formats = output_format_str.split(", ") if output_format_str else []
 
     # ── Build per-field explanation map ───────────────────────────────────────
@@ -966,8 +970,10 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
     # Strategy B: ordered lines (one per field)
     ordered_lines = explanation_lines_raw
     if not field_expl_map and len(ordered_lines) == 1 and ". " in ordered_lines[0]:
-        # Single paragraph — split into sentences
-        ordered_lines = [s.strip() for s in ordered_lines[0].split(". ") if s.strip()]
+        line = ordered_lines[0]
+        # Don't split when rich citation tags are present — they may contain '. '
+        if '[Sources:' not in line and '[Conflict:' not in line and '[Source:' not in line:
+            ordered_lines = [s.strip() for s in line.split(". ") if s.strip()]
 
     # ── Assign answers + per-field explanations ───────────────────────────────
     for o, output in enumerate(output_formats):
@@ -1139,11 +1145,31 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
     else:
       schema_hint = ""
 
+    # Build per-sample-table hint if disease/control fields are requested
+    _field_lower = [f.lower() for f in niche_cases]
+    _needs_disease_hint = any(
+        kw in " ".join(_field_lower)
+        for kw in ("disease", "control", "phenotype", "condition", "health", "group", "status", "diagnosis")
+    )
+    _disease_hint = (
+        "IMPORTANT — per-subject assignment: many studies have multiple participant groups "
+        "(e.g. healthy control, T2D, periodontitis, T2D+periodontitis). "
+        "Search for a table or supplementary file that maps individual sample IDs / subject IDs / "
+        "NCBI BioSample accessions to their specific group. "
+        "The accession being analysed is shown in 'Prompt N:' above — find its row in that table and "
+        "extract the group/disease for THAT SPECIFIC SAMPLE, not the study as a whole. "
+        "Check NCBI BioSample attributes (e.g. 'disease', 'health_state', 'clinical_diagnosis', "
+        "'group', 'treatment', 'subject_group') and also paper tables / supplementary metadata tables. "
+        "Do NOT report the full list of study groups — report only the group for this individual sample.\n"
+    ) if _needs_disease_hint else ""
     niche_prompt = (
       f"Extract the following metadata fields: {fields_list}.\n"
       f"{schema_hint}"
-      f"For each field: infer the most specific value from the source text. "
-      f"Write 'unknown' only when truly absent.\n"
+      f"{_disease_hint}"
+      f"For each field: find the most specific value stated anywhere in the sources.\n"
+      f"Infer from context when not explicit. Write 'unknown' ONLY when truly absent from all sources.\n"
+      f"If different sources give DIFFERENT values for the same field, keep the most specific/reliable\n"
+      f"value AND append '##CONFLICT: source_A=<val_A>, source_B=<val_B>' to that value so the conflict is visible.\n"
     )
   else:
     niche_prompt = ""
@@ -1155,30 +1181,43 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
     context_for_llm = dictsAccs[acc]
     if prompt_template == "default":
       field_count = len(output_format_str.split(", "))
+      _fmt_fields = [f.strip() for f in output_format_str.split(",")]
+      _has_country_fmt = any('country' in f.lower() for f in _fmt_fields)
+      _has_type_fmt = any('modern' in f.lower() or 'ancient' in f.lower() for f in _fmt_fields)
+      _country_hint = (
+          "Identify its primary associated geographic location (country preferred; "
+          "fall back to region/continent if no country mentioned; write 'unknown' "
+          "if no geographic clues are present).\n"
+      ) if _has_country_fmt else ""
+      _type_hint = (
+          "Determine if the sample source is 'modern' (living individual) or "
+          "'ancient' (prehistoric/archaeological); assume 'modern' if not specified.\n"
+      ) if _has_type_fmt else ""
       prompt_for_llm = (
       f"Prompt {acc_pos+1}: "
       f"Given the following text snippets, analyze the biological sample with "
       f"accession number {acc_cleaned}.\n"
-      f"Identify its primary associated geographic location (country preferred; "
-      f"fall back to region/continent if no country mentioned; write 'unknown' "
-      f"if no geographic clues are present).\n"
-      f"Determine if the sample source is 'modern' (living individual) or "
-      f"'ancient' (prehistoric/archaeological); assume 'modern' if not specified.\n"
+      f"{_country_hint}"
+      f"{_type_hint}"
       f"{niche_prompt}"
-      f"\nOUTPUT FORMAT (follow exactly):\n"
-      f"Line 1: exactly {field_count} comma-separated values for: {output_format_str}\n"
-      f"Lines 2–{field_count+1}: one sentence per field in the SAME ORDER — "
-      f"no field-name labels, no bullet points, just the sentence. "
-      f"End each sentence with [Source: <source_name>, <specific location>] "
-      f"where source_name is the key from the text snippet header (e.g. NCBI_biosample, "
-      f"a URL, or user_uploaded_file) and specific location is where exactly in that source "
-      f"you found the value (e.g. 'geo_loc_name attribute', 'Methods section paragraph 2', "
-      f"'Table 1 row 3', 'Abstract sentence 2', 'Supplementary Table S1').\n"
-      f"Example for 3 fields:\n"
-      f"  Italy, modern, type 2 diabetes\n"
-      f"  Geo_loc_name attribute set to Italy: Ferrara. [Source: NCBI_biosample, geo_loc_name attribute]\n"
-      f"  Subjects were living patients enrolled in 2018. [Source: https://doi.org/10.1234/x, Methods section]\n"
-      f"  Subject belongs to T2D+P+ group. [Source: https://doi.org/10.1234/x, Table 3]\n"
+      f"\nOUTPUT FORMAT (follow exactly — no markdown, no extra headers):\n"
+      f"Line 1: exactly {field_count} values for: {output_format_str}, separated by ' | ' (space-pipe-space).\n"
+      f"  IMPORTANT: use ' | ' ONLY as the field separator. Within a single field value, use commas freely.\n"
+      f"  For conflicting values within one field write: <best_value> ##CONFLICT: source_A=<val_A>, source_B=<val_B>\n"
+      f"Lines 2–{field_count+1}: one line per field in the SAME ORDER. Each line must have:\n"
+      f"  (a) A narrative sentence citing exactly WHERE — name the specific table/section/figure\n"
+      f"      and include a verbatim excerpt (≤15 words) that confirms the value.\n"
+      f"  (b) [Sources: <key1> (<location>, '<verbatim excerpt>'); <key2> (<location>, '<verbatim excerpt>')]\n"
+      f"      List EVERY source that mentions this field.\n"
+      f"      key = exact header from 'The source - <key>:' blocks in the text (e.g. NCBI_biosample, a URL, user_uploaded_file)\n"
+      f"      location = table/section name (e.g. 'Table 3', 'Abstract', 'species description', 'Supplementary Table S1')\n"
+      f"      verbatim excerpt = ≤15-word exact quote confirming the value\n"
+      f"  (c) [Conflict: <describe any disagreement between sources, or 'none'>]\n"
+      f"Example for 3 fields (country, modern/ancient, disease):\n"
+      f"  Italy | modern | type 2 diabetes ##CONFLICT: study_groups=mixed (T2D+P+, T2D+P-, T2D-P+, T2D-P-), periodontitis\n"
+      f"  The geo_loc_name attribute is 'Italy: Ferrara' and subjects were recruited in northern Italy. [Sources: NCBI_biosample (geo_loc_name attribute, 'Italy: Ferrara'); https://doi.org/10.1234/x (Methods section, 'recruited in northern Italy')] [Conflict: none]\n"
+      f"  Subjects were described as living patients enrolled in 2018 per the Methods section. [Sources: https://doi.org/10.1234/x (Methods section, 'living patients enrolled in 2018')] [Conflict: none]\n"
+      f"  Table 3 row 5 lists the subject group as T2D+P+ and Methods confirms diagnosis as type 2 diabetes. [Sources: https://doi.org/10.1234/x (Table 3 row 5, 'T2D+P+ group'); https://doi.org/10.1234/x (Methods, 'type 2 diabetes diagnosis criteria')] [Conflict: none]\n"
       f"\nText Snippets:\n{context_for_llm}")
       if acc_cleaned.lower() in context_for_llm.lower():
         accession_found_in_text = True
@@ -1194,10 +1233,15 @@ def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict
     if not schema or not extracted_values:
         return extracted_values
 
+    # Pop raw schema text (for prompt context) before field lookup
+    schema_text = schema.pop('__schema_text__', '') or ''
+
     # Only standardize fields that exist in the schema
     fields_to_std = {k: v for k, v in extracted_values.items()
                      if k in schema and v and v.lower() != "unknown"}
     if not fields_to_std:
+        if schema_text:
+            schema['__schema_text__'] = schema_text  # restore for next call
         return extracted_values
 
     schema_lines = []
@@ -1221,8 +1265,15 @@ def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict
                 line += f", allowed=[{', '.join(str(v) for v in allowed[:15])}]"
         schema_lines.append(line)
 
+    schema_context = (
+        f"REFERENCE SCHEMA (use this to understand field definitions and allowed values):\n"
+        f"{schema_text[:5000]}\n\n"
+        if schema_text else ""
+    )
+
     prompt = (
         f"You are a biomedical metadata standardizer for sample {acc}.\n\n"
+        f"{schema_context}"
         f"Map each extracted value to its canonical schema value:\n"
         + "\n".join(schema_lines) + "\n\n"
         "Rules:\n"
@@ -1233,6 +1284,8 @@ def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict
         "4. Return ONLY a JSON object: {\"field\": \"standardized_value\"}.\n"
         "No markdown, no explanation.\n"
     )
+    if schema_text:
+        schema['__schema_text__'] = schema_text  # restore for next call
 
     try:
         response_text, _ = call_llm_api(prompt)
@@ -1580,10 +1633,25 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     global_llm_model_for_counting_tokens = genai.GenerativeModel("gemini-2.5-flash-lite")#('gemini-1.5-flash-latest')
 
     # Determine fields to ask LLM for and output format based on what's known/needed
-    output_format_str = "country_name, modern/ancient/unknown"
     method_used = 'rag_llm' # Will be updated based on the method that yields a result
+    # Only add country_name/sample_type defaults when niche_cases doesn't already cover them.
+    # This avoids duplicate fields and fixes parsing when niche_cases includes "country".
+    _nc_lower = [nc.lower() for nc in (niche_cases or [])]
+    _has_country_field = any('country' in nc for nc in _nc_lower)
+    _has_type_field = any(nc in ('sample_type', 'modern/ancient/unknown', 'modern', 'ancient',
+                                  'sample type', 'sample_source_type') for nc in _nc_lower)
+    _default_fields = []
+    if not _has_country_field:
+        _default_fields.append("country_name")
+    if not _has_type_field:
+        _default_fields.append("modern/ancient/unknown")
     if niche_cases:
-      output_format_str += ", " + ", ".join(niche_cases)
+        _all_fields = _default_fields + list(niche_cases)
+    elif _default_fields:
+        _all_fields = _default_fields
+    else:
+        _all_fields = ["country_name", "modern/ancient/unknown"]
+    output_format_str = ", ".join(_all_fields)
     # Calculate embedding cost for the primary query word
     total_query_cost, current_embedding_cost = 0, 0
     created_prompts = multi_prompts(prompts, output_format_str, niche_cases=niche_cases,
@@ -1663,43 +1731,13 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
         else:
           output_acc[key] = metadata_list[key]
 
-      # ── Batched retry for all unknown fields in ONE LLM call (saves credits) ──
+      # Unknown fields after the first LLM pass stay as "unknown" — no retry.
+      # Re-running the same niche fields against the same context rarely recovers new info
+      # and costs an extra LLM call per sample.
       if unknown_fields:
-        print(f"have to retry for {len(unknown_fields)} unknown field(s) in one batch call: {unknown_fields}")
-        again_fmt = ", ".join(unknown_fields)
-        batch_retry_prompt = (
-          f"Given the following text snippets, analyze accession {acc_cleaned}.\n"
-          f"Extract these specific fields: {again_fmt}\n"
-          f"If a field is not explicitly stated, infer the most specific value from context.\n"
-          f"Write 'unknown' only if the information is truly absent.\n"
-          f"\nOUTPUT FORMAT (follow exactly):\n"
-          f"Line 1: exactly {len(unknown_fields)} comma-separated values in this order: {again_fmt}\n"
-          f"Lines 2+: one sentence per field explaining how each non-unknown value was found.\n"
-          f"\nText Snippets:\n{context_for_llm[:120000]}"
-        )
-        print(f"len of batch retry prompt: {len(batch_retry_prompt)}")
-        try:
-          retry_response, retry_model = call_llm_api(batch_retry_prompt)
-          print("Batch retry LLM response:", retry_response[:300])
-          llm_cost = 0
-          if retry_model:
-            try:
-              in_toks = global_llm_model_for_counting_tokens.count_tokens(batch_retry_prompt).total_tokens
-              out_toks = global_llm_model_for_counting_tokens.count_tokens(retry_response).total_tokens
-              llm_cost = (in_toks / 1000) * PRICE_PER_1K_INPUT_LLM + (out_toks / 1000) * PRICE_PER_1K_OUTPUT_LLM
-              print(f"  DEBUG: batch retry cost: ${llm_cost:.6f}")
-            except Exception:
-              pass
-          total_query_cost += llm_cost
-          retry_metadata = parse_multi_sample_llm_output(retry_response, again_fmt)
-          for key_niche, val in retry_metadata.items():
-            if key_niche not in outputs:
-              output_acc[key_niche] = val
-        except Exception as _retry_err:
-          print(f"Batch retry LLM call failed: {_retry_err}")
-          # Keep unknown placeholders for these fields
-          for uf in unknown_fields:
-            output_acc[uf] = {"answer": "unknown", f"{uf}_explanation": "unknown"}
+        print(f"{len(unknown_fields)} field(s) returned unknown — keeping as-is: {unknown_fields}")
+        for uf in unknown_fields:
+          output_acc[uf] = {"answer": "unknown", f"{uf}_explanation": "unknown"}
       # ── LLM-based standardization pass ───────────────────────────────────
       # Run after extraction; maps free-text values to canonical schema values.
       if standardization_schema and output_acc:

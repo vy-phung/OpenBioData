@@ -195,42 +195,42 @@ class PDFFast:
         self.local_path = self._ensure_local()
         self.doc = None  # Lazy load in PyMuPDF
 
+    _HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/pdf,text/html,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+    }
+
     def _ensure_local(self):
         """Download if URL, else return local path."""
+        if not self.pdf.startswith("http"):
+            return self.pdf
         try:
-          if self.pdf.startswith("http"):
-              name = os.path.basename(self.pdf.split("?")[0])
-              local_path = os.path.join(self.saveFolder, name)
-              if not os.path.exists(local_path):
-                  pdf_link = self._resolve_pdf_link(self.pdf)
-                  if not pdf_link:
-                      raise FileNotFoundError(f"No PDF link found for {self.pdf}")
-                  print(f"⬇ Downloading PDF: {pdf_link}")
-                  r = requests.get(pdf_link, timeout=15)
-                  r.raise_for_status()
-                  with open(local_path, "wb") as f:
-                      f.write(r.content)
-              return local_path
-          return self.pdf
-        except:
-          try:
-            import requests
-            if self.pdf.startswith("http"):
-              url = self.pdf
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-                "Accept": "application/pdf",
-                "Referer": "https://www.researchgate.net/",
-            }
-
-            r = requests.get(url, headers=headers)
-            r.raise_for_status()
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.pdf)
+            qs = parse_qs(parsed.query)
+            name = qs.get('file', [os.path.basename(parsed.path)])[0]
+            if not name:
+                name = 'download.pdf'
             local_path = os.path.join(self.saveFolder, name)
-
-            with open(local_path, "wb") as f:
-                f.write(r.content)
+            if not os.path.exists(local_path):
+                pdf_link = self._resolve_pdf_link(self.pdf)
+                if not pdf_link:
+                    raise FileNotFoundError(f"No PDF link found for {self.pdf}")
+                print(f"⬇ Downloading PDF: {pdf_link}")
+                r = requests.get(pdf_link, headers=self._HEADERS, timeout=30, allow_redirects=True)
+                r.raise_for_status()
+                ct = r.headers.get('Content-Type', '')
+                if 'text/html' in ct:
+                    raise ValueError(
+                        f"Publisher returned HTML instead of PDF (blocked or requires login): {pdf_link}"
+                    )
+                with open(local_path, "wb") as f:
+                    f.write(r.content)
             return local_path
-          except:
+        except Exception as e:
+            print(f"❌ Could not download PDF {self.pdf}: {e}")
             return self.pdf
 
     def _resolve_pdf_link(self, url):

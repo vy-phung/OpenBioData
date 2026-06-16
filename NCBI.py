@@ -753,30 +753,6 @@ def extract_NCBI_directly(accession):
       outputs[accession] = text
   return outputs    
 
-def extract_NCBI_fromLinks(links):
-  """ncbi_links = {"bioproject":"https://www.ncbi.nlm.nih.gov/bioproject/976261", # example: https://www.ncbi.nlm.nih.gov/bioproject/976261: PRJNA976261
-      "biosample":"https://www.ncbi.nlm.nih.gov/biosample/SAMN35361956", # example: https://www.ncbi.nlm.nih.gov/biosample/SAMN35361956: SAMN35361956
-      "accession": "https://www.ncbi.nlm.nih.gov/nuccore/KU131308", # example: https://www.ncbi.nlm.nih.gov/nuccore/KU131308: KU131308
-      }"""
-  outputs = {}
-  for link in links:
-    if link.startswith("https://www.ncbi.nlm.nih.gov/bioproject/"):
-      markdown_text = pipeline.fetch_text_from_url(link)
-      bioproject_info = parse_bioproject_markdown(markdown_text)
-      # get biosamples from biosample links
-      if biosamples:
-        biosamples_lists = []
-        for biosample_url in biosamples:
-          biosample_text = pipeline.fetch_text_from_url(biosample_url)
-          biosamples_lists += extract_biosample_links(biosample_text)
-        if biosamples_lists:  biosamples_lists = pipeline.unique_preserve_order(biosamples_lists)
-        bioproject_info["biosamples"] = biosamples_lists
-      outputs[link] = bioproject_info
-    else:
-      markdown_text = pipeline.fetch_text_from_url(link)
-      outputs[link] = markdown_text
-  return outputs  
-
 import requests
 
 def get_doi_via_europepmc(pmid):

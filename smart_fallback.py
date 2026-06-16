@@ -65,6 +65,66 @@ def _search_any(query, max_results=3):
     if not links:
         links = search_europepmc_free(query, max_results)
     return links
+
+def search_ncbi_elink(accession_id):
+    """Use NCBI elink to find PubMed papers directly linked to a nucleotide accession.
+    Free, no API key needed — NCBI explicitly maintains these accession→paper links."""
+    try:
+        Entrez.email = os.environ.get("NCBI_EMAIL", "your.email@example.com")
+        handle = Entrez.esearch(db="nucleotide", term=accession_id, retmax=1)
+        record = Entrez.read(handle)
+        handle.close()
+        uid_list = record.get("IdList", [])
+        if not uid_list:
+            return []
+        uid = uid_list[0]
+        link_handle = Entrez.elink(dbfrom="nucleotide", db="pubmed", id=uid)
+        link_record = Entrez.read(link_handle)
+        link_handle.close()
+        pmids = []
+        for linkset in link_record:
+            for linksetdb in linkset.get("LinkSetDb", []):
+                for link in linksetdb.get("Link", []):
+                    pmids.append(link["Id"])
+        links = [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in pmids]
+        print(f"  [NCBI elink] {len(links)} linked papers for {accession_id}")
+        return links
+    except Exception as e:
+        print(f"NCBI elink error: {e}")
+        return []
+
+def search_europepmc_fulltext(accession_id, max_results=5):
+    """Search Europe PMC full-text (not just abstracts) for papers mentioning this accession.
+    HAS_FT:y restricts to papers with full text, where accession IDs appear in body/tables."""
+    try:
+        r = _requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={
+                "query": f'"{accession_id}" HAS_FT:y',
+                "format": "json",
+                "pageSize": max_results,
+                "resultType": "lite",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("resultList", {}).get("result", [])
+        links = []
+        for item in results:
+            pmcid = item.get("pmcid")
+            pmid = item.get("pmid")
+            doi = item.get("doi")
+            if pmcid:
+                links.append(f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/")
+            elif pmid:
+                links.append(f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
+            elif doi:
+                links.append(f"https://doi.org/{doi}")
+        print(f"  [EuropePMC fulltext] {len(links)} results for {accession_id}")
+        return links
+    except Exception as e:
+        print(f"EuropePMC fulltext search error: {e}")
+        return []
 try:
     import mtdna_classifier
 except ImportError:
@@ -435,12 +495,22 @@ def smart_google_search(accession_id, metadata):
   )
   for q in queries:
       print("\n🔍 Query:", q)
-      results = _search_fn(q, 2)
+      results = _search_fn(q, 5)
       for link in results:
           print(f"- {link}")
           if link not in links:
               links.append(link)
-  #filter_links = filter_links_by_metadata(links)
+
+  # NCBI elink: free, finds papers NCBI explicitly links to this accession
+  for link in search_ncbi_elink(accession_id):
+      if link not in links:
+          links.append(link)
+
+  # Europe PMC full-text: finds accession in paper body + supplementary tables
+  for link in search_europepmc_fulltext(accession_id):
+      if link not in links:
+          links.append(link)
+
   return links
 # Method 2: Prompt LLM better or better ai search api with all
 # the total information from even ncbi and all search

@@ -66,31 +66,6 @@ async def pipeline_classify_sample_location_cached(accession,stop_flag=None, sav
 #     top_location, count = counts.most_common(1)[0]
 #     return counts, (top_location, count)
 
-# Store feedback (with required fields)
-
-def store_feedback_to_google_sheets(accession, answer1, answer2, contact=""):
-    if not answer1.strip() or not answer2.strip():
-        return "⚠️ Please answer both questions before submitting."
-
-    try:
-        # ✅ Step: Load credentials from Hugging Face secret
-        creds_dict = json.loads(os.environ["GCP_CREDS_JSON"])
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-
-        # Connect to Google Sheet
-        client = gspread.authorize(creds)
-        sheet = client.open("feedback_mtdna").sheet1  # make sure sheet name matches
-
-        # Append feedback
-        sheet.append_row([accession, answer1, answer2, contact])
-        return "✅ Feedback submitted. Thank you!"
-
-    except Exception as e:
-        return f"❌ Error submitting feedback: {e}"
-
-import re
-
 def is_valid_accession(acc):
     """
     Accept any NCBI identifier that ncbi_resolver can handle,
@@ -150,27 +125,6 @@ def extract_accessions_from_input(file=None, raw_text=""):
             return [],[], f"Failed to read file: {e}"
             
     return list(accessions), list(invalid_accessions), None
-# ✅ Add a new helper to backend: `filter_unprocessed_accessions()`
-def get_incomplete_accessions(file_path):
-    df = pd.read_excel(file_path)
-
-    incomplete_accessions = []
-    for _, row in df.iterrows():
-        sample_id = str(row.get("Sample ID", "")).strip()
-
-        # Skip if no sample ID
-        if not sample_id:
-            continue
-
-        # Drop the Sample ID and check if the rest is empty
-        other_cols = row.drop(labels=["Sample ID"], errors="ignore")
-        if other_cols.isna().all() or (other_cols.astype(str).str.strip() == "").all():
-            # Extract the accession number from the sample ID using regex
-            match = re.search(r"\b[A-Z]{2,4}\d{4,}", sample_id)
-            if match:
-                incomplete_accessions.append(match.group(0))
-    print(len(incomplete_accessions))
-    return incomplete_accessions
 
 # GOOGLE_SHEET_NAME = "known_samples"
 # USAGE_DRIVE_FILENAME = "user_usage_log.json"
@@ -613,64 +567,6 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
         print(f"❌ Failed to write Excel file {filename}: {e}")
 
 
-# save the batch input in JSON file
-def save_to_json(all_rows, summary_text, flag_text, filename):
-    output_dict = {
-        "Detailed_Results": all_rows#,  # <-- make sure this is a plain list, not a DataFrame
-        # "Summary_Text": summary_text,
-        # "Ancient_Modern_Flag": flag_text
-    }
-
-    # If all_rows is a DataFrame, convert it
-    if isinstance(all_rows, pd.DataFrame):
-        output_dict["Detailed_Results"] = all_rows.to_dict(orient="records")
-
-    with open(filename, "w") as external_file:
-        json.dump(output_dict, external_file, indent=2)
-
-# save the batch input in Text file
-def save_to_txt(all_rows, summary_text, flag_text, filename):
-    if isinstance(all_rows, pd.DataFrame):
-        detailed_results = all_rows.to_dict(orient="records")
-    output = ""
-    #output += ",".join(list(detailed_results[0].keys())) + "\n\n"
-    output += ",".join([str(k) for k in detailed_results[0].keys()]) + "\n\n"
-    for r in detailed_results:
-      output += ",".join([str(v) for v in r.values()]) + "\n\n"
-    with open(filename, "w") as f:
-        f.write("=== Detailed Results ===\n")
-        f.write(output + "\n")
-
-        # f.write("\n=== Summary ===\n")
-        # f.write(summary_text + "\n")
-        
-        # f.write("\n=== Ancient/Modern Flag ===\n")
-        # f.write(flag_text + "\n")
-
-def save_batch_output(all_rows, output_type, summary_text=None, flag_text=None):
-    tmp_dir = tempfile.mkdtemp()
-
-    #html_table = all_rows.value  # assuming this is stored somewhere
-
-    # Parse back to DataFrame
-    #all_rows = pd.read_html(all_rows)[0]  # [0] because read_html returns a list
-    all_rows = pd.read_html(StringIO(all_rows))[0]
-    print(all_rows)
-
-    if output_type == "Excel":
-        file_path = f"{tmp_dir}/batch_output.xlsx"
-        save_to_excel(all_rows, summary_text, flag_text, file_path)
-    elif output_type == "JSON":
-        file_path = f"{tmp_dir}/batch_output.json"
-        save_to_json(all_rows, summary_text, flag_text, file_path)
-        print("Done with JSON")
-    elif output_type == "TXT":
-        file_path = f"{tmp_dir}/batch_output.txt"
-        save_to_txt(all_rows, summary_text, flag_text, file_path)
-    else:
-        return gr.update(visible=False)  # invalid option
-    
-    return gr.update(value=file_path, visible=True)
 # save cost by checking the known outputs
 
 # def check_known_output(accession):
@@ -1103,107 +999,3 @@ def save_user_usage(usage_dict):
     except Exception as e:
         print(f"❌ Failed to save user usage to Google Sheets: {e}")
 
-
-
-
-# def increment_usage(user_id, num_samples=1):
-#     usage = load_user_usage()
-#     if user_id not in usage:
-#         usage[user_id] = 0
-#     usage[user_id] += num_samples
-#     save_user_usage(usage)
-#     return usage[user_id]
-# def increment_usage(email: str, count: int):
-#     usage = load_user_usage()
-#     email_key = email.strip().lower()
-#     usage[email_key] = usage.get(email_key, 0) + count
-#     save_user_usage(usage)
-#     return usage[email_key]
-def increment_usage(email: str, count: int = 1):
-    usage, permitted = load_user_usage()
-    email_key = email.strip().lower()
-    #usage[email_key] = usage.get(email_key, 0) + count
-    current = usage.get(email_key, 0)
-    new_value = current + count
-    max_allowed = permitted.get(email_key) or 50
-    usage[email_key] = max(current, new_value)  # ✅ Prevent overwrite with lower
-    print(f"🧪 increment_usage saving: {email_key=} {current=} + {count=} => {usage[email_key]=}")
-    print("max allow is: ", max_allowed)
-    save_user_usage(usage)
-    return usage[email_key], max_allowed
-
-
-# run the batch
-def summarize_batch(file=None, raw_text="", resume_file=None, user_email="", 
-                    stop_flag=None, output_file_path=None, 
-                    limited_acc=50, yield_callback=None):
-    if user_email:
-      limited_acc += 10
-    accessions, error = extract_accessions_from_input(file, raw_text)
-    if error:
-        #return [], "", "", f"Error: {error}"
-        return [], f"Error: {error}", 0, "", ""
-    if resume_file:
-      accessions = get_incomplete_accessions(resume_file)
-    tmp_dir = tempfile.mkdtemp()
-    if not output_file_path:
-      if resume_file:
-        output_file_path = os.path.join(tmp_dir, resume_file) 
-      else:  
-        output_file_path = os.path.join(tmp_dir, "batch_output_live.xlsx")
-
-    all_rows = []
-    # all_summaries = []
-    # all_flags = []
-    progress_lines = []
-    warning = ""
-    if len(accessions) > limited_acc:  
-      accessions = accessions[:limited_acc]
-      warning = f"Your number of accessions is more than the {limited_acc}, only handle first {limited_acc} accessions"
-    for i, acc in enumerate(accessions):
-        if stop_flag and stop_flag.value:
-            line = f"🛑 Stopped at {acc} ({i+1}/{len(accessions)})"
-            progress_lines.append(line)
-            if yield_callback:
-              yield_callback(line)
-            print("🛑 User requested stop.")
-            break
-        print(f"[{i+1}/{len(accessions)}] Processing {acc}")
-        try:
-            # rows, summary, label, explain = summarize_results(acc)
-            rows = summarize_results(acc)
-            all_rows.extend(rows)
-            # all_summaries.append(f"**{acc}**\n{summary}")
-            # all_flags.append(f"**{acc}**\n### 🏺 Ancient/Modern Flag\n**{label}**\n\n_Explanation:_ {explain}")
-            #save_to_excel(all_rows, summary_text="", flag_text="", filename=output_file_path)
-            save_to_excel(all_rows, summary_text="", flag_text="", filename=output_file_path, is_resume=bool(resume_file))
-            line = f"✅ Processed {acc} ({i+1}/{len(accessions)})"
-            progress_lines.append(line)
-            if yield_callback:
-              yield_callback(f"✅ Processed {acc} ({i+1}/{len(accessions)})")
-        except Exception as e:
-            print(f"❌ Failed to process {acc}: {e}")
-            continue
-            #all_summaries.append(f"**{acc}**: Failed - {e}")
-        #progress_lines.append(f"✅ Processed {acc} ({i+1}/{len(accessions)})")
-        limited_acc -= 1
-    """for row in all_rows:
-          source_column = row[2]  # Assuming the "Source" is in the 3rd column (index 2)
-          
-          if source_column.startswith("http"):  # Check if the source is a URL
-              # Wrap it with HTML anchor tags to make it clickable
-              row[2] = f'<a href="{source_column}" target="_blank" style="color: blue; text-decoration: underline;">{source_column}</a>'"""
-    if not warning:
-      warning = f"You only have {limited_acc} left"
-    if user_email.strip():
-        user_hash = hash_user_id(user_email)
-        total_queries = increment_usage(user_hash, len(all_rows))
-    else:
-        total_queries = 0
-    yield_callback("✅ Finished!")
-
-    # summary_text = "\n\n---\n\n".join(all_summaries)
-    # flag_text = "\n\n---\n\n".join(all_flags)
-    #return all_rows, summary_text, flag_text, gr.update(visible=True), gr.update(visible=False)
-    #return all_rows, gr.update(visible=True), gr.update(visible=False)
-    return all_rows, output_file_path, total_queries, "\n".join(progress_lines), warning

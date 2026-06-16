@@ -109,7 +109,8 @@ def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0)
                 delay *= 2
             else:
                 raise
-        except (_http_client.IncompleteRead, ConnectionError, TimeoutError) as exc:
+        except (_http_client.IncompleteRead, ConnectionError, TimeoutError,
+                EOFError, OSError) as exc:
             last_exc = exc
             if attempt < max_retries:
                 print(f'  [NCBI] Network error ({type(exc).__name__}) — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
@@ -443,6 +444,10 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
       3. SRA fallback: esearch SRA with [bioproject] and parse BioSample from
          ExpXml (required for SRA-only projects like metagenomics BioProjects)
       4. ENA API fallback (for PRJEB projects not mirrored in NCBI biosample DB)
+      5. Nucleotide fallback: esearch nucleotide with [BioProject], then elink
+         nucleotide→biosample (5A) or use nucleotide accessions directly (5B).
+         Handles WGS / targeted-locus GenBank-only projects (e.g. PRJNA1177498,
+         PRJNA400168) that have no BioSample or SRA records at all.
 
     Returns multi-entry dict keyed by BioSample ID (up to max_samples).
     """
@@ -599,6 +604,97 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
         if ena_result:
             print(f'  [BioProject] {bioproject_id} -> {len(ena_result)} samples via ENA API')
             return ena_result
+
+    # ── Strategy 5: nucleotide (GenBank) fallback for WGS / GenBank-only BioProjects ──
+    # Used when the BioProject has sequences in the nucleotide DB but no BioSamples
+    # registered (e.g. PRJNA1177498 WGS, PRJNA400168 targeted loci).
+    if not biosample_ids:
+        print(f'  [BioProject] Trying nucleotide fallback for {bioproject_id}...')
+        try:
+            nuc_url = (
+                f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
+                f'?db=nucleotide&term={bioproject_id}[BioProject]'
+                f'&retmax={max_samples}&retmode=json&email={Entrez.email}'
+            )
+            nuc_data = _json.loads(_urlopen_with_retry(nuc_url).decode('utf-8', errors='replace'))
+            _safe_sleep()
+            esres = nuc_data.get('esearchresult') or {}
+            nuc_uids = esres.get('idlist') or []
+            if not isinstance(nuc_uids, list):
+                nuc_uids = []
+            total_nuc = int(esres.get('count') or 0)
+
+            if nuc_uids:
+                if total_nuc > max_samples:
+                    print(f'  [BioProject] WARNING: {bioproject_id} has {total_nuc} nucleotide records. '
+                          f'Processing first {len(nuc_uids)}.')
+                else:
+                    print(f'  [BioProject] Strategy 5: {total_nuc} nucleotide record(s) found')
+
+                # Sub-strategy A: elink nucleotide→biosample to find BioSample UIDs in bulk
+                nuc_bs_uids: list = []
+                try:
+                    elink_url = (
+                        f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi'
+                        f'?dbfrom=nucleotide&db=biosample&id={",".join(nuc_uids)}'
+                        f'&retmode=xml&email={Entrez.email}'
+                    )
+                    elink_raw = _urlopen_with_retry(elink_url).decode('utf-8', errors='replace')
+                    _safe_sleep()
+                    try:
+                        elink_root = ET.fromstring(elink_raw)
+                        for linkset_db in elink_root.findall('.//LinkSetDb'):
+                            if linkset_db.findtext('DbTo', '').lower() == 'biosample':
+                                for link in linkset_db.findall('Link/Id'):
+                                    if link.text and link.text not in nuc_bs_uids:
+                                        nuc_bs_uids.append(link.text)
+                    except ET.ParseError:
+                        nuc_bs_uids = re.findall(r'<Id>(\d+)</Id>', elink_raw)
+                except Exception as e:
+                    print(f'  [BioProject] Strategy 5 elink failed: {e}')
+
+                if nuc_bs_uids:
+                    print(f'  [BioProject] Strategy 5: {len(nuc_bs_uids)} BioSample UIDs via nucleotide elink')
+                    try:
+                        handle = Entrez.esummary(db='biosample',
+                                                 id=','.join(nuc_bs_uids[:max_samples]))
+                        bs_sum5 = Entrez.read(handle); handle.close()
+                        _safe_sleep()
+                        for doc in bs_sum5.get('DocumentSummarySet', {}).get('DocumentSummary', []):
+                            acc5 = doc.get('Accession', '')
+                            if acc5.startswith('SAM') and acc5 not in biosample_ids:
+                                biosample_ids.append(acc5)
+                        if biosample_ids:
+                            print(f'  [BioProject] Strategy 5A yielded {len(biosample_ids)} BioSample accessions')
+                    except Exception as e:
+                        print(f'  [BioProject] Strategy 5 biosample esummary failed: {e}')
+
+                # Sub-strategy B: no BioSample links — use nucleotide accessions directly
+                if not biosample_ids:
+                    print(f'  [BioProject] Strategy 5: no BioSample links, fetching accession strings')
+                    try:
+                        acc_url = (
+                            f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi'
+                            f'?db=nucleotide&id={",".join(nuc_uids)}'
+                            f'&rettype=acc&retmode=text&email={Entrez.email}'
+                        )
+                        acc_text = _urlopen_with_retry(acc_url).decode('utf-8', errors='replace')
+                        _safe_sleep()
+                        nuc_accs = [a.split('.')[0] for a in acc_text.strip().splitlines()
+                                    if a.strip()]
+                    except Exception as e:
+                        print(f'  [BioProject] Strategy 5 acc fetch failed: {e}')
+                        nuc_accs = []
+
+                    if nuc_accs:
+                        nuc_result = {
+                            acc: {**_empty_record(acc), 'bioproject': bioproject_id}
+                            for acc in nuc_accs
+                        }
+                        print(f'  [BioProject] Strategy 5B yielded {len(nuc_result)} nucleotide records')
+                        return nuc_result
+        except Exception as e:
+            print(f'  [BioProject] Strategy 5 failed: {e}')
 
     if not biosample_ids:
         print(f'  [BioProject] WARNING: no BioSamples found for {bioproject_id}')

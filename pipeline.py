@@ -139,16 +139,6 @@ def download_file_from_drive(remote_name, folder_id, local_path):
     while not done:
         _, done = downloader.next_chunk()
     return True
-def download_drive_file_content(file_id):
-    request = drive_service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    return fh.read().decode("utf-8")
-
 import multiprocessing
 
 def run_with_timeout(func, args=(), kwargs={}, timeout=30):
@@ -387,13 +377,13 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
                   print("length of context after reducing: ", len(all_output))   
                 print("len new all output after sup link: ", len(all_output))
           # no doi then google custom search api
-    if doi=="unknown" or len(article_text) == 0 or "Just a moment...Enable JavaScript and cookies to continue".lower() in article_text.lower() or "403 Forbidden Request".lower() in article_text.lower():
-        # might find the article
-        print("no article text, start tem link")  
-        more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(iso, acc, saveLinkFolder, niche_cases)
-        if more_all_output: all_output += more_all_output
-        if more_links: links += more_links
-        if more_linksWithTexts: linksWithTexts.update(more_linksWithTexts)   
+    # Always run smart search to find sources beyond the DOI paper
+    # (culture collections, citing papers, institutional repos, etc.)
+    print("running smart search to augment sources")
+    more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(iso, acc, saveLinkFolder, niche_cases)
+    if more_all_output: all_output += more_all_output
+    if more_links: links += more_links
+    if more_linksWithTexts: linksWithTexts.update(more_linksWithTexts)
     return linksWithTexts, links, all_output
 
 # Main execution

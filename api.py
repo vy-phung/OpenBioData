@@ -72,6 +72,116 @@ def _open_or_create_worksheet(wb, title: str, headers: list):
     return ws
 
 
+# ── Known-sample result cache (Google Sheet "KnownCachedSamples") ─────────────
+_CACHE_SHEET_NAME = "KnownCachedSamples"
+_CACHE_HEADERS    = ["sample_id", "bioproject", "timestamp", "fields_json"]
+_CACHE_TTL_SECS   = 300   # reload from sheet at most every 5 minutes
+
+_cache_mem: dict  = {}          # (sample_id, bioproject) → {field: value}
+_cache_load_time: list = [0.0]  # mutable container so we can update in nested fn
+
+def _cache_open_sheet():
+    """Return the KnownCachedSamples gspread worksheet, creating it if needed."""
+    creds_dict = json.loads(os.environ.get("GCP_CREDS_JSON", "{}"))
+    if not creds_dict:
+        return None
+    from oauth2client.service_account import ServiceAccountCredentials
+    import gspread
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    wb = client.open("Report")
+    return _open_or_create_worksheet(wb, _CACHE_SHEET_NAME, _CACHE_HEADERS)
+
+
+def _cache_reload() -> None:
+    """Load all rows from the cache sheet into _cache_mem."""
+    import time
+    try:
+        ws = _cache_open_sheet()
+        if ws is None:
+            return
+        rows = ws.get_all_records(expected_headers=_CACHE_HEADERS)
+        new_mem: dict = {}
+        for r in rows:
+            sid = (r.get("sample_id") or "").strip()
+            bp  = (r.get("bioproject") or "").strip()
+            fj  = r.get("fields_json") or "{}"
+            if not sid:
+                continue
+            try:
+                fields = json.loads(fj)
+            except Exception:
+                fields = {}
+            new_mem[(sid, bp)] = fields
+        _cache_mem.clear()
+        _cache_mem.update(new_mem)
+        _cache_load_time[0] = time.time()
+        print(f"[cache] Loaded {len(_cache_mem)} cached samples.")
+    except Exception as e:
+        print(f"[cache] Reload failed: {e}")
+
+
+def _cache_ensure_fresh() -> None:
+    import time
+    if time.time() - _cache_load_time[0] > _CACHE_TTL_SECS:
+        _cache_reload()
+
+
+def _cache_get(sample_id: str, bioproject: str, requested_fields: list):
+    """Return cached field dict if all requested fields have non-unknown values; else None."""
+    _cache_ensure_fresh()
+    key = (sample_id.strip(), (bioproject or "").strip())
+    cached = _cache_mem.get(key)
+    if cached is None:
+        return None
+    _unknown = {"unknown", "Unknown", "UNKNOWN", ""}
+    if all(str(cached.get(f, "unknown")).strip() not in _unknown for f in requested_fields):
+        return cached
+    return None  # some fields still unknown → rerun
+
+
+def _cache_save(sample_id: str, bioproject: str, fields: dict) -> None:
+    """Save/update a sample result in the cache sheet and in-memory dict."""
+    try:
+        _cache_ensure_fresh()
+        from datetime import datetime, timezone
+        ts  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        key = (sample_id.strip(), (bioproject or "").strip())
+        # Merge with existing cached values so we don't overwrite known fields with unknown
+        existing = _cache_mem.get(key, {})
+        merged = {**existing}
+        for f, v in fields.items():
+            if f in ("biosample_accession", "bioproject", "sra_accession", "genbank_accession",
+                     "explanation", "confidence_score", "time_cost", "_additional_fields"):
+                continue  # skip non-field columns
+            if str(v).strip().lower() not in ("unknown", ""):
+                merged[f] = v
+            elif f not in merged:
+                merged[f] = v
+        _cache_mem[key] = merged
+        fj = json.dumps(merged, ensure_ascii=False)
+
+        ws = _cache_open_sheet()
+        if ws is None:
+            return
+        # Find existing row (search column A for sample_id, then check column B)
+        col_a = ws.col_values(1)   # sample_id column
+        col_b = ws.col_values(2)   # bioproject column
+        row_idx = None
+        for i, (sid, bp) in enumerate(zip(col_a, col_b), start=1):
+            if sid == sample_id and bp == (bioproject or ""):
+                row_idx = i
+                break
+        if row_idx:
+            ws.update(f"C{row_idx}:D{row_idx}", [[ts, fj]])
+        else:
+            ws.append_row([sample_id, bioproject or "", ts, fj])
+        print(f"[cache] Saved {sample_id} / {bioproject}.")
+    except Exception as e:
+        print(f"[cache] Save failed for {sample_id}: {e}")
+
+
 def _log_analytics(event: str, session_id: str, email: str, properties: dict, user_agent: str) -> None:
     from datetime import datetime, timezone
     import gspread
@@ -193,9 +303,11 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
 
         # ── Per-field values + collect explanation parts ──────────────────────
         import re as _re
-        _source_tag_re = _re.compile(r'\[Source:\s*([^\]]+)\]', _re.IGNORECASE)
+        _source_tag_re   = _re.compile(r'\[Sources?:\s*([^\]]+)\]', _re.IGNORECASE)
+        _conflict_tag_re = _re.compile(r'\[Conflict:\s*([^\]]+)\]', _re.IGNORECASE)
 
         explanation_parts: list = []
+        conflict_parts:    list = []
         extra: dict = {}          # per-field explanation detail for Sheet 2
         method_text = ""          # initialized here so it's always defined even when niche_list is empty
         field = None
@@ -214,6 +326,12 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                 value       = "unknown"
                 method_text = ""
 
+            # If LLM flagged a conflict in the value itself (##CONFLICT:), extract it
+            if "##CONFLICT:" in value:
+                val_parts = value.split("##CONFLICT:", 1)
+                value     = val_parts[0].strip()
+                inline_conflict = val_parts[1].strip()
+                conflict_parts.append(f"• {field}: {inline_conflict}")
             row[field] = value
 
             if value.lower() == "unknown":
@@ -222,26 +340,38 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                 )
             elif method_text:
                 # Strip method prefix (e.g. "rag_llm-") for cleaner display
-                display_method = method_text
-                if "-" in display_method[:20]:
-                    display_method = display_method.split("-", 1)[-1].strip()
-                # Trim to one sentence
-                if ". " in display_method:
-                    display_method = display_method.split(". ")[0] + "."
-                explanation_parts.append(f"[{field}] {value} — {display_method}")
-                extra[f"{field}_explanation"] = method_text
-                # Extract [Source: source_name, specific_location] tag per field
-                _src_match = _source_tag_re.search(method_text)
+                clean_method = method_text
+                if "-" in clean_method[:20]:
+                    clean_method = clean_method.split("-", 1)[-1].strip()
+
+                # Extract [Sources:] and [Conflict:] tags before stripping them
+                _src_match  = _source_tag_re.search(clean_method)
+                _conf_match = _conflict_tag_re.search(clean_method)
                 if _src_match:
                     extra[f"{field}_source_location"] = _src_match.group(1).strip()
+                if _conf_match:
+                    conflict_text = _conf_match.group(1).strip()
+                    if conflict_text.lower() not in ("none", "no conflict", "n/a"):
+                        extra[f"{field}_conflict"] = conflict_text
+                        conflict_parts.append(f"• {field}: {conflict_text}")
+
+                # Narrative = text before the first tag (clean for explanation column)
+                narrative = _source_tag_re.sub("", clean_method)
+                narrative = _conflict_tag_re.sub("", narrative).strip()
+                # Trim narrative to one sentence for the explanation column
+                display_narrative = narrative
+                if ". " in display_narrative and '[' not in display_narrative:
+                    display_narrative = display_narrative.split(". ")[0] + "."
+
+                explanation_parts.append(f"• {field}: {display_narrative}")
+                extra[f"{field}_explanation"] = method_text
+                extra[f"{field}_narrative"]   = narrative
             else:
-                explanation_parts.append(f"[{field}] {value}")
+                explanation_parts.append(f"• {field}: {value}")
 
         # ── Source links appended at end of explanation ───────────────────────
         source_list = data.get("source", []) or []
         source_text = "\n".join(source_list) if source_list else "No external links"
-        if explanation_parts:
-            explanation_parts.append(f"\nSources: {source_text}")
 
         # ── Confidence score: numeric + tier + short reason ───────────────────
         signals     = data.get("signals", {}) or {}
@@ -285,27 +415,47 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         confidence_display = f"{conf_score} ({tier_icon})" + (f" — {reason_str}" if reason_str else "")
 
         # ── Final columns ─────────────────────────────────────────────────────
-        # Build per-field source location column: shows value + exactly where it came from
+        # Build per-field source column: narrative + indented per-source citations
         per_field_source_lines = []
         for field in niche_list:
             field_val = str(row.get(field, ""))
             if field_val.lower() in ("unknown", ""):
                 continue
-            loc_key = f"{field}_source_location"
+            narrative_key  = f"{field}_narrative"
+            loc_key        = f"{field}_source_location"
+            narrative_text = extra.get(narrative_key, "")
+
             if loc_key in extra:
-                per_field_source_lines.append(f"{field} = {field_val!r}  ← [{extra[loc_key]}]")
+                # Split "key1 (loc, 'text'); key2 (...)" into individual citations
+                raw_cites = extra[loc_key]
+                cite_entries = [c.strip() for c in raw_cites.split(";") if c.strip()]
+                cite_lines   = "\n  ".join(f"→ {c}" for c in cite_entries)
+                if narrative_text:
+                    per_field_source_lines.append(
+                        f"• {field}: {narrative_text}\n  {cite_lines}"
+                    )
+                else:
+                    per_field_source_lines.append(f"• {field}:\n  {cite_lines}")
+            elif narrative_text:
+                per_field_source_lines.append(f"• {field}: {narrative_text}\n  → see linked sources")
             else:
-                # No [Source:] tag parsed — fall back to listing all source keys
-                per_field_source_lines.append(f"{field} = {field_val!r}  ← see sources")
+                per_field_source_lines.append(f"• {field}: see linked sources")
+
         if not per_field_source_lines:
             per_field_source_lines_text = source_text
         else:
-            # Append the full source list at the end so URLs are visible
-            per_field_source_lines_text = "\n".join(per_field_source_lines) + "\n\nAll sources:\n" + source_text
+            per_field_source_lines_text = (
+                "\n\n".join(per_field_source_lines)
+                + "\n\nAll linked sources:\n" + source_text
+            )
+
+        # Conflict column: collected per-field conflicts from [Conflict:] tags
+        conflict_display = "\n".join(conflict_parts) if conflict_parts else ""
 
         row["explanation"]      = _tc("\n".join(explanation_parts))
-        row["confidence_score"] = _tc(confidence_display)
         row["sources"]          = _tc(per_field_source_lines_text)
+        row["confidence_score"] = _tc(confidence_display)
+        row["conflict"]         = _tc(conflict_display)
         row["time_cost"]        = _tc(data.get("time_cost", ""))
         pass2_fields = dict(data.get("_additional_fields") or {})
 
@@ -357,8 +507,9 @@ class AnalyzeRequest(BaseModel):
     bioproject_id: str
     metadata_fields: Optional[List[str]] = None
     standardization_url: Optional[str] = None   # comma-separated URLs accepted
-    context_file_id: Optional[str] = None        # temp path from /upload-context
-    context_file_name: Optional[str] = None      # original filename of uploaded context file
+    context_file_id: Optional[str] = None        # legacy single-file path from /upload-context
+    context_file_ids: Optional[List[str]] = None # multi-file paths from /upload-context or /process-context-urls
+    context_file_name: Optional[str] = None      # display name(s) for UI/logging
     sample_limit: Optional[int] = None           # max samples to process this run
     non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
@@ -399,7 +550,10 @@ class GenerateExcelRequest(BaseModel):
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
-ALLOWED_UPLOAD_EXTENSIONS = {".txt", ".csv", ".tsv", ".pdf", ".xlsx", ".xls", ".json", ".xml"}
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".txt", ".csv", ".tsv", ".pdf", ".xlsx", ".xls",
+    ".json", ".xml", ".docx",
+}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
@@ -415,6 +569,14 @@ def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
 
     if ext == ".pdf":
         try:
+            import fitz  # PyMuPDF — much better than PyPDF2
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            pages = [page.get_text("text") for page in doc]
+            doc.close()
+            return "\n\n".join(pages)
+        except Exception:
+            pass
+        try:
             import io
             import PyPDF2
             reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
@@ -425,37 +587,136 @@ def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
 
     if ext in (".xlsx", ".xls"):
         try:
-            import io
-            import pandas as pd
-            df = pd.read_excel(io.BytesIO(file_bytes))
-            return df.to_csv(index=False)
+            from data_preprocess import _extract_excel_text
+            import tempfile, pathlib
+            tmp = pathlib.Path(tempfile.mktemp(suffix=ext))
+            tmp.write_bytes(file_bytes)
+            text = _extract_excel_text(tmp)
+            tmp.unlink(missing_ok=True)
+            return text
         except Exception as exc:
             return f"[Excel text extraction failed: {exc}]"
+
+    if ext == ".docx":
+        try:
+            from data_preprocess import _extract_docx_text
+            import tempfile, pathlib
+            tmp = pathlib.Path(tempfile.mktemp(suffix=".docx"))
+            tmp.write_bytes(file_bytes)
+            text = _extract_docx_text(tmp)
+            tmp.unlink(missing_ok=True)
+            return text
+        except Exception as exc:
+            return f"[DOCX text extraction failed: {exc}]"
 
     return file_bytes.decode("utf-8", errors="replace")
 
 
 @app.post("/upload-context")
-async def upload_context(file: UploadFile = File(...)):
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
-        )
+async def upload_context(files: List[UploadFile] = File(...)):
+    """Accept one or more files; return a list of per-file results."""
+    results = []
+    for file in files:
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+            results.append({
+                "filename": file.filename,
+                "status": "failed",
+                "error": f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
+            })
+            continue
 
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (max 20 MB).")
+        raw = await file.read()
+        if len(raw) > MAX_UPLOAD_BYTES:
+            results.append({
+                "filename": file.filename,
+                "status": "failed",
+                "error": "File too large (max 20 MB).",
+            })
+            continue
 
-    text = _extract_text_from_upload(raw, file.filename or "upload")
+        text = _extract_text_from_upload(raw, file.filename or "upload")
 
-    tmp_dir = tempfile.mkdtemp()
-    ctx_path = os.path.join(tmp_dir, "user_context.txt")
-    with open(ctx_path, "w", encoding="utf-8") as fh:
-        fh.write(text)
+        tmp_dir = tempfile.mkdtemp()
+        ctx_path = os.path.join(tmp_dir, "user_context.txt")
+        with open(ctx_path, "w", encoding="utf-8") as fh:
+            fh.write(text)
 
-    return {"context_file_id": ctx_path, "filename": file.filename, "chars": len(text)}
+        results.append({
+            "filename": file.filename,
+            "status": "ok",
+            "context_file_id": ctx_path,
+            "chars": len(text),
+        })
+
+    return {"files": results}
+
+
+class ProcessUrlsRequest(BaseModel):
+    urls: List[str]
+    save_name: Optional[str] = None   # if provided, saves data/<save_name>.docx
+
+
+@app.post("/process-context-urls")
+async def process_context_urls(req: ProcessUrlsRequest):
+    """
+    Fetch and extract text from a list of URLs.
+    Returns per-URL status; failed URLs are flagged so the user can download manually.
+    Combined extracted text is saved to a temp file for LLM context.
+    Optionally saves a formatted DOCX to data/<save_name>.docx.
+    """
+    def _process():
+        from pathlib import Path as _Path
+        from data_preprocess import extract_url_text, process_sources_to_docx
+
+        data_dir = _Path("data")
+        data_dir.mkdir(exist_ok=True)
+
+        urls = [u.strip() for u in req.urls if u.strip()]
+
+        # Single pass — keep full results (including text) in memory
+        raw_results = [extract_url_text(url, data_dir) for url in urls]
+
+        # JSON-safe summary (no full text)
+        url_results = [
+            {
+                "url": r["url"],
+                "name": r["name"],
+                "kind": r["kind"],
+                "status": r["status"],
+                "chars": len(r["text"]),
+                "error": r["error"],
+            }
+            for r in raw_results
+        ]
+
+        # Build combined context text
+        combined_parts = [
+            f"The source - {r['name']}\n\n{r['text']}"
+            for r in raw_results
+            if r["status"] == "ok" and r["text"]
+        ]
+        combined_text = ("\n\n" + "─" * 80 + "\n\n").join(combined_parts)
+
+        tmp_dir = tempfile.mkdtemp()
+        ctx_path = os.path.join(tmp_dir, "url_context.txt")
+        with open(ctx_path, "w", encoding="utf-8") as fh:
+            fh.write(combined_text)
+
+        saved_docx = None
+        if req.save_name:
+            out = data_dir / f"{req.save_name}.docx"
+            process_sources_to_docx(urls, out, dataset_label=req.save_name)
+            saved_docx = str(out)
+
+        return {
+            "results": url_results,
+            "context_file_id": ctx_path,
+            "chars": len(combined_text),
+            "saved_docx": saved_docx,
+        }
+
+    return await asyncio.to_thread(_process)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -506,17 +767,27 @@ async def analyze(req: AnalyzeRequest):
             raw_text = req.bioproject_id.strip()
             effective_limit = req.sample_limit or MAX_SAMPLES
 
-            # Load user-uploaded context file if provided
+            # Load user-uploaded context files if provided (single or multiple)
             user_context_text: Optional[str] = None
+            _all_ctx_ids = []
             if req.context_file_id:
-                ctx_real = os.path.realpath(req.context_file_id)
-                if ctx_real.startswith("/tmp") and os.path.isfile(ctx_real):
-                    try:
-                        with open(ctx_real, "r", encoding="utf-8") as _fh:
-                            user_context_text = _fh.read()
-                        yield _sse("progress", {"message": "User context file loaded."})
-                    except Exception as _exc:
-                        yield _sse("progress", {"message": f"Context file read warning: {_exc}"})
+                _all_ctx_ids.append(req.context_file_id)
+            if req.context_file_ids:
+                _all_ctx_ids.extend(req.context_file_ids)
+            if _all_ctx_ids:
+                _ctx_parts = []
+                for _cid in _all_ctx_ids:
+                    _ctx_real = os.path.realpath(_cid)
+                    if _ctx_real.startswith("/tmp") and os.path.isfile(_ctx_real):
+                        try:
+                            with open(_ctx_real, "r", encoding="utf-8") as _fh:
+                                _ctx_parts.append(_fh.read())
+                        except Exception as _exc:
+                            yield _sse("progress", {"message": f"Context file read warning: {_exc}"})
+                if _ctx_parts:
+                    user_context_text = "\n\n".join(_ctx_parts)
+                    yield _sse("progress", {"message": f"User context loaded ({len(_all_ctx_ids)} source(s))."})
+
 
             yield _sse("progress", {"message": "Parsing accession input…"})
             await asyncio.sleep(0)
@@ -637,9 +908,39 @@ async def analyze(req: AnalyzeRequest):
 
             all_rows: list = []
 
+            # ── Cache lookup: skip pipeline for already-known samples ─────────
+            if niche_cases and os.environ.get("GCP_CREDS_JSON"):
+                _cached_accs: list = []
+                for _ca, _ce in list(resolved_dict.items()):
+                    _ca_id = (_ce.get("biosample") or _ce.get("accession")
+                              or _ce.get("experiment") or _ca)
+                    _ca_bp = _ce.get("bioproject") or (req.accession_id or "")
+                    _hit = await asyncio.to_thread(_cache_get, _ca_id, _ca_bp, list(niche_cases))
+                    if _hit is not None:
+                        # Build a minimal row from cache
+                        _crow: dict = {
+                            "biosample_accession": _ce.get("biosample") or _ca_id,
+                            "bioproject":          _ca_bp,
+                            "sra_accession":       _ce.get("experiment") or "",
+                        }
+                        if _ce.get("accession"):
+                            _crow["genbank_accession"] = _ce["accession"]
+                        _crow.update(_hit)
+                        _crow["explanation"] = "[Loaded from cache]"
+                        _crow["confidence_score"] = ""
+                        all_rows.append(_crow)
+                        _cached_accs.append(_ca)
+                        yield _sse("progress", {"message": f"[cache] {_ca_id} — returned from known-sample cache."})
+                for _ca in _cached_accs:
+                    del resolved_dict[_ca]
+
             # Use the rich pipeline for all resolved entries (BioSample, SRA,
             # GenBank-only, or non-NCBI). GenBank accessions without a BioSample
             # link still benefit from rich pipeline's web-search fallback.
+            # If resolved_dict is now empty (all hits served from cache), skip the pipeline.
+            if not resolved_dict and all_rows:
+                yield _sse("progress", {"message": f"All {len(all_rows)} sample(s) served from cache — skipping pipeline."})
+
             use_rich = bool(resolved_dict and any(
                 entry.get("biosample") or entry.get("experiment")
                 or entry.get("_source_database") or entry.get("accession")
@@ -684,7 +985,7 @@ async def analyze(req: AnalyzeRequest):
                         _rich_pipeline(
                             resolved_dict,
                             niche_cases=niche_cases,
-                            other_links=std_urls or None,
+                            other_links=None,           # schema URLs are not metadata sources
                             standardization_urls=std_urls or None,
                             user_context_text=user_context_text,
                             progress_cb=_pipe_progress,
@@ -708,12 +1009,24 @@ async def analyze(req: AnalyzeRequest):
                                 _effective_niche[:] = msg["__auto_niche_cases__"] or []
                         elif isinstance(msg, dict) and "__links_update__" in msg:
                             yield _sse("links_update", msg["__links_update__"])
+                        elif isinstance(msg, dict) and "__links_warning__" in msg:
+                            yield _sse("links_warning", msg["__links_warning__"])
                         elif isinstance(msg, dict) and "__partial_acc__" in msg:
                             partial_rows = _rows_from_new_pipeline(
                                 msg["__partial_data__"], _effective_niche or None
                             )
                             _samples_done += len(partial_rows)
                             yield _sse("partial_result", {"rows": partial_rows})
+                            # Save each completed sample to the known-sample cache (fire-and-forget)
+                            for _cr in partial_rows:
+                                _cid = (_cr.get("biosample_accession")
+                                        or _cr.get("sra_accession")
+                                        or _cr.get("genbank_accession") or "")
+                                _cbp = _cr.get("bioproject") or ""
+                                if _cid and os.environ.get("GCP_CREDS_JSON"):
+                                    asyncio.ensure_future(
+                                        asyncio.to_thread(_cache_save, _cid, _cbp, dict(_cr))
+                                    )
                         elif isinstance(msg, str):
                             yield _sse("progress", {"message": msg})
 
@@ -761,7 +1074,8 @@ async def analyze(req: AnalyzeRequest):
                         # OHE fields from the pipeline (stored under __niche_cases__).
                         _auto_niche = accs_output.pop("__niche_cases__", None) or []
                         _effective_niche = list(niche_cases or _auto_niche)
-                        all_rows = _rows_from_new_pipeline(accs_output, _effective_niche or None)
+                        _pipeline_rows = _rows_from_new_pipeline(accs_output, _effective_niche or None)
+                        all_rows.extend(_pipeline_rows)   # preserve any cached rows already in all_rows
                         yield _sse("progress", {
                             "message": f"✅ Extracted metadata for {len(all_rows)} sample(s)"
                         })
@@ -772,7 +1086,7 @@ async def analyze(req: AnalyzeRequest):
                     })
                     use_rich = False
 
-            if not use_rich:
+            if not use_rich and resolved_dict:
                 # Fallback: resolve to best single accession string and use old pipeline
                 if resolved_dict:
                     from input_handler import get_pipeline_accession

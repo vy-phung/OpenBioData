@@ -108,7 +108,10 @@
   .links-entry a{color:#5de0c0;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;text-decoration:none;word-break:break-all;line-height:1.4}
   .links-entry a:hover{color:#7eecd4;text-decoration:underline}
   .links-entry .links-file{color:#b0d4c8;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;word-break:break-all;line-height:1.4}
+  .links-entry.links-blocked a{color:#e07a5f}
+  .links-entry.links-blocked .links-warn{font-size:10px;color:#e07a5f;flex-shrink:0}
   .links-divider{border:none;border-top:1px solid #1e3d33;margin:6px 0}
+  .links-upload-hint{font-size:10px;color:#c8a45e;background:#1e2a1a;border:1px solid #3a4a2a;border-radius:4px;padding:5px 7px;margin-top:4px;line-height:1.4}
 
   /* ── Results ── */
   #results-card{display:none}
@@ -131,6 +134,52 @@
   .badge-low{background:#fde8e8;color:var(--low);font-weight:700;border-radius:4px;padding:2px 8px;font-size:12px;white-space:nowrap}
   .conflict-flag{background:#fde8e8;color:var(--low);font-size:11px;font-weight:600;border-radius:3px;padding:1px 6px}
   .no-conflict{color:#bbb;font-size:12px}
+
+  /* ── Curator Review mode ── */
+  #curator-header{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  #curator-progress-text{font-size:13px;color:var(--muted);flex:1}
+  #curator-progress-bar-wrap{height:5px;background:#ddeee9;border-radius:3px;flex:1;min-width:120px}
+  #curator-progress-bar{height:100%;background:#1a7f5e;border-radius:3px;width:0;transition:width .35s}
+  .curator-action-btn{background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;color:var(--primary-dark);transition:background .12s}
+  .curator-action-btn:hover{background:#eef7f3}
+  #curator-inattentive{display:none;background:#fff8e6;border:1px solid #f0c85e;border-radius:7px;padding:10px 14px;font-size:12px;color:#7a5b00;margin-bottom:14px}
+  #curator-body{display:flex;flex-direction:column;gap:18px}
+  .curator-sample{border:1px solid var(--border);border-radius:9px;overflow:hidden}
+  .curator-sample-hdr{background:#f0f7f4;padding:10px 16px;font-size:13px;font-weight:700;color:var(--primary-dark);display:flex;align-items:center;gap:8px}
+  .curator-sample-hdr .sample-bp{font-weight:400;color:#7a9e8f;font-size:12px}
+  .curator-sample-hdr .curator-sample-score{margin-left:auto;font-size:12px;font-weight:600}
+  .curator-fields{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+  .curator-card{border:1px solid #e0ede9;border-radius:7px;padding:14px 16px;transition:border-color .15s}
+  .curator-card.decided{background:#fafffe;border-color:#b8ddd2}
+  .curator-card.diverged{border-color:#f0c0b0;background:#fff8f6}
+  .curator-field-name{font-size:11px;font-weight:700;color:#1a5c45;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+  .curator-field-name .conf-badge{font-size:10px;font-weight:600;border-radius:3px;padding:1px 6px;text-transform:none;letter-spacing:0}
+  .curator-choices{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+  .curator-choice{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:6px;border:1.5px solid #dde8e4;cursor:pointer;font-size:13px;background:#fff;transition:background .12s,border-color .12s;user-select:none}
+  .curator-choice:hover:not(.disabled){background:#eef7f3;border-color:#9ecfbc}
+  .curator-choice.selected{border-color:#1a7f5e;background:#eef9f3}
+  .curator-choice.correct{border-color:#1a7f5e;background:#d4f0e4;font-weight:600;color:#0d5c3e}
+  .curator-choice.wrong{border-color:#d6604e;background:#fde8e5;font-weight:600;color:#8b2012}
+  .curator-choice.tool-answer{border-color:#1a7f5e;background:#c8f0da;font-weight:600;color:#0d5c3e}
+  .curator-choice.disabled{cursor:default;pointer-events:none;opacity:.8}
+  .curator-choice input[type=radio]{accent-color:#1a7f5e;width:15px;height:15px;flex-shrink:0}
+  .choice-label{font-size:11px;font-weight:700;color:#8ab0a0;width:16px;flex-shrink:0}
+  .curator-card-footer{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .passage-btn{font-size:11px;color:#1a7f5e;background:none;border:1px solid #9ecfbc;border-radius:4px;padding:3px 9px;cursor:pointer;transition:background .1s}
+  .passage-btn:hover{background:#eef7f3}
+  .passage-btn.viewed{background:#eef7f3;color:#0d5c3e}
+  .curator-verdict{font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px}
+  .curator-verdict.match{color:#0d5c3e;background:#d4f0e4}
+  .curator-verdict.diverge{color:#8b2012;background:#fde8e5}
+  .passage-area{font-size:12px;color:#333;background:#f2f9f6;border-radius:5px;padding:10px 12px;margin-top:10px;line-height:1.6;display:none;border-left:3px solid #9ecfbc}
+  .passage-area.open{display:block}
+  .passage-area strong{color:#1a5c45;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+  .curator-empty{text-align:center;padding:40px;color:var(--muted);font-size:13px}
+  #curator-summary-bar{display:none;background:#f0f7f4;border:1px solid #b8ddd2;border-radius:7px;padding:12px 16px;font-size:13px;margin-top:18px;display:flex;gap:20px;flex-wrap:wrap}
+  .sum-stat{text-align:center}
+  .sum-stat strong{display:block;font-size:20px;font-weight:700;color:var(--primary-dark)}
+  .sum-stat span{font-size:11px;color:var(--muted)}
+
   .sources-cell a{color:var(--primary);text-decoration:none;display:block;font-size:12px}
   .sources-cell a:hover{text-decoration:underline}
 
@@ -216,6 +265,23 @@
   #ctx-dropzone{border:2px dashed var(--border);border-radius:7px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;color:var(--muted);font-size:13px;line-height:1.6;background:#fafcfb}
   #ctx-dropzone:hover,#ctx-dropzone.ctx-dragover{border-color:var(--primary);background:var(--primary-light);color:var(--primary-dark)}
   #ctx-dropzone small{display:block;font-size:11px;opacity:.75;margin-top:2px}
+  #ctx-url-row{display:flex;gap:6px;margin-top:8px;align-items:flex-start}
+  #ctx-url-input{flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;font-family:inherit;background:#fafcfb;resize:vertical;min-height:60px;line-height:1.5;color:var(--text)}
+  #ctx-url-input:focus{outline:none;border-color:var(--primary)}
+  #ctx-add-urls-btn{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:background .15s}
+  #ctx-add-urls-btn:hover{background:var(--primary-dark)}
+  #ctx-add-urls-btn:disabled{opacity:.55;cursor:not-allowed}
+  .ctx-item{display:flex;align-items:flex-start;gap:7px;padding:6px 8px;border-radius:6px;font-size:12px;background:#f6faf8;border:1px solid var(--border);margin-bottom:4px;line-height:1.4}
+  .ctx-item-ok{border-color:#b7dcc8}
+  .ctx-item-failed{border-color:#f4b8b0;background:#fff5f4}
+  .ctx-item-uploading{opacity:.7}
+  .ctx-item-icon{flex-shrink:0;font-size:14px}
+  .ctx-item-body{flex:1;min-width:0}
+  .ctx-item-name{font-weight:600;color:var(--primary-dark);word-break:break-all}
+  .ctx-item-meta{color:var(--muted);margin-top:1px}
+  .ctx-item-error{color:var(--low);margin-top:2px}
+  .ctx-item-remove{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0;flex-shrink:0;line-height:1;margin-top:1px}
+  .ctx-item-remove:hover{color:var(--low)}
 
   /* ── Chat input mode ── */
   .input-mode-toggle{display:flex;gap:6px}
@@ -317,20 +383,27 @@
         </div>
         <div class="field">
           <label>
-            Context file (optional)
-            <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add file</span>
+            Context files &amp; links (optional)
+            <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add</span>
           </label>
           <div id="ctx-upload-area" style="display:none">
-            <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload a paper, supplementary file, or any document you believe contains relevant metadata for these accessions. The AI will use it as additional context to improve extraction accuracy.</p>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload papers, supplementary files, or paste links. The AI will use them as extra context to improve extraction accuracy.</p>
+
+            <!-- File drop zone — multiple files allowed -->
             <div id="ctx-dropzone" onclick="document.getElementById('ctx-file-input').click()" ondragover="event.preventDefault();this.classList.add('ctx-dragover')" ondragleave="this.classList.remove('ctx-dragover')" ondrop="handleCtxDrop(event)">
-              <input type="file" id="ctx-file-input" style="display:none" accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml" onchange="handleCtxFile(this.files[0])">
-              <span id="ctx-dropzone-label">Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small></span>
+              <input type="file" id="ctx-file-input" style="display:none" multiple accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml,.docx" onchange="handleCtxFiles(this.files)">
+              <span id="ctx-dropzone-label">Click to browse or drag &amp; drop (multiple files OK)<br><small>PDF, DOCX, CSV, TXT, Excel, JSON, XML — max 20 MB each</small></span>
             </div>
-            <div id="ctx-file-info" style="display:none;margin-top:8px;font-size:12px;display:none;align-items:center;gap:8px">
-              <span id="ctx-file-name" style="color:var(--primary-dark);font-weight:600"></span>
-              <span id="ctx-file-chars" style="color:var(--muted)"></span>
-              <button onclick="clearCtxFile()" style="background:none;border:none;color:var(--low);cursor:pointer;font-size:12px;padding:0">✕ Remove</button>
+
+            <!-- URL input -->
+            <div id="ctx-url-row">
+              <textarea id="ctx-url-input" placeholder="Paste links (one per line or comma-separated)&#10;e.g. https://doi.org/10.1016/...&#10;     https://...supplement.pdf"></textarea>
+              <button id="ctx-add-urls-btn" onclick="addCtxUrls()">+ Add links</button>
             </div>
+
+            <!-- Per-item status list -->
+            <div id="ctx-items-list" style="margin-top:8px"></div>
+
             <div id="ctx-upload-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
           </div>
         </div>
@@ -383,12 +456,31 @@
       <div class="tab-bar">
         <div class="tab active" id="tab1-btn" onclick="switchTab(1)">cMD Metadata</div>
         <div class="tab" id="tab2-btn" onclick="switchTab(2)">Full Raw Attributes</div>
+        <div class="tab" id="tab3-btn" onclick="switchTab(3)" title="Review each field independently before seeing the tool's answer">🔍 Curator Review</div>
       </div>
       <div class="tab-content active" id="tab1">
         <div class="table-wrap"><table id="table1"><thead></thead><tbody></tbody></table></div>
       </div>
       <div class="tab-content" id="tab2">
         <div class="table-wrap"><table id="table2"><thead></thead><tbody></tbody></table></div>
+      </div>
+      <div class="tab-content" id="tab3">
+        <div id="curator-header">
+          <div id="curator-progress-bar-wrap"><div id="curator-progress-bar"></div></div>
+          <span id="curator-progress-text">0 / 0 reviewed</span>
+          <button class="curator-action-btn" onclick="resetCuratorMode()" title="Clear all selections and start over">↺ Reset</button>
+          <button class="curator-action-btn" onclick="exportCuratorReport()" title="Download your decisions vs. tool answers as CSV">⬇ Export verdicts</button>
+        </div>
+        <div id="curator-inattentive">
+          💡 <strong>Tip:</strong> You've made several selections without viewing the source passage. Consider clicking <em>"View source"</em> to verify the tool's evidence before deciding — that's where the real curation value lies.
+        </div>
+        <div id="curator-body"><div class="curator-empty">Run an analysis first, then switch to this tab to review field-by-field.</div></div>
+        <div id="curator-summary-bar" style="display:none">
+          <div class="sum-stat"><strong id="sum-decided">0</strong><span>Reviewed</span></div>
+          <div class="sum-stat"><strong id="sum-match">0</strong><span>Matched tool</span></div>
+          <div class="sum-stat"><strong id="sum-diverge">0</strong><span>Diverged</span></div>
+          <div class="sum-stat"><strong id="sum-passage">0</strong><span>Passages viewed</span></div>
+        </div>
       </div>
     </div>
 
@@ -538,9 +630,14 @@ let currentExcelPath      = '';
 let reportTarget          = { accession: '', rowIndex: -1 };
 let authMode              = 'signup';   // 'signup' | 'login'
 let authSource            = 'manual';   // what triggered the auth popup
-let ctxFileId             = null;       // temp path returned by /upload-context
-let ctxFileName           = null;       // original filename of uploaded context file
-let _linksState           = {};         // acc → {links: Set, user_file: str|null}
+let ctxItems              = [];         // [{uid, type:'file'|'url', id, name, chars, status:'ok'|'failed'|'uploading', error}]
+let _ctxUid               = 0;         // monotonic UID for item removal
+let _linksState           = {};         // acc → {links: Set, user_file: str|null, blocked: Set}
+let _linksWarnings        = {};         // acc → {inaccessible: string[], message: string}
+// Curator mode state
+let _curatorDecisions     = {};         // `${rowIdx}||${field}` → {selected, toolAnswer, passageViewed, match}
+let _curatorBuilt         = false;      // whether curator DOM has been rendered for current rows
+let _curatorTotalSlots    = 0;
 let currentAbortController = null;
 let currentRunId          = null;   // backend run_id for cancellation
 let partialRows           = [];
@@ -576,68 +673,202 @@ function isNcbiToken(tok) {
   return NCBI_PATTERNS.some(p => p.test(tok));
 }
 
-// ── Context file upload ───────────────────────────────────────────────────────
+// ── Context files & links ─────────────────────────────────────────────────────
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _getCtxFileIds() {
+  return ctxItems.filter(i => i.status === 'ok').map(i => i.id);
+}
+function _getCtxFileNames() {
+  return ctxItems.filter(i => i.status === 'ok').map(i => i.name).join(', ');
+}
+
+function renderCtxItems() {
+  const list = document.getElementById('ctx-items-list');
+  if (!ctxItems.length) { list.innerHTML = ''; return; }
+  list.innerHTML = ctxItems.map(item => {
+    const icon = item.type === 'file' ? '📄' : '🌐';
+    let metaHtml = '';
+    if (item.status === 'ok') {
+      metaHtml = `<div class="ctx-item-meta">✅ ${(item.chars||0).toLocaleString()} chars extracted</div>`;
+    } else if (item.status === 'failed') {
+      metaHtml = `<div class="ctx-item-error">❌ Cannot extract — <strong>download manually and re-upload</strong><br><span style="opacity:.8">${_escHtml(item.error||'Unknown error')}</span></div>`;
+    } else {
+      metaHtml = `<div class="ctx-item-meta" style="color:var(--primary)">⏳ Processing…</div>`;
+    }
+    return `<div class="ctx-item ctx-item-${item.status}">
+      <span class="ctx-item-icon">${icon}</span>
+      <div class="ctx-item-body">
+        <div class="ctx-item-name" title="${_escHtml(item.name)}">${_escHtml(item.name.length > 60 ? item.name.slice(0,57)+'…' : item.name)}</div>
+        ${metaHtml}
+      </div>
+      <button class="ctx-item-remove" onclick="removeCtxItem(${item.uid})" title="Remove">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function removeCtxItem(uid) {
+  ctxItems = ctxItems.filter(i => i.uid !== uid);
+  renderCtxItems();
+  _updateCtxStatus();
+}
+
+function _updateCtxStatus() {
+  const ok = ctxItems.filter(i => i.status === 'ok').length;
+  const failed = ctxItems.filter(i => i.status === 'failed').length;
+  const busy = ctxItems.filter(i => i.status === 'uploading').length;
+  const el = document.getElementById('ctx-upload-status');
+  if (!ctxItems.length) { el.textContent = ''; return; }
+  let msg = '';
+  if (ok)     msg += `${ok} source${ok>1?'s':''} ready`;
+  if (failed) msg += `${msg?', ':''}${failed} failed (download &amp; re-upload)`;
+  if (busy)   msg += `${msg?', ':''}${busy} processing…`;
+  el.innerHTML = msg;
+  el.style.color = failed ? 'var(--low)' : 'var(--high)';
+}
+
 function toggleCtxUpload() {
   const area   = document.getElementById('ctx-upload-area');
   const toggle = document.getElementById('ctx-toggle');
   const hidden = area.style.display === 'none';
   area.style.display  = hidden ? 'block' : 'none';
-  toggle.textContent  = hidden ? '− Hide' : '+ Add file';
-  if (!hidden) clearCtxFile();
+  toggle.textContent  = hidden ? '− Hide' : '+ Add';
+  if (!hidden) _clearAllCtx();
 }
 
 function handleCtxDrop(e) {
   e.preventDefault();
   document.getElementById('ctx-dropzone').classList.remove('ctx-dragover');
-  const file = e.dataTransfer.files[0];
-  if (file) handleCtxFile(file);
+  if (e.dataTransfer.files.length) handleCtxFiles(e.dataTransfer.files);
 }
 
-async function handleCtxFile(file) {
-  if (!file) return;
-  const statusEl = document.getElementById('ctx-upload-status');
-  const infoEl   = document.getElementById('ctx-file-info');
-  const nameEl   = document.getElementById('ctx-file-name');
-  const charsEl  = document.getElementById('ctx-file-chars');
-  ctxFileId = null;
+async function handleCtxFiles(fileList) {
+  if (!fileList || !fileList.length) return;
+  const files = Array.from(fileList);
 
-  statusEl.textContent = 'Uploading…';
-  statusEl.style.color = 'var(--muted)';
-  infoEl.style.display = 'none';
+  // Add placeholder items immediately
+  const uids = files.map(() => ++_ctxUid);
+  files.forEach((file, i) => {
+    ctxItems.push({ uid: uids[i], type: 'file', id: null, name: file.name, chars: 0, status: 'uploading', error: '' });
+  });
+  renderCtxItems();
+  _updateCtxStatus();
 
+  // Upload all files in one request
   const formData = new FormData();
-  formData.append('file', file);
+  files.forEach(f => formData.append('files', f));
 
   try {
     const resp = await fetch('/upload-context', { method: 'POST', body: formData });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      statusEl.textContent = '❌ ' + (err.detail || 'Upload failed');
-      statusEl.style.color = 'var(--low)';
-      return;
+      uids.forEach(uid => {
+        const item = ctxItems.find(i => i.uid === uid);
+        if (item) { item.status = 'failed'; item.error = err.detail || 'Upload failed'; }
+      });
+    } else {
+      const data = await resp.json();
+      (data.files || []).forEach((res, i) => {
+        const item = ctxItems.find(x => x.uid === uids[i]);
+        if (!item) return;
+        if (res.status === 'ok') {
+          item.status = 'ok';
+          item.id     = res.context_file_id;
+          item.chars  = res.chars || 0;
+        } else {
+          item.status = 'failed';
+          item.error  = res.error || 'Upload failed';
+        }
+      });
     }
-    const data = await resp.json();
-    ctxFileId = data.context_file_id;
-    ctxFileName = data.filename || null;
-    nameEl.textContent  = data.filename;
-    charsEl.textContent = `(${data.chars.toLocaleString()} chars extracted)`;
-    infoEl.style.display = 'flex';
-    statusEl.textContent = '✅ File ready — will be used as context.';
-    statusEl.style.color = 'var(--high)';
   } catch (err) {
-    statusEl.textContent = '❌ Network error: ' + err;
-    statusEl.style.color = 'var(--low)';
+    uids.forEach(uid => {
+      const item = ctxItems.find(i => i.uid === uid);
+      if (item) { item.status = 'failed'; item.error = 'Network error: ' + err; }
+    });
   }
+
+  // Reset the file input so the same file can be re-added
+  document.getElementById('ctx-file-input').value = '';
+  renderCtxItems();
+  _updateCtxStatus();
 }
 
-function clearCtxFile() {
-  ctxFileId = null;
-  ctxFileName = null;
+async function addCtxUrls() {
+  const textarea = document.getElementById('ctx-url-input');
+  const raw = textarea.value.trim();
+  if (!raw) return;
+
+  // Parse: split by newline or comma, filter blanks
+  const urls = raw.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
+  if (!urls.length) return;
+
+  textarea.value = '';
+  const btn = document.getElementById('ctx-add-urls-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Processing…';
+
+  // Add placeholder items
+  const uids = urls.map(() => ++_ctxUid);
+  urls.forEach((url, i) => {
+    const name = url.split('/').pop().split('?')[0] || url.slice(0, 60);
+    ctxItems.push({ uid: uids[i], type: 'url', id: null, name: name || url, chars: 0, status: 'uploading', error: '', url });
+  });
+  renderCtxItems();
+  _updateCtxStatus();
+
+  try {
+    const resp = await fetch('/process-context-urls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      uids.forEach(uid => {
+        const item = ctxItems.find(i => i.uid === uid);
+        if (item) { item.status = 'failed'; item.error = err.detail || 'Processing failed'; }
+      });
+    } else {
+      const data = await resp.json();
+      // All successful items share one combined context_file_id from the server
+      const combinedId = data.context_file_id || null;
+      (data.results || []).forEach((res, i) => {
+        const item = ctxItems.find(x => x.uid === uids[i]);
+        if (!item) return;
+        item.name = res.name || item.name;
+        if (res.status === 'ok') {
+          item.status = 'ok';
+          item.chars  = res.chars || 0;
+          // All URLs share the combined context file; only first one owns the ID to avoid duplicates
+          item.id = (i === 0) ? combinedId : '__shared__' + combinedId;
+        } else {
+          item.status = 'failed';
+          item.error  = res.error || 'Could not extract';
+        }
+      });
+    }
+  } catch (err) {
+    uids.forEach(uid => {
+      const item = ctxItems.find(i => i.uid === uid);
+      if (item) { item.status = 'failed'; item.error = 'Network error: ' + err; }
+    });
+  }
+
+  btn.disabled = false;
+  btn.textContent = '+ Add links';
+  renderCtxItems();
+  _updateCtxStatus();
+}
+
+function _clearAllCtx() {
+  ctxItems = [];
   document.getElementById('ctx-file-input').value = '';
-  document.getElementById('ctx-file-info').style.display = 'none';
+  document.getElementById('ctx-url-input').value  = '';
+  renderCtxItems();
   document.getElementById('ctx-upload-status').textContent = '';
-  document.getElementById('ctx-dropzone-label').innerHTML =
-    'Click to browse or drag & drop<br><small>PDF, CSV, TXT, Excel, JSON, XML — max 20 MB</small>';
 }
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -863,7 +1094,7 @@ function resetInputs() {
   document.getElementById('acc-input').value   = '';
   document.getElementById('meta-fields').value = '';
   document.getElementById('std-url').value     = '';
-  clearCtxFile();
+  _clearAllCtx();
   const area = document.getElementById('ctx-upload-area');
   if (area && area.style.display !== 'none') toggleCtxUpload();
 }
@@ -968,13 +1199,30 @@ function updateLinksPanel(evt) {
   const stage     = evt.stage || '';
   const userFile  = evt.user_file || null;
 
-  if (!_linksState[acc]) _linksState[acc] = { links: new Set(), user_file: null, order: [] };
+  if (!_linksState[acc]) _linksState[acc] = { links: new Set(), user_file: null, order: [], blocked: new Set() };
   const state = _linksState[acc];
   if (userFile) state.user_file = userFile;
   const newLinks = links.filter(l => !state.links.has(l));
   newLinks.forEach(l => { state.links.add(l); state.order.push({ url: l, stage }); });
 
-  // Re-render the whole list
+  _renderLinksPanel();
+}
+
+function handleLinksWarning(evt) {
+  const acc         = evt.acc || '?';
+  const inaccessible = evt.inaccessible || [];
+  if (!_linksWarnings[acc]) _linksWarnings[acc] = { inaccessible: [], message: '' };
+  _linksWarnings[acc].message = evt.message || 'Cannot access paper(s). Upload the PDF to improve accuracy.';
+  inaccessible.forEach(u => {
+    if (!_linksWarnings[acc].inaccessible.includes(u)) _linksWarnings[acc].inaccessible.push(u);
+  });
+  // Also mark blocked in linksState
+  if (!_linksState[acc]) _linksState[acc] = { links: new Set(), user_file: null, order: [], blocked: new Set() };
+  inaccessible.forEach(u => _linksState[acc].blocked.add(u));
+  _renderLinksPanel();
+}
+
+function _renderLinksPanel() {
   const container = document.getElementById('links-list');
   container.innerHTML = '';
   let totalLinks = 0;
@@ -996,14 +1244,26 @@ function updateLinksPanel(evt) {
       totalLinks++;
     }
 
+    const blockedSet = s.blocked || new Set();
     s.order.forEach(({ url, stage: st }) => {
       const row = document.createElement('div');
-      row.className = 'links-entry';
+      const isBlocked = blockedSet.has(url);
+      row.className = 'links-entry' + (isBlocked ? ' links-blocked' : '');
       const stageLabel = STAGE_LABELS[st] || `[${st.toUpperCase().slice(0,4)}]`;
-      row.innerHTML = `<span class="links-stage">${stageLabel}</span><a href="${url}" target="_blank" rel="noopener">${url}</a>`;
+      const warnIcon = isBlocked ? `<span class="links-warn" title="Could not access — upload paper manually">⚠</span>` : '';
+      row.innerHTML = `<span class="links-stage">${stageLabel}</span>${warnIcon}<a href="${url}" target="_blank" rel="noopener">${url}</a>`;
       block.appendChild(row);
       totalLinks++;
     });
+
+    // Show upload hint if any links are inaccessible for this sample
+    const warn = _linksWarnings[a];
+    if (warn && warn.inaccessible.length > 0) {
+      const hint = document.createElement('div');
+      hint.className = 'links-upload-hint';
+      hint.textContent = `⚠ ${warn.message}`;
+      block.appendChild(hint);
+    }
 
     container.appendChild(block);
   }
@@ -1080,13 +1340,14 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
   });
 
   const user = getUser();
+  const _ctxIds = _getCtxFileIds();
   track('analysis_start', {
     accession_count: tokens.length,
     accession_types: accTypes,
     has_metadata_fields: !!(metaFields && metaFields.length),
     metadata_field_count: metaFields ? metaFields.length : 0,
     has_std_url: !!stdUrl,
-    has_context_file: !!ctxFileId,
+    has_context_file: _ctxIds.length > 0,
     is_logged_in: !!user,
     accession_input: accText.slice(0, 500),
     metadata_fields: metaRaw.slice(0, 300),
@@ -1106,7 +1367,11 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
   // Reset links panel
   document.getElementById('links-list').innerHTML = '';
   document.getElementById('links-panel-count').textContent = '0 links';
-  _linksState = {};
+  _linksState   = {};
+  _linksWarnings = {};
+  _curatorDecisions  = {};
+  _curatorBuilt      = false;
+  _curatorTotalSlots = 0;
 
   // Elapsed-time ticker
   const timerEl = document.getElementById('progress-timer');
@@ -1130,8 +1395,8 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
         bioproject_id:       accText,
         metadata_fields:     metaFields,
         standardization_url: stdUrl || null,
-        context_file_id:     ctxFileId || null,
-        context_file_name:   ctxFileName || null,
+        context_file_ids:    _ctxIds.filter(id => !id.startsWith('__shared__')),
+        context_file_name:   _getCtxFileNames() || null,
         sample_limit:        sampleLimit,
         run_id:              currentRunId,
         non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
@@ -1165,6 +1430,8 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
           currentRunId = evt.run_id || currentRunId;
         } else if (evt.type === 'links_update') {
           updateLinksPanel(evt);
+        } else if (evt.type === 'links_warning') {
+          handleLinksWarning(evt);
         } else if (evt.type === 'progress') {
           logLine(evt.message);
         } else if (evt.type === 'error') {
@@ -1289,9 +1556,272 @@ async function _generateAndDownload() {
   }
 }
 
+// ── Curator Review mode ───────────────────────────────────────────────────────
+
+const _CURATOR_SKIP = new Set([
+  'biosample_accession','bioproject','sra_accession','genbank_accession',
+  'explanation','confidence_score','time_cost','sources','_additional_fields',
+]);
+const _CHOICE_LETTERS = ['A','B','C','D'];
+
+function _shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function _parseConfidence(confStr, field) {
+  if (!confStr || !field) return '';
+  const m = new RegExp(field + '[^:]*:\\s*([\\d.]+)', 'i').exec(confStr);
+  if (!m) return '';
+  const val = parseFloat(m[1]);
+  if (isNaN(val)) return '';
+  const pct = val <= 1 ? Math.round(val * 100) : Math.round(val);
+  const cls = pct >= 75 ? 'badge-high' : pct >= 50 ? 'badge-medium' : 'badge-low';
+  return `<span class="conf-badge ${cls}">${pct}% confident</span>`;
+}
+
+function renderCuratorMode(rows) {
+  _curatorDecisions  = {};
+  _curatorTotalSlots = 0;
+  _curatorBuilt      = true;
+
+  const body = document.getElementById('curator-body');
+  body.innerHTML = '';
+  document.getElementById('curator-inattentive').style.display = 'none';
+  document.getElementById('curator-summary-bar').style.display = 'none';
+
+  if (!rows.length) {
+    body.innerHTML = '<div class="curator-empty">No results to review yet.</div>';
+    updateCuratorProgress();
+    return;
+  }
+
+  // Collect all unique values per field across all rows (for distractors)
+  const _pool = {};
+  rows.forEach(row => {
+    Object.keys(row).filter(k => !_CURATOR_SKIP.has(k)).forEach(k => {
+      const v = String(row[k] || '').trim();
+      if (!v || v.toLowerCase() === 'unknown') return;
+      if (!_pool[k]) _pool[k] = new Set();
+      _pool[k].add(v);
+    });
+  });
+
+  rows.forEach((row, rowIdx) => {
+    const sampleId = row.biosample_accession || row.sra_accession
+                  || row.genbank_accession    || `Sample ${rowIdx + 1}`;
+    const bp = row.bioproject ? row.bioproject : '';
+
+    const metaFields = Object.keys(row).filter(k =>
+      !_CURATOR_SKIP.has(k) && row[k] !== undefined && row[k] !== null && row[k] !== ''
+    );
+    if (!metaFields.length) return;
+
+    const sampleDiv = document.createElement('div');
+    sampleDiv.className = 'curator-sample';
+    sampleDiv.innerHTML =
+      `<div class="curator-sample-hdr">` +
+        `<span>${escHtml(sampleId)}</span>` +
+        (bp ? `<span class="sample-bp">${escHtml(bp)}</span>` : '') +
+        `<span class="curator-sample-score" id="sscore-${rowIdx}"></span>` +
+      `</div>`;
+
+    const fieldsDiv = document.createElement('div');
+    fieldsDiv.className = 'curator-fields';
+
+    metaFields.forEach(field => {
+      const toolAnswer = String(row[field] || 'unknown').trim();
+      const key = `${rowIdx}||${field}`;
+      _curatorTotalSlots++;
+
+      // Build 4-option choice list: tool answer + distractors + possibly unknown
+      const others = _shuffle(
+        [...(_pool[field] || new Set())].filter(v => v !== toolAnswer)
+      ).slice(0, 2);
+      const optionsRaw = [toolAnswer, ...others];
+      if (!optionsRaw.map(v=>v.toLowerCase()).includes('unknown')) optionsRaw.push('unknown');
+      const options = _shuffle(optionsRaw.slice(0, 4));
+
+      // Source passage
+      const af = row._additional_fields || {};
+      const passage  = af[`${field}_narrative`] || af[`${field}_explanation`] || '';
+      const srcLoc   = af[`${field}_source_location`] || '';
+      const confBadge = _parseConfidence(row.confidence_score || '', field);
+
+      const card = document.createElement('div');
+      card.className = 'curator-card';
+      card.id = `ccard-${rowIdx}-${field}`;
+
+      const choicesHtml = options.map((opt, i) =>
+        `<label class="curator-choice" id="cc-${rowIdx}-${field}-${i}">` +
+          `<input type="radio" name="cq-${rowIdx}-${field}" value="${escHtml(opt)}" ` +
+            `onchange="curatorSelect(${rowIdx},'${field}',${i},'${escHtml(opt)}')">` +
+          `<span class="choice-label">${_CHOICE_LETTERS[i]}</span>` +
+          `<span>${escHtml(opt)}</span>` +
+        `</label>`
+      ).join('');
+
+      card.innerHTML =
+        `<div class="curator-field-name">` +
+          escHtml(field.replace(/_/g,' ')) +
+          (confBadge ? `&ensp;${confBadge}` : '') +
+        `</div>` +
+        `<div class="curator-choices">${choicesHtml}</div>` +
+        `<div class="curator-card-footer">` +
+          `<button class="passage-btn" id="pbtn-${rowIdx}-${field}" ` +
+            `onclick="togglePassage(${rowIdx},'${field}')">? View source</button>` +
+          `<span class="curator-verdict" id="vdict-${rowIdx}-${field}"></span>` +
+        `</div>` +
+        `<div class="passage-area" id="parea-${rowIdx}-${field}">` +
+          (passage  ? `<strong>Evidence</strong><br>${escHtml(passage)}<br><br>` : '') +
+          (srcLoc   ? `<strong>Source&nbsp;location</strong><br>${escHtml(srcLoc)}` : '') +
+          (!passage && !srcLoc ? '<em>No source passage recorded for this field.</em>' : '') +
+        `</div>`;
+
+      fieldsDiv.appendChild(card);
+    });
+
+    sampleDiv.appendChild(fieldsDiv);
+    body.appendChild(sampleDiv);
+  });
+
+  updateCuratorProgress();
+}
+
+function curatorSelect(rowIdx, field, optIdx, selected) {
+  const key = `${rowIdx}||${field}`;
+  // Find the tool answer for this cell (from currentRows)
+  const toolAnswer = String((currentRows[rowIdx] || {})[field] || 'unknown').trim();
+  const passageViewed = !!(document.getElementById(`parea-${rowIdx}-${field}`) || {}).classList?.contains('open');
+  const match = selected.trim().toLowerCase() === toolAnswer.toLowerCase();
+
+  _curatorDecisions[key] = { selected, toolAnswer, passageViewed, match };
+
+  // Mark all choices disabled + apply colour coding
+  ['A','B','C','D'].forEach((_, i) => {
+    const el = document.getElementById(`cc-${rowIdx}-${field}-${i}`);
+    if (!el) return;
+    el.classList.add('disabled');
+    const inp = el.querySelector('input');
+    const optVal = inp ? inp.value : '';
+    if (optVal.trim().toLowerCase() === selected.trim().toLowerCase() && match) {
+      el.classList.add('correct');
+    } else if (optVal.trim().toLowerCase() === selected.trim().toLowerCase() && !match) {
+      el.classList.add('wrong');
+    } else if (optVal.trim().toLowerCase() === toolAnswer.toLowerCase() && !match) {
+      el.classList.add('tool-answer');  // reveal tool answer when user was wrong
+    }
+  });
+
+  const card = document.getElementById(`ccard-${rowIdx}-${field}`);
+  if (card) card.classList.add('decided', match ? '' : 'diverged');
+
+  // Verdict label
+  const vdict = document.getElementById(`vdict-${rowIdx}-${field}`);
+  if (vdict) {
+    if (match) {
+      vdict.className = 'curator-verdict match';
+      vdict.textContent = '✓ Matches tool';
+    } else {
+      vdict.className = 'curator-verdict diverge';
+      vdict.textContent = `⚠ Tool says: "${toolAnswer}"`;
+    }
+  }
+
+  updateCuratorProgress();
+  _checkInattentive();
+}
+
+function togglePassage(rowIdx, field) {
+  const area = document.getElementById(`parea-${rowIdx}-${field}`);
+  const btn  = document.getElementById(`pbtn-${rowIdx}-${field}`);
+  if (!area) return;
+  const open = area.classList.toggle('open');
+  if (btn) {
+    btn.textContent = open ? '▲ Hide source' : '? View source';
+    btn.classList.toggle('viewed', open);
+  }
+}
+
+function _checkInattentive() {
+  const decided   = Object.values(_curatorDecisions);
+  const total     = decided.length;
+  if (total < 5) return;
+  // Count how many decisions were made WITHOUT ever viewing the passage first
+  let noPassage = 0;
+  decided.forEach(d => { if (!d.passageViewed) noPassage++; });
+  const el = document.getElementById('curator-inattentive');
+  if (noPassage / total >= 0.7) {
+    el.style.display = 'block';
+  }
+}
+
+function updateCuratorProgress() {
+  const decided  = Object.keys(_curatorDecisions).length;
+  const total    = _curatorTotalSlots;
+  const pct      = total ? (decided / total) * 100 : 0;
+  const matches  = Object.values(_curatorDecisions).filter(d => d.match).length;
+  const diverges = decided - matches;
+  const passages = Object.values(_curatorDecisions).filter(d => d.passageViewed).length;
+
+  document.getElementById('curator-progress-bar').style.width = pct + '%';
+  document.getElementById('curator-progress-text').textContent =
+    `${decided} / ${total} reviewed`;
+
+  // Summary bar (show when at least one decision made)
+  const bar = document.getElementById('curator-summary-bar');
+  if (decided > 0) {
+    bar.style.display = 'flex';
+    document.getElementById('sum-decided').textContent  = decided;
+    document.getElementById('sum-match').textContent    = matches;
+    document.getElementById('sum-diverge').textContent  = diverges;
+    document.getElementById('sum-passage').textContent  = passages;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function resetCuratorMode() {
+  _curatorDecisions  = {};
+  _curatorBuilt      = false;
+  renderCuratorMode(currentRows);
+}
+
+function exportCuratorReport() {
+  if (!Object.keys(_curatorDecisions).length) {
+    alert('No decisions recorded yet. Review some fields first.');
+    return;
+  }
+  const lines = ['sample_idx,field,curator_answer,tool_answer,match,passage_viewed'];
+  Object.entries(_curatorDecisions).forEach(([key, d]) => {
+    const [rIdx, field] = key.split('||');
+    const row = currentRows[parseInt(rIdx)] || {};
+    const sampleId = row.biosample_accession || row.sra_accession || row.genbank_accession || rIdx;
+    lines.push([
+      `"${sampleId}"`,
+      `"${field}"`,
+      `"${d.selected.replace(/"/g,'""')}"`,
+      `"${d.toolAnswer.replace(/"/g,'""')}"`,
+      d.match ? 'TRUE' : 'FALSE',
+      d.passageViewed ? 'TRUE' : 'FALSE',
+    ].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'curator_verdicts.csv';
+  a.click();
+  track('curator_export', { decisions: Object.keys(_curatorDecisions).length });
+}
+
 // ── Results rendering ─────────────────────────────────────────────────────────
 function renderResults(rows) {
   if (!rows.length) return;
+  _curatorBuilt = false;   // invalidate curator view when data changes
   document.getElementById('results-card').style.display = 'block';
   document.getElementById('result-summary').textContent = `${rows.length} sample(s) processed`;
 
@@ -1401,11 +1931,16 @@ function renderSources(val) {
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 function switchTab(n) {
-  document.getElementById('tab1').classList.toggle('active', n === 1);
-  document.getElementById('tab2').classList.toggle('active', n === 2);
-  document.getElementById('tab1-btn').classList.toggle('active', n === 1);
-  document.getElementById('tab2-btn').classList.toggle('active', n === 2);
-  track('feature_click', { feature: n === 1 ? 'tab_cmd_metadata' : 'tab_raw_attributes' });
+  [1,2,3].forEach(i => {
+    document.getElementById(`tab${i}`).classList.toggle('active', i === n);
+    document.getElementById(`tab${i}-btn`).classList.toggle('active', i === n);
+  });
+  if (n === 3) {
+    if (currentRows.length && !_curatorBuilt) renderCuratorMode(currentRows);
+    track('feature_click', { feature: 'tab_curator_review' });
+  } else {
+    track('feature_click', { feature: n === 1 ? 'tab_cmd_metadata' : 'tab_raw_attributes' });
+  }
 }
 
 // ── Report modal ──────────────────────────────────────────────────────────────

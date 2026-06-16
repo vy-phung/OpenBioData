@@ -1,7 +1,12 @@
 import re
 import os
 import subprocess
+import zipfile
 from Bio import Entrez
+try:
+    from bs4 import BeautifulSoup as _BS4
+except ImportError:
+    _BS4 = None
 try:
     from docx import Document
     import fitz
@@ -26,7 +31,294 @@ try:
 except Exception:
     word2vec = None
 import urllib.parse, requests
+from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
 from pathlib import Path
+
+_DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.google.com/",
+}
+
+def _github_blob_to_raw(url: str) -> str:
+    """Convert a GitHub blob viewer URL to its raw content URL."""
+    if "github.com" in url and "/blob/" in url:
+        url = url.replace("github.com", "raw.githubusercontent.com")
+        url = url.replace("/blob/", "/")
+    return url
+
+def _is_local_path(path: str) -> bool:
+    """Return True if path is a local filesystem path (not a Drive folder ID)."""
+    return bool(path and (path.startswith("/") or path.startswith("\\") or (len(path) > 1 and path[1] == ":")))
+
+def _get_filename_from_url(url):
+    """Extract the true filename from a URL, including query-param style like ?file=foo.docx."""
+    parsed = _urlparse(url)
+    qs = _parse_qs(parsed.query)
+    if 'file' in qs:
+        return qs['file'][0]
+    name = os.path.basename(parsed.path)
+    return name if name else 'downloaded_file'
+
+def classify_url(url: str) -> str:
+    """Return 'pdf', 'xlsx', 'docx', 'pptx', 'ppt', or 'html' for a URL or local path.
+    Checks query-param ?file= as well as the URL path extension."""
+    parsed = _urlparse(url)
+    qs = _parse_qs(parsed.query)
+    file_param = qs.get("file", [""])[0].lower()
+    from urllib.parse import unquote
+    path_lower = unquote(parsed.path).lower()
+    for candidate in [file_param, path_lower]:
+        if not candidate:
+            continue
+        if candidate.endswith(".pdf"):
+            return "pdf"
+        if candidate.endswith((".xlsx", ".xls")):
+            return "xlsx"
+        if candidate.endswith(".docx") or candidate.endswith(".doc"):
+            return "docx"
+        if candidate.endswith(".pptx"):
+            return "pptx"
+        if candidate.endswith(".ppt"):
+            return "ppt"
+    return "html"
+
+
+def _extract_excel_text(xlsx_path) -> str:
+    """Extract all cell text from an Excel file as a formatted string."""
+    try:
+        import pandas as _pd
+        xls = _pd.ExcelFile(str(xlsx_path))
+        parts = []
+        for sheet in xls.sheet_names:
+            df = _pd.read_excel(xls, sheet_name=sheet, header=None)
+            df = df.fillna("").astype(str)
+            rows = []
+            for _, row in df.iterrows():
+                cleaned = [c.strip() for c in row if c.strip()]
+                if cleaned:
+                    rows.append(" | ".join(cleaned))
+            if rows:
+                parts.append(f"[Sheet: {sheet}]\n" + "\n".join(rows))
+        return "\n\n".join(parts) if parts else ""
+    except Exception as e:
+        print(f"❌ Excel text extraction failed: {e}")
+        return ""
+
+
+def _extract_pptx(path) -> str:
+    """Extract text from a .pptx file (or .ppt converted to .pptx) using zipfile + XML parsing."""
+    try:
+        slides = []
+        with zipfile.ZipFile(str(path)) as z:
+            slide_files = sorted(
+                n for n in z.namelist()
+                if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+            )
+            for i, sf in enumerate(slide_files, 1):
+                content = z.read(sf).decode("utf-8", errors="replace")
+                if _BS4:
+                    soup = _BS4(content, "xml")
+                    texts = [t.get_text(strip=True) for t in soup.find_all("a:t") if t.get_text(strip=True)]
+                else:
+                    texts = re.findall(r'<a:t[^>]*>([^<]+)</a:t>', content)
+                if texts:
+                    slides.append(f"[Slide {i}]\n" + " ".join(texts))
+        return "\n\n".join(slides) if slides else ""
+    except Exception as e:
+        print(f"❌ PPTX extraction failed: {e}")
+        return ""
+
+
+def _convert_ppt_to_pptx(ppt_path) -> str:
+    """Convert .ppt to .pptx via LibreOffice. Returns converted path or None."""
+    from pathlib import Path as _Path
+    ppt_path = _Path(ppt_path)
+    pptx_path = ppt_path.with_suffix(".pptx")
+    if pptx_path.exists():
+        return str(pptx_path)
+    try:
+        result = subprocess.run(
+            ["soffice", "--headless", "--convert-to", "pptx",
+             "--outdir", str(ppt_path.parent), str(ppt_path)],
+            capture_output=True, timeout=60
+        )
+        if result.returncode == 0 and pptx_path.exists():
+            return str(pptx_path)
+    except Exception as e:
+        print(f"⚠️ LibreOffice PPT conversion failed: {e}")
+    return None
+
+
+def _extract_ppt_text(ppt_path) -> str:
+    """Extract text from a PPT or PPTX file."""
+    from pathlib import Path as _Path
+    ext = _Path(str(ppt_path)).suffix.lower()
+    if ext == ".pptx":
+        return _extract_pptx(ppt_path)
+    converted = _convert_ppt_to_pptx(ppt_path)
+    if converted:
+        return _extract_pptx(converted)
+    return _extract_pptx(ppt_path)
+
+
+def _extract_docx_text(docx_path) -> str:
+    """Extract text from a local .docx file using python-docx."""
+    try:
+        if Document is None:
+            raise ImportError("python-docx not available")
+        doc = Document(str(docx_path))
+        parts = []
+        for para in doc.paragraphs:
+            t = para.text.strip()
+            if t:
+                parts.append(t)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+    except Exception as e:
+        print(f"❌ DOCX text extraction failed: {e}")
+        return ""
+
+
+def extract_url_text(url: str, data_dir) -> dict:
+    """Extract text from a single URL. Binary files are saved to data_dir.
+
+    Returns:
+        {"url": str, "name": str, "kind": str,
+         "status": "ok"|"failed", "text": str, "error": str}
+    """
+    from pathlib import Path as _Path
+    data_dir = _Path(data_dir)
+    url = url.strip()
+    name = _get_filename_from_url(url)
+    kind = classify_url(url)
+    result = {"url": url, "name": name, "kind": kind, "status": "ok", "text": "", "error": ""}
+
+    if kind == "html":
+        try:
+            if extractHTML is not None:
+                html = extractHTML.HTML(htmlContent=None, htmlLink=url, htmlFile="")
+                text = html.getListSection()
+            else:
+                import requests as _req
+                from bs4 import BeautifulSoup as _BS
+                r = _req.get(url, headers=_DOWNLOAD_HEADERS, timeout=30)
+                r.raise_for_status()
+                soup = _BS(r.content, "html.parser")
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+                text = soup.get_text(separator="\n", strip=True)
+            if text:
+                result["text"] = text
+            else:
+                result["status"] = "failed"
+                result["error"] = "No readable text found"
+        except Exception as e:
+            result["status"] = "failed"
+            result["error"] = str(e)
+    else:
+        dest = data_dir / name
+        try:
+            if not dest.exists():
+                content = _download_file(url)
+                with open(dest, "wb") as f:
+                    f.write(content)
+            # Extract text from the downloaded file
+            if kind == "pdf" and pdf is not None:
+                text = pdf.PDFFast(str(dest), str(data_dir)).extract_text()
+            elif kind == "docx":
+                if wordDoc is not None:
+                    text = wordDoc.WordDocFast(str(dest), str(data_dir)).extractText()
+                else:
+                    text = _extract_docx_text(dest)
+            elif kind == "xlsx":
+                text = _extract_excel_text(dest)
+            elif kind in ("ppt", "pptx"):
+                text = _extract_ppt_text(dest)
+            else:
+                text = ""
+
+            if text:
+                result["text"] = text
+            else:
+                result["status"] = "failed"
+                result["error"] = f"No text extracted from {name}"
+        except Exception as e:
+            result["status"] = "failed"
+            result["error"] = str(e)
+
+    return result
+
+
+def process_sources_to_docx(links: list, output_path, dataset_label: str = "") -> tuple:
+    """Extract text from each URL, write a formatted DOCX to output_path.
+
+    Returns (results: list[dict], failed_links: list[(url, reason)])
+    """
+    from pathlib import Path as _Path
+    output_path = _Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    data_dir = output_path.parent
+
+    if Document is None:
+        print("⚠️ python-docx not available — cannot write DOCX")
+        return [], []
+
+    doc = Document()
+    doc.add_heading("Supplementary Material Extract", level=0)
+    if dataset_label:
+        doc.add_paragraph(f"Source dataset: {dataset_label}")
+    doc.add_paragraph(f"Total links processed: {len(links)}")
+
+    results = []
+    failed_links = []
+
+    for idx, url in enumerate(links, 1):
+        url = url.strip()
+        if not url:
+            continue
+        r = extract_url_text(url, data_dir)
+        results.append(r)
+
+        p = doc.add_paragraph()
+        run = p.add_run(f"The source - {r['name']}")
+        run.bold = True
+        doc.add_paragraph(f"URL: {url}")
+        doc.add_paragraph(f"Type: {r['kind'].upper()}")
+
+        if r["status"] == "ok" and r["text"]:
+            for line in r["text"].split("\n"):
+                line = line.strip()
+                if line:
+                    doc.add_paragraph(line)
+        else:
+            err = r.get("error") or "Unknown error"
+            doc.add_paragraph(f"[Could not extract content: {err}]")
+            failed_links.append((url, err))
+
+        doc.add_paragraph("─" * 80)
+
+    doc.save(str(output_path))
+    print(f"✅ Document saved: {output_path}")
+    return results, failed_links
+
+
+def _download_file(url):
+    """Download a file with browser-like headers. Raises ValueError if response is HTML (blocked/403)."""
+    r = requests.get(url, headers=_DOWNLOAD_HEADERS, timeout=30, allow_redirects=True)
+    r.raise_for_status()
+    ct = r.headers.get('Content-Type', '')
+    if 'text/html' in ct:
+        raise ValueError(
+            f"Publisher returned an HTML page instead of the file — it likely requires a subscription "
+            f"or blocks server/cloud IP addresses. URL: {url}"
+        )
+    return r.content
 import pandas as pd
 try:
     import model
@@ -57,20 +349,24 @@ def download_excel_file(url, save_path="temp.xlsx"):
     if "view.officeapps.live.com" in url:
         parsed_url = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         real_url = urllib.parse.unquote(parsed_url["src"][0])
-        response = requests.get(real_url)
+        content = _download_file(real_url)
         with open(save_path, "wb") as f:
-            f.write(response.content)
+            f.write(content)
         return save_path
-    elif url.startswith("http") and (url.endswith(".xls") or url.endswith(".xlsx")):
-        response = requests.get(url)
-        response.raise_for_status()  # Raises error if download fails
-        with open(save_path, "wb") as f:
-            f.write(response.content)
-            print(len(response.content))
-        return save_path
-    else:
-        print("URL must point directly to an .xls or .xlsx file\n or it already downloaded.")
-        return url
+    elif url.startswith("http"):
+        filename = _get_filename_from_url(url)
+        if filename.lower().endswith(('.xls', '.xlsx')):
+            try:
+                content = _download_file(url)
+                with open(save_path, "wb") as f:
+                    f.write(content)
+                    print(len(content))
+                return save_path
+            except Exception as e:
+                print(f"❌ Excel download failed: {e}")
+                return url
+    print("URL must point directly to an .xls or .xlsx file or it is already downloaded.")
+    return url
         
 from pathlib import Path
 import pandas as pd
@@ -111,53 +407,84 @@ async def async_fetch_html(link: str, timeout: int = 15) -> str:
 
 async def ensure_local_file(link: str, saveFolder: str) -> str:
     """Ensure file is available locally (Drive or web). Returns local path."""
-    name = link.split("/")[-1]
+    link = _github_blob_to_raw(link)
+    name = _get_filename_from_url(link)
     local_temp_path = os.path.join(tempfile.gettempdir(), name)
 
     if os.path.exists(local_temp_path):
         return local_temp_path
 
-    # Try Drive first (blocking → offload)
-    file_id = await asyncio.to_thread(pipeline.find_drive_file, name, saveFolder)
+    # Try Drive only when saveFolder is a real Drive folder ID (not a local temp path)
+    _use_drive = pipeline is not None and not _is_local_path(saveFolder)
+    file_id = await asyncio.to_thread(pipeline.find_drive_file, name, saveFolder) if _use_drive else None
     if file_id:
         await asyncio.to_thread(pipeline.download_file_from_drive, name, saveFolder, local_temp_path)
     else:
-        # Web download asynchronously
-        async with aiohttp.ClientSession() as session:
-            async with session.get(link, timeout=20) as resp:
+        # Web download asynchronously with browser headers
+        async with aiohttp.ClientSession(headers=_DOWNLOAD_HEADERS) as session:
+            async with session.get(link, timeout=20, allow_redirects=True) as resp:
                 resp.raise_for_status()
+                ct = resp.headers.get('Content-Type', '')
+                if 'text/html' in ct:
+                    raise ValueError(
+                        f"Publisher returned HTML instead of file (blocked or requires login): {link}"
+                    )
                 content = await resp.read()
                 with open(local_temp_path, "wb") as f:
                     f.write(content)
-        # Upload back to Drive (offload)
-        await asyncio.to_thread(pipeline.upload_file_to_drive, local_temp_path, name, saveFolder)
+        # Upload back to Drive only when we have a real Drive folder ID
+        if _use_drive:
+            await asyncio.to_thread(pipeline.upload_file_to_drive, local_temp_path, name, saveFolder)
 
     return local_temp_path
 
 async def async_extract_text(link, saveFolder):
+    """Extract text from any URL or local path.
+
+    Detects type via classify_url() — handles pdf, docx, xlsx, ppt/pptx, and html.
+    Binary files are downloaded to saveFolder before extraction.
+    """
     try:
-        if link.endswith(".pdf"):
+        link = _github_blob_to_raw(link)
+        # Non-URLs (local paths) — check file extension directly
+        if not link.startswith("http"):
+            kind = classify_url(link)
+        else:
+            kind = classify_url(link)
+
+        if kind == "pdf":
+            if pdf is None:
+                return ""
             local_path = await ensure_local_file(link, saveFolder)
             return await asyncio.to_thread(lambda: pdf.PDFFast(local_path, saveFolder).extract_text())
 
-        elif link.endswith((".doc", ".docx")):
+        elif kind == "docx":
+            if wordDoc is None:
+                return ""
             local_path = await ensure_local_file(link, saveFolder)
             return await asyncio.to_thread(lambda: wordDoc.WordDocFast(local_path, saveFolder).extractText())
 
-        elif link.endswith((".xls", ".xlsx")):
-            return ""
+        elif kind == "xlsx":
+            local_path = await ensure_local_file(link, saveFolder)
+            return await asyncio.to_thread(_extract_excel_text, local_path)
 
-        elif link.startswith("http") or "html" in link:
+        elif kind in ("ppt", "pptx"):
+            local_path = await ensure_local_file(link, saveFolder)
+            return await asyncio.to_thread(_extract_ppt_text, local_path)
+
+        else:  # html — fetch and parse
+            if not link.startswith("http") and "html" not in link:
+                return ""
             html_content = await async_fetch_html(link)
+            if extractHTML is None:
+                return html_content
             html = extractHTML.HTML(htmlContent=html_content, htmlLink=link, htmlFile="")
-            # If you implement async_getListSection, call it here
             try:
                 if hasattr(html, "async_getListSection"):
                     article_text = await html.async_getListSection()
                 else:
-                    # fallback: run sync getListSection in a thread
                     article_text = await asyncio.to_thread(html.getListSection)
-            except:
+            except Exception:
                 article_text = ""
             if not article_text:
                 metadata_text = html.fetch_crossref_metadata(link)
@@ -165,8 +492,6 @@ async def async_extract_text(link, saveFolder):
                     article_text = html.mergeTextInJson(metadata_text)
             return article_text
 
-        else:
-            return ""
     except Exception as e:
         print(f"❌ async_extract_text failed for {link}: {e}")
         return ""
@@ -175,143 +500,112 @@ async def async_extract_text(link, saveFolder):
 def extract_text(link,saveFolder):
   try:
       text = ""
-      name = link.split("/")[-1]
-      print("name: ", name)  
-      #file_path = Path(saveFolder) / name
+      link = _github_blob_to_raw(link)
+      name = _get_filename_from_url(link)
+      print("name: ", name)
       local_temp_path = os.path.join(tempfile.gettempdir(), name)
-      print("this is local temp path: ", local_temp_path)  
+      print("this is local temp path: ", local_temp_path)
       if os.path.exists(local_temp_path):
         input_to_class = local_temp_path
-        print("exist")  
+        print("exist")
       else:
-        #input_to_class = link  # Let the class handle downloading  
-        # 1. Check if file exists in shared Google Drive folder
-        file_id = pipeline.find_drive_file(name, saveFolder)
+        # 1. Check if file exists in shared Google Drive folder (only for real Drive folder IDs)
+        _use_drive = pipeline is not None and not _is_local_path(saveFolder)
+        file_id = pipeline.find_drive_file(name, saveFolder) if _use_drive else None
         if file_id:
             print("📥 Downloading from Google Drive...")
             pipeline.download_file_from_drive(name, saveFolder, local_temp_path)
         else:
             print("🌐 Downloading from web link...")
-            response = requests.get(link)
-            with open(local_temp_path, 'wb') as f:
-                f.write(response.content)
-            print("✅ Saved locally.")
-    
-            # 2. Upload to Drive so it's available for later
-            pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
-    
+            try:
+                content = _download_file(link)
+                with open(local_temp_path, 'wb') as f:
+                    f.write(content)
+                print("✅ Saved locally.")
+                # 2. Upload to Drive so it's available for later
+                if _use_drive:
+                    pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
+            except Exception as e:
+                print(f"❌ Download failed: {e}")
+                return ""
+
         input_to_class = local_temp_path
         print(input_to_class)  
-      # pipeline.download_file_from_drive(name, saveFolder, local_temp_path)  
-      # pdf
-      if link.endswith(".pdf"):
-        # if file_path.is_file():
-        #   link = saveFolder + "/" + name
-        #   print("File exists.")
-        #p = pdf.PDF(local_temp_path, saveFolder)
-        print("inside pdf and input to class: ", input_to_class)  
-        print("save folder in extract text: ", saveFolder)  
-        #p = pdf.PDF(input_to_class, saveFolder)  
-        #p = pdf.PDF(link,saveFolder)
-        #text = p.extractTextWithPDFReader()
-        #text = p.extractText()  
+      kind = classify_url(link)
+      if kind == "pdf" and pdf is not None:
         p = pdf.PDFFast(input_to_class, saveFolder)
         text = p.extract_text()
-  
-        print("len text from pdf:")
-        print(len(text))  
-        #text_exclude_table = p.extract_text_excluding_tables()
-      # worddoc
-      elif link.endswith(".doc") or link.endswith(".docx"):
-        #d = wordDoc.wordDoc(local_temp_path,saveFolder)
-        # d = wordDoc.wordDoc(input_to_class,saveFolder)  
-        # text = d.extractTextByPage()
+      elif kind == "docx" and wordDoc is not None:
         d = wordDoc.WordDocFast(input_to_class, saveFolder)
         text = d.extractText()
-  
-      # html
-      else:  
-        if link.split(".")[-1].lower() not in "xlsx":
-            if "http" in link or "html" in link:
-              print("html link: ", link)  
-              html = extractHTML.HTML("",link)
-              text = html.getListSection() # the text already clean
-              print("len text html: ")
-              print(len(text))  
+      elif kind == "xlsx":
+        text = _extract_excel_text(input_to_class)
+      elif kind in ("ppt", "pptx"):
+        text = _extract_ppt_text(input_to_class)
+      elif (link.startswith("http") or "html" in link) and extractHTML is not None:
+        html = extractHTML.HTML("", link)
+        text = html.getListSection()
       # Cleanup: delete the local temp file
       if name:
           if os.path.exists(local_temp_path):
             os.remove(local_temp_path)
-            print(f"🧹 Deleted local temp file: {local_temp_path}")   
-      print("done extract text")        
+            print(f"🧹 Deleted local temp file: {local_temp_path}")
+      print("done extract text")
   except:
       text = ""
   return text
 
 def extract_table(link,saveFolder):
-  try:  
+  try:
       table = []
-      name = link.split("/")[-1]
-      #file_path = Path(saveFolder) / name
+      link = _github_blob_to_raw(link)
+      name = _get_filename_from_url(link)
       local_temp_path = os.path.join(tempfile.gettempdir(), name)
       if os.path.exists(local_temp_path):
         input_to_class = local_temp_path
-        print("exist")  
+        print("exist")
       else:
-        #input_to_class = link  # Let the class handle downloading  
-        # 1. Check if file exists in shared Google Drive folder
-        file_id = pipeline.find_drive_file(name, saveFolder)
+        # 1. Check if file exists in shared Google Drive folder (only for real Drive folder IDs)
+        _use_drive = pipeline is not None and not _is_local_path(saveFolder)
+        file_id = pipeline.find_drive_file(name, saveFolder) if _use_drive else None
         if file_id:
             print("📥 Downloading from Google Drive...")
             pipeline.download_file_from_drive(name, saveFolder, local_temp_path)
         else:
             print("🌐 Downloading from web link...")
-            response = requests.get(link)
-            with open(local_temp_path, 'wb') as f:
-                f.write(response.content)
-            print("✅ Saved locally.")
-    
-            # 2. Upload to Drive so it's available for later
-            pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
-    
+            try:
+                content = _download_file(link)
+                with open(local_temp_path, 'wb') as f:
+                    f.write(content)
+                print("✅ Saved locally.")
+                if _use_drive:
+                    pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
+            except Exception as e:
+                print(f"❌ Download failed: {e}")
+                return []
+
         input_to_class = local_temp_path
         print(input_to_class)
-      #pipeline.download_file_from_drive(name, saveFolder, local_temp_path)
-      # pdf
-      if link.endswith(".pdf"):
-        # if file_path.is_file():
-        #   link = saveFolder + "/" + name
-        #   print("File exists.")
-        #p = pdf.PDF(local_temp_path,saveFolder)
-        p = pdf.PDF(input_to_class,saveFolder)  
+      kind = classify_url(link)
+      if kind == "pdf" and pdf is not None:
+        p = pdf.PDF(input_to_class, saveFolder)
         table = p.extractTable()
-      # worddoc
-      elif link.endswith(".doc") or link.endswith(".docx"):
-        #d = wordDoc.wordDoc(local_temp_path,saveFolder)
-        # d = wordDoc.wordDoc(input_to_class,saveFolder)  
-        # table = d.extractTableAsList()
+      elif kind == "docx" and wordDoc is not None:
         d = wordDoc.WordDocFast(input_to_class, saveFolder)
-        table = d.extractTableAsList()  
-      # excel
-      elif link.split(".")[-1].lower() in "xlsx":
-        # download excel file if it not downloaded yet
-        savePath = saveFolder +"/"+ link.split("/")[-1]
-        excelPath = download_excel_file(link, savePath)
+        table = d.extractTablesAsList()
+      elif kind == "xlsx":
         try:
-            #xls = pd.ExcelFile(excelPath)
             xls = pd.ExcelFile(local_temp_path)
             table_list = []
             for sheet_name in xls.sheet_names:
                 df = pd.read_excel(xls, sheet_name=sheet_name)
-                cleaned_table = df.fillna("").astype(str).values.tolist()
-                table_list.append(cleaned_table)
+                table_list.append(df.fillna("").astype(str).values.tolist())
             table = table_list
         except Exception as e:
             print("❌ Failed to extract tables from Excel:", e)
-      # html
-      elif "http" in link or "html" in link:
-        html = extractHTML.HTML("",link)
-        table = html.extractTable() # table is a list
+      elif (link.startswith("http") or "html" in link) and extractHTML is not None:
+        html = extractHTML.HTML("", link)
+        table = html.extractTable()
       table = clean_tables_format(table)
       # Cleanup: delete the local temp file
       if os.path.exists(local_temp_path):
