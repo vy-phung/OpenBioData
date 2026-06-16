@@ -775,6 +775,91 @@ def get_doi_via_europepmc(pmid):
     return results[0].get('doi')
 
 
+def fetch_pmc_fulltext(pmid: str) -> dict:
+    """Fetch the PMC full-text XML for a PubMed ID.
+
+    Returns a dict with:
+      - 'text': str — concatenated body text (empty string on failure)
+      - 'pmc_id': str — PMC article ID, e.g. '13107851'
+      - 'sup_links': list[str] — absolute download URLs for supplementary files
+    """
+    result = {"text": "", "pmc_id": "", "sup_links": []}
+    if not pmid:
+        return result
+
+    headers = {"User-Agent": f"research-pipeline/1.0 (mailto:{Entrez.email})"}
+
+    # Step 1: resolve PMID → PMCID via EuropePMC (more reliable from cloud than NCBI elink)
+    pmc_id = ""
+    try:
+        r_epm = requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={"query": f"ext_id:{pmid} src:med", "format": "json",
+                    "resultType": "core", "pageSize": 1},
+            headers=headers, timeout=15
+        )
+        if r_epm.status_code == 200:
+            epm_results = r_epm.json().get("resultList", {}).get("result", [])
+            if epm_results:
+                raw_pmcid = epm_results[0].get("pmcid") or ""
+                # pmcid comes as "PMC11228841" — strip prefix for eFetch
+                pmc_id = raw_pmcid.replace("PMC", "").strip()
+    except Exception as _e:
+        print(f"[fetch_pmc_fulltext] EuropePMC lookup failed for PMID {pmid}: {_e}")
+
+    if not pmc_id:
+        print(f"[fetch_pmc_fulltext] no PMC record for PMID {pmid}")
+        return result
+    result["pmc_id"] = pmc_id
+
+    # Step 2: efetch full-text XML
+    try:
+        r2 = requests.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+            params={"db": "pmc", "id": pmc_id, "rettype": "xml",
+                    "retmode": "xml", "email": Entrez.email},
+            headers=headers, timeout=30
+        )
+        if r2.status_code != 200:
+            return result
+        xml_root = ET.fromstring(r2.content)
+    except Exception as e:
+        print(f"[fetch_pmc_fulltext] efetch failed for PMC {pmc_id}: {e}")
+        return result
+
+    # Step 3: extract body text
+    body = xml_root.find(".//body")
+    if body is not None:
+        result["text"] = " ".join(t.strip() for t in body.itertext() if t.strip())
+
+    # Step 4: collect supplementary file download URLs
+    # Prefer EuropePMC's bulk supplementary zip (reliable, no auth tokens needed).
+    # Fall back to scanning <supplementary-material> elements for absolute external links.
+    xlink_ns = "http://www.w3.org/1999/xlink"
+    raw_pmcid = f"PMC{pmc_id}"
+    _epmc_supp_url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{raw_pmcid}/supplementaryFiles"
+    # Quick HEAD to confirm the endpoint has content
+    try:
+        _supp_head = requests.head(_epmc_supp_url, timeout=10, allow_redirects=True)
+        if _supp_head.status_code == 200:
+            result["sup_links"].append(_epmc_supp_url)
+    except Exception:
+        pass
+
+    # Also collect any absolute external URLs from <supplementary-material> elements
+    for supp in xml_root.findall(".//supplementary-material"):
+        for ext_link in supp.findall(".//ext-link"):
+            href = (ext_link.get(f"{{{xlink_ns}}}href")
+                    or ext_link.get("href", "")
+                    or (ext_link.text or "").strip())
+            if href.startswith("http") and href not in result["sup_links"]:
+                result["sup_links"].append(href)
+
+    print(f"[fetch_pmc_fulltext] PMC{pmc_id}: {len(result['text'])} chars body, "
+          f"{len(result['sup_links'])} sup files")
+    return result
+
+
 def fetch_ena_study_text(study_id: str) -> str:
     """
     Fetch ENA study/project metadata as plain text.

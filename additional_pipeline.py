@@ -580,11 +580,30 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 except Exception as _pme:
                   print(f"PubMed search failed for DOI {link}: {_pme}")
 
-              if article_text:
-                _blocked = ("just a moment" in article_text.lower()
-                            or "403 forbidden" in article_text.lower())
-                if not _blocked:
-                  acc_score["source_texts"][link] = article_text
+              _blocked = not article_text or (
+                  "just a moment" in article_text.lower()
+                  or "403 forbidden" in article_text.lower())
+              if _blocked:
+                # DOI page blocked — try PMC full-text as fallback
+                _link_doi_for_pmc = link.replace("https://doi.org/", "")
+                try:
+                  handle2 = Entrez.esearch(db="pubmed", term=f"{_link_doi_for_pmc}[doi]", retmax=1)
+                  rec2 = Entrez.read(handle2)
+                  _pmc_pmid = (rec2.get("IdList") or [None])[0]
+                  if _pmc_pmid:
+                    _pmc_data = NCBI.fetch_pmc_fulltext(_pmc_pmid)
+                    if _pmc_data["text"]:
+                      article_text = _pmc_data["text"]
+                      _blocked = False
+                      print(f"[doi_pmc_fallback] PMC text: {len(article_text)} chars for {link}")
+                    for _pmc_sl in _pmc_data.get("sup_links", []):
+                      if _pmc_sl not in all_links:
+                        all_links.append(_pmc_sl)
+                        jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
+                except Exception as _pmc_fb_err:
+                  print(f"[doi_pmc_fallback] failed for {link}: {_pmc_fb_err}")
+              if not _blocked and article_text:
+                acc_score["source_texts"][link] = article_text
 
               # Process supplementary/linked files from the DOI page
               if jsonSM:
@@ -608,6 +627,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   print(f"[supplementary] processing failed for {link}: {_sm_err}")
             except Exception as _doi_err:
               print(f"[DOI fetch] {link} failed: {_doi_err}")
+
+          elif re.search(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)', link):
+            # PubMed URL in initial links — queue its DOI for processing in Step 3b
+            # by adding it to all_links (Step 3b will pick it up and resolve the DOI).
+            if link not in all_links:
+              all_links.append(link)
 
           else:  # non-DOI links: user-provided extra links + programmatic BioProject links
             _fetch_this_link = (
@@ -704,6 +729,110 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "web_search", "user_file": user_file_label}})
       except Exception as _ws_err:
         print(f"[web search] failed for {acc}: {_ws_err}")
+
+      # ── Step 3b: Follow PubMed links → DOI → full text + supplementary ────
+      # Web search often discovers pubmed.ncbi.nlm.nih.gov URLs and adds them to
+      # all_links, but Step 2 only processes doi.org links. Here we resolve each
+      # new PubMed URL to its DOI and run it through the same extraction pipeline.
+      _pubmed_url_re = re.compile(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)')
+      _processed_source_keys = set(acc_score.get("source_texts", {}).keys())
+      for _pm_url in list(all_links):
+        _pm_match = _pubmed_url_re.search(_pm_url)
+        if not _pm_match:
+          continue
+        _pmid = _pm_match.group(1)
+        if _pm_url in _processed_source_keys:
+          continue  # abstract already stored under this key
+        # Resolve PMID → DOI
+        _pub_doi = NCBI.get_doi_via_europepmc(_pmid)
+        if not _pub_doi:
+          print(f"[pubmed_follow] no DOI found for PMID {_pmid}")
+          continue
+        _doi_url = f"https://doi.org/{_pub_doi}"
+        if _doi_url not in all_links:
+          all_links.append(_doi_url)
+        if _doi_url in _processed_source_keys:
+          continue  # DOI already extracted in Step 2
+        print(f"[pubmed_follow] PMID {_pmid} → {_doi_url}")
+        await _progress({"__links_update__": {"acc": acc, "links": list(all_links),
+                                              "stage": "pubmed_doi", "user_file": user_file_label}})
+        try:
+          if extractHTML is None:
+            continue
+          _pm_html = extractHTML.HTML(htmlContent=None, htmlLink=_doi_url, htmlFile="")
+          _pm_jsonSM = _pm_html.getSupMaterial()
+          _pm_article_text = await _pm_html.async_getListSection()
+          if not _pm_article_text:
+            _pm_meta = _pm_html.fetch_crossref_metadata(_doi_url)
+            if _pm_meta:
+              _pm_article_text = _pm_html.mergeTextInJson(_pm_meta)
+            # Abstract fallback via Entrez
+            try:
+              _eh = Entrez.esearch(db="pubmed", term=f"{_pub_doi}[doi]", retmax=1)
+              _er = Entrez.read(_eh)
+              _eids = _er.get("IdList", [])
+              if _eids:
+                _efh = Entrez.efetch(db="pubmed", id=_eids[0], rettype="xml", retmode="xml")
+                _efr = Entrez.read(_efh)
+                _pa = _efr.get("PubmedArticle", [])
+                if _pa:
+                  _abst = " ".join(str(s) for s in (
+                    _pa[0].get("MedlineCitation", {})
+                          .get("Article", {})
+                          .get("Abstract", {})
+                          .get("AbstractText", []) or []))
+                  if _abst.strip():
+                    _pm_article_text += _abst
+            except Exception:
+              pass
+          _blocked_pm = not _pm_article_text or (
+              "just a moment" in _pm_article_text.lower()
+              or "403 forbidden" in _pm_article_text.lower())
+          if _blocked_pm:
+            # DOI page blocked — try PMC full-text as fallback
+            try:
+              _pmc_data = NCBI.fetch_pmc_fulltext(_pmid)
+              if _pmc_data["text"]:
+                _pm_article_text = _pmc_data["text"]
+                _blocked_pm = False
+                print(f"[pubmed_follow] PMC fallback: {len(_pm_article_text)} chars for PMID {_pmid}")
+              # Add PMC supplementary file links to the queue
+              for _pmc_sl in _pmc_data.get("sup_links", []):
+                if _pmc_sl not in all_links:
+                  all_links.append(_pmc_sl)
+                  _pm_jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
+            except Exception as _pmc_err:
+              print(f"[pubmed_follow] PMC fallback failed for PMID {_pmid}: {_pmc_err}")
+          if not _blocked_pm and _pm_article_text:
+              acc_score["source_texts"][_doi_url] = _pm_article_text
+              _processed_source_keys.add(_doi_url)
+          # Process supplementary files found on the DOI page
+          if _pm_jsonSM:
+            try:
+              _pm_sup_links = sum((_pm_jsonSM[k] for k in _pm_jsonSM if _pm_jsonSM[k]), [])
+              if _pm_sup_links:
+                for _psl in _pm_sup_links:
+                  if _psl not in all_links:
+                    all_links.append(_psl)
+                await _progress({"__links_update__": {"acc": acc, "links": list(all_links),
+                                                      "stage": "pubmed_supplementary",
+                                                      "user_file": user_file_label}})
+                for _psl in _pm_sup_links:
+                  try:
+                    _psl_text = await pipeline.process_link_allOutput(
+                        link=_psl, iso=None, acc=acc,
+                        saveLinkFolder=saveLinkFolder,
+                        linksWithTexts=acc_score["source_texts"],
+                        all_output="")
+                    if _psl_text:
+                      acc_score["source_texts"][_psl] = _psl_text
+                    print(f"[pubmed_sup] {_psl}: {len(_psl_text or '')} chars")
+                  except Exception as _psle:
+                    print(f"[pubmed_sup_link] {_psl}: {_psle}")
+            except Exception as _psme:
+              print(f"[pubmed_supplementary] {_doi_url}: {_psme}")
+        except Exception as _pde:
+          print(f"[pubmed_doi_follow] {_doi_url}: {_pde}")
 
       if user_context_text:
         acc_score["source_texts"]["user_uploaded_file"] = user_context_text
