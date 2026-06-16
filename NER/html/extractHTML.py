@@ -332,25 +332,84 @@ class HTML():
         ref.append(cleanText)
     return ref
   def getSupMaterial(self):
-    # check if there is material or not
+    """Find supplementary/additional material download links on a publisher page.
+
+    Strategy:
+      1. Heading-based scan (h2/h3/h4) — works for most journals.
+      2. Global file-link scan — catches OUP/Oxford, Wiley, Springer, and any
+         publisher that places download anchors outside a dedicated heading block.
+         Looks for .zip, .xlsx, .xls, .docx, .pdf, .csv, .tsv links anywhere on
+         the page and resolves relative URLs to absolute.
+    """
+    from urllib.parse import urljoin as _urljoin, urlparse as _urlparse
+
+    _SUPP_KW = {"supplementary", "supplemental", "material", "additional", "support", "data availability"}
+    _FILE_EXTS = {".zip", ".xlsx", ".xls", ".docx", ".doc", ".pdf", ".csv", ".tsv", ".txt"}
+    base_url = self.htmlLink or ""
+
+    def _is_supp_heading(text):
+        t = text.lower()
+        return any(kw in t for kw in _SUPP_KW)
+
+    def _is_file_href(href):
+        if not href:
+            return False
+        path = _urlparse(href).path.lower()
+        return any(path.endswith(ext) for ext in _FILE_EXTS)
+
+    def _resolve(href):
+        if href.startswith("http"):
+            return href
+        return _urljoin(base_url, href)
+
     json = {}
     soup = self.openHTMLFile()
-    for h2Pos in range(len(soup.find_all('h2'))):
-      if "supplementary" in soup.find_all('h2')[h2Pos].text.lower() or "material" in soup.find_all('h2')[h2Pos].text.lower() or "additional" in soup.find_all('h2')[h2Pos].text.lower() or "support" in soup.find_all('h2')[h2Pos].text.lower():
-        #print(soup.find_all('h2')[h2Pos].find_next("a").get("href"))
-        link, output = [],[]
-        if soup.find_all('h2')[h2Pos].text not in json:
-          json[soup.find_all('h2')[h2Pos].text] = []
-        for l in soup.find_all('h2')[h2Pos].find_all_next("a",href=True):
-            link.append(l["href"])
-        if h2Pos + 1 < len(soup.find_all('h2')):
-          nexth2Link = soup.find_all('h2')[h2Pos+1].find_next("a",href=True)["href"]
-          if nexth2Link in link:
-            link = link[:link.index(nexth2Link)]
-        # only take links having "https" in that
-        for i in link:
-          if "https" in i:  output.append(i)
-        json[soup.find_all('h2')[h2Pos].text].extend(output)
+    seen = set()
+
+    # ── Pass 1: heading-based (h2, h3, h4) ────────────────────────────────
+    all_headings = soup.find_all(["h2", "h3", "h4"])
+    for idx, heading in enumerate(all_headings):
+        if not _is_supp_heading(heading.get_text()):
+            continue
+        title = heading.get_text(strip=True)
+        json.setdefault(title, [])
+
+        # collect <a href> tags until the next heading of the same or higher level
+        next_heading = all_headings[idx + 1] if idx + 1 < len(all_headings) else None
+        collected = []
+        for a in heading.find_all_next("a", href=True):
+            if next_heading and a == next_heading.find_next("a", href=True):
+                break
+            href = _resolve(a["href"])
+            if href not in seen:
+                seen.add(href)
+                collected.append(href)
+        json[title].extend(collected)
+
+    # ── Pass 2: global file-link scan ──────────────────────────────────────
+    # Catches OUP silverchair CDN links, Wiley action/downloadSupplement, etc.
+    global_links = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if _is_file_href(href):
+            full = _resolve(href)
+            if full not in seen:
+                seen.add(full)
+                global_links.append(full)
+
+    # Also check <a> tags whose visible text mentions supplementary/data
+    _text_kw = {"supplementary", "supplemental", "supp", "additional data", "data availability"}
+    for a in soup.find_all("a", href=True):
+        link_text = a.get_text(strip=True).lower()
+        if any(kw in link_text for kw in _text_kw):
+            full = _resolve(a["href"])
+            if full not in seen:
+                seen.add(full)
+                global_links.append(full)
+
+    if global_links:
+        json.setdefault("Supplementary Files", []).extend(global_links)
+
     return json
   def extractTable(self):
     soup = self.openHTMLFile()
