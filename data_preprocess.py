@@ -62,7 +62,7 @@ def _get_filename_from_url(url):
     return name if name else 'downloaded_file'
 
 def classify_url(url: str) -> str:
-    """Return 'pdf', 'xlsx', 'docx', 'pptx', 'ppt', or 'html' for a URL or local path.
+    """Return 'pdf', 'xlsx', 'docx', 'pptx', 'ppt', 'zip', or 'html' for a URL or local path.
     Checks query-param ?file= as well as the URL path extension."""
     parsed = _urlparse(url)
     qs = _parse_qs(parsed.query)
@@ -82,7 +82,48 @@ def classify_url(url: str) -> str:
             return "pptx"
         if candidate.endswith(".ppt"):
             return "ppt"
+        if candidate.endswith(".zip"):
+            return "zip"
     return "html"
+
+
+def _extract_zip_text(zip_path, saveFolder=None) -> str:
+    """Extract text from all readable files inside a ZIP archive.
+
+    Handles nested PDFs, XLSX, DOCX, CSV/TSV, and plain-text files.
+    """
+    import tempfile as _tmpmod
+    from pathlib import Path as _P
+    parts = []
+    try:
+        with zipfile.ZipFile(str(zip_path)) as z:
+            for entry_name in z.namelist():
+                if entry_name.endswith("/"):
+                    continue  # skip directories
+                ext = _P(entry_name).suffix.lower()
+                try:
+                    data = z.read(entry_name)
+                    tmp_dir = _tmpmod.gettempdir()
+                    tmp_path = _P(tmp_dir) / _P(entry_name).name
+                    tmp_path.write_bytes(data)
+                    text = ""
+                    if ext == ".pdf" and pdf is not None:
+                        text = pdf.PDFFast(str(tmp_path), tmp_dir).extract_text()
+                    elif ext in (".xlsx", ".xls"):
+                        text = _extract_excel_text(tmp_path)
+                    elif ext in (".docx", ".doc") and wordDoc is not None:
+                        text = wordDoc.WordDocFast(str(tmp_path), tmp_dir).extractText()
+                    elif ext in (".txt", ".csv", ".tsv"):
+                        text = data.decode("utf-8", errors="replace")
+                    elif ext in (".pptx", ".ppt"):
+                        text = _extract_pptx(tmp_path)
+                    if text:
+                        parts.append(f"[ZIP entry: {entry_name}]\n{text}")
+                except Exception as _ze:
+                    print(f"❌ ZIP entry '{entry_name}' failed: {_ze}")
+    except Exception as e:
+        print(f"❌ ZIP extraction failed for {zip_path}: {e}")
+    return "\n\n".join(parts)
 
 
 def _extract_excel_text(xlsx_path) -> str:
@@ -472,6 +513,10 @@ async def async_extract_text(link, saveFolder):
             local_path = await ensure_local_file(link, saveFolder)
             return await asyncio.to_thread(_extract_ppt_text, local_path)
 
+        elif kind == "zip":
+            local_path = await ensure_local_file(link, saveFolder)
+            return await asyncio.to_thread(_extract_zip_text, local_path, saveFolder)
+
         else:  # html — fetch and parse
             if not link.startswith("http") and "html" not in link:
                 return ""
@@ -542,6 +587,8 @@ def extract_text(link,saveFolder):
         text = _extract_excel_text(input_to_class)
       elif kind in ("ppt", "pptx"):
         text = _extract_ppt_text(input_to_class)
+      elif kind == "zip":
+        text = _extract_zip_text(input_to_class, saveFolder)
       elif (link.startswith("http") or "html" in link) and extractHTML is not None:
         html = extractHTML.HTML("", link)
         text = html.getListSection()
