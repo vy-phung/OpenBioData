@@ -1035,8 +1035,12 @@ async def analyze(req: AnalyzeRequest):
 
             # Scan any *unscoped* user-uploaded context text (the general
             # "Context files & links" area, not tied to one paper/accession)
-            # for NCBI accessions too.
-            if user_context_text:
+            # for NCBI accessions too -- but only when the user didn't already
+            # type an accession themselves. If they did, the file is supporting
+            # context for that accession (e.g. a supplementary table listing the
+            # whole BioProject's samples), not a request to also process every
+            # other accession the table happens to mention.
+            if user_context_text and not raw_text:
                 try:
                     import paper_resolver
                     _ctx_tokens = sorted(paper_resolver.discover_accessions_in_text(user_context_text))
