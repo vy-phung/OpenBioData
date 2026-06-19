@@ -404,7 +404,7 @@ def resolve_from_biosample(biosample_id: str, known_bioproject: str = '') -> dic
     return {biosample_id: record}
 
 
-def _biosample_ids_from_sra(bioproject_id: str) -> list:
+def _biosample_ids_from_sra(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> list:
     """
     Fallback: find samples for a BioProject by searching SRA and extracting
     each run's BioSample accession from its ExpXml summary field. Most SRA
@@ -418,7 +418,7 @@ def _biosample_ids_from_sra(bioproject_id: str) -> list:
     seen = set()
     try:
         url = (f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
-               f'?db=sra&term={bioproject_id}[bioproject]&retmax={MAX_SAMPLES}'
+               f'?db=sra&term={bioproject_id}[bioproject]&retmax={max_samples}'
                f'&retmode=json&email={Entrez.email}')
         data = _json.loads(_urlopen_with_retry(url).decode('utf-8', errors='replace'))
         _safe_sleep()
@@ -524,9 +524,9 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
         if rec['IdList']:
             bs_uids = rec['IdList']
             total = int(rec.get('Count', len(bs_uids)))
-            if total > MAX_SAMPLES:
+            if total > max_samples:
                 print(f'  [BioProject] WARNING: {bioproject_id} has {total} BioSamples. '
-                      f'Processing first {MAX_SAMPLES}.')
+                      f'Processing first {max_samples}.')
             print(f'  [BioProject] Strategy 1 found {len(bs_uids)} BioSample UIDs')
             handle = Entrez.esummary(db='biosample', id=','.join(bs_uids))
             summary = Entrez.read(handle); handle.close()
@@ -652,7 +652,7 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
     # ── Strategy 3: SRA fallback (metagenomics / SRA-only projects) ───────────
     if not biosample_ids:
         print(f'  [BioProject] Trying SRA fallback for {bioproject_id}...')
-        sra_entries = _biosample_ids_from_sra(bioproject_id)
+        sra_entries = _biosample_ids_from_sra(bioproject_id, max_samples)
         if sra_entries:
             seen_sra: set = set()
             capped_sra: list = []
