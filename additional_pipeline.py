@@ -22,6 +22,7 @@ import pandas as pd
 from pathlib import Path
 import subprocess
 import os
+import asyncio
 import google.generativeai as genai
 try:
     from google import genai as _genai_new  # noqa: F401
@@ -41,6 +42,7 @@ import json
 import copy
 import requests as _requests
 import csv as _csv
+import field_aliases
 
 
 def _github_blob_to_raw(url: str) -> str:
@@ -247,7 +249,7 @@ def fetch_standardization_schema(urls) -> dict:
 }"""
 
 # Main execution
-async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, progress_cb=None, cancel_event=None, user_file_label=None):
+async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, other_links=None, niche_cases=None, save_df=None, standardization_urls=None, user_context_text=None, user_url_sources=None, progress_cb=None, cancel_event=None, user_file_label=None, per_accession_context=None):
   # output: country, sample_type, ethnic, location, money_cost, time_cost, explain
   # there can be one accession number in the accessions
   # # Prices are per 1,000 tokens
@@ -329,6 +331,16 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       if cancel_event is not None and cancel_event.is_set():
           await _progress("⏹ Cancelled — stopping pipeline.")
           break
+      # BioProject/GEO-series expansion leaves entries as lazy placeholders
+      # (just the sample id + parent project) instead of fully resolving
+      # every sample up front. Resolve this one sample's full record now —
+      # right before it's processed — so the cancellation check above can
+      # take effect between samples instead of only before/after the whole
+      # project's resolution finishes.
+      if accessions[acc].get("_lazy_kind"):
+          from ncbi_resolver import resolve_lazy_entry
+          await _progress(f"[{_acc_idx + 1}/{_total_accs}] Resolving {acc}…")
+          accessions[acc] = await asyncio.to_thread(resolve_lazy_entry, acc, accessions[acc])
       print("start gemini: ", acc)
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
       start = time.time()
@@ -535,6 +547,22 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               print(f"[schema] Could not save schema text: {_ste}")
       all_links = copy.deepcopy(links)
       print("all_links: ", all_links)
+      # Pre-register user-pasted "add link" sources (each keyed by its own
+      # URL, not lumped into one blob) BEFORE any of steps 2/3/3b run -- so
+      # if web search or supplementary discovery rediscovers the exact same
+      # URL later, the existing linksWithTexts-cache check in
+      # pipeline.process_link_allOutput recognizes it as already fetched
+      # and skips re-extracting it.
+      if user_url_sources:
+        for _u_url, _u_text in user_url_sources.items():
+          if _u_text and not acc_score["source_texts"].get(_u_url):
+            acc_score["source_texts"][_u_url] = _u_text
+          if _u_url not in all_links:
+            all_links.append(_u_url)
+        # Tag these under their own stage so the UI doesn't mislabel
+        # user-pasted links as NCBI-discovered ones.
+        await _progress({"__links_update__": {"acc": acc, "links": list(user_url_sources.keys()),
+                                              "stage": "user_link", "user_file": user_file_label}})
       await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "initial", "user_file": user_file_label}})
       # ── Step 2: Fetch text from DOI/publication links ─────────────────────────
       # Each DOI is processed independently; any failure skips that link.
@@ -602,6 +630,62 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                         jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
                 except Exception as _pmc_fb_err:
                   print(f"[doi_pmc_fallback] failed for {link}: {_pmc_fb_err}")
+              if _blocked:
+                # Still blocked after PMC -- try rendering the ORIGINAL URL
+                # with a real headless browser. Unlike Unpaywall (next
+                # fallback), this doesn't need an open-access copy to exist
+                # elsewhere -- it just needs to get past the bot-protection
+                # wall on the page that's already there.
+                try:
+                  _pw_html_text = await extractHTML.async_fetch_html_playwright(link)
+                  if _pw_html_text:
+                    _pw_html = extractHTML.HTML(htmlContent=_pw_html_text, htmlLink=link, htmlFile="")
+                    _pw_text = await _pw_html.async_getListSection()
+                    _pw_blocked = not _pw_text or (
+                        "just a moment" in _pw_text.lower()
+                        or "403 forbidden" in _pw_text.lower())
+                    if not _pw_blocked and _pw_text:
+                      article_text = _pw_text
+                      _blocked = False
+                      print(f"[doi_playwright_fallback] rendered text: {len(article_text)} chars for {link}")
+                      try:
+                        _pw_sup = _pw_html.getSupMaterial()
+                        if _pw_sup:
+                          jsonSM.setdefault("Playwright-rendered Supplementary Files", []).extend(
+                              sum((_pw_sup[k] for k in _pw_sup if _pw_sup[k]), []))
+                      except Exception:
+                        pass
+                except Exception as _pw_err:
+                  print(f"[doi_playwright_fallback] failed for {link}: {_pw_err}")
+              if _blocked:
+                # Still blocked after PMC + Playwright -- try Unpaywall: many open-access
+                # papers are blocked on the publisher's own page by bot
+                # protection (Cloudflare etc.) unrelated to access tier.
+                # Unpaywall often points to a repository/preprint mirror with
+                # no such protection.
+                try:
+                  _oa_url = NCBI.get_unpaywall_oa_url(_link_doi_for_pmc)
+                  if _oa_url:
+                    _oa_html = extractHTML.HTML(htmlContent=None, htmlLink=_oa_url, htmlFile="")
+                    _oa_text = await _oa_html.async_getListSection()
+                    _oa_blocked = not _oa_text or (
+                        "just a moment" in _oa_text.lower()
+                        or "403 forbidden" in _oa_text.lower())
+                    if not _oa_blocked and _oa_text:
+                      article_text = _oa_text
+                      _blocked = False
+                      print(f"[doi_unpaywall_fallback] OA text: {len(article_text)} chars for {link} via {_oa_url}")
+                      if _oa_url not in all_links:
+                        all_links.append(_oa_url)
+                      try:
+                        _oa_sup = _oa_html.getSupMaterial()
+                        if _oa_sup:
+                          jsonSM.setdefault("Unpaywall OA Supplementary Files", []).extend(
+                              sum((_oa_sup[k] for k in _oa_sup if _oa_sup[k]), []))
+                      except Exception:
+                        pass
+                except Exception as _oa_err:
+                  print(f"[doi_unpaywall_fallback] failed for {link}: {_oa_err}")
               if not _blocked and article_text:
                 acc_score["source_texts"][link] = article_text
 
@@ -803,6 +887,57 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   _pm_jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
             except Exception as _pmc_err:
               print(f"[pubmed_follow] PMC fallback failed for PMID {_pmid}: {_pmc_err}")
+          if _blocked_pm:
+            # Still blocked after PMC -- try rendering the original DOI URL
+            # with a real headless browser (see Step 2's identical fallback).
+            try:
+              _pw_html_text_pm = await extractHTML.async_fetch_html_playwright(_doi_url)
+              if _pw_html_text_pm:
+                _pw_html_pm = extractHTML.HTML(htmlContent=_pw_html_text_pm, htmlLink=_doi_url, htmlFile="")
+                _pw_text_pm = await _pw_html_pm.async_getListSection()
+                _pw_blocked_pm = not _pw_text_pm or (
+                    "just a moment" in _pw_text_pm.lower()
+                    or "403 forbidden" in _pw_text_pm.lower())
+                if not _pw_blocked_pm and _pw_text_pm:
+                  _pm_article_text = _pw_text_pm
+                  _blocked_pm = False
+                  print(f"[pubmed_follow_playwright] rendered text: {len(_pm_article_text)} chars for PMID {_pmid}")
+                  try:
+                    _pw_sup_pm = _pw_html_pm.getSupMaterial()
+                    if _pw_sup_pm:
+                      _pm_jsonSM.setdefault("Playwright-rendered Supplementary Files", []).extend(
+                          sum((_pw_sup_pm[k] for k in _pw_sup_pm if _pw_sup_pm[k]), []))
+                  except Exception:
+                    pass
+            except Exception as _pw_pm_err:
+              print(f"[pubmed_follow_playwright] failed for PMID {_pmid}: {_pw_pm_err}")
+          if _blocked_pm:
+            # Still blocked after PMC + Playwright -- try Unpaywall (see
+            # Step 2's identical fallback for why: bot protection blocks
+            # plain HTTP requests regardless of open-access status).
+            try:
+              _oa_url_pm = NCBI.get_unpaywall_oa_url(_pub_doi)
+              if _oa_url_pm:
+                _oa_html_pm = extractHTML.HTML(htmlContent=None, htmlLink=_oa_url_pm, htmlFile="")
+                _oa_text_pm = await _oa_html_pm.async_getListSection()
+                _oa_blocked_pm = not _oa_text_pm or (
+                    "just a moment" in _oa_text_pm.lower()
+                    or "403 forbidden" in _oa_text_pm.lower())
+                if not _oa_blocked_pm and _oa_text_pm:
+                  _pm_article_text = _oa_text_pm
+                  _blocked_pm = False
+                  print(f"[pubmed_follow_unpaywall] OA text: {len(_pm_article_text)} chars for PMID {_pmid} via {_oa_url_pm}")
+                  if _oa_url_pm not in all_links:
+                    all_links.append(_oa_url_pm)
+                  try:
+                    _oa_sup_pm = _oa_html_pm.getSupMaterial()
+                    if _oa_sup_pm:
+                      _pm_jsonSM.setdefault("Unpaywall OA Supplementary Files", []).extend(
+                          sum((_oa_sup_pm[k] for k in _oa_sup_pm if _oa_sup_pm[k]), []))
+                  except Exception:
+                    pass
+            except Exception as _oa_pm_err:
+              print(f"[pubmed_follow_unpaywall] failed for PMID {_pmid}: {_oa_pm_err}")
           if not _blocked_pm and _pm_article_text:
               acc_score["source_texts"][_doi_url] = _pm_article_text
               _processed_source_keys.add(_doi_url)
@@ -834,7 +969,15 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         except Exception as _pde:
           print(f"[pubmed_doi_follow] {_doi_url}: {_pde}")
 
-      if user_context_text:
+      # Prefer context scoped to this specific accession (e.g. the PDF/supplementary
+      # files the user attached to the one paper this accession was discovered from)
+      # over the global, unscoped upload -- otherwise a file meant for sample 2's
+      # paper gets broadcast into sample 1's context too, and the LLM attributes
+      # sample 2's table values to sample 1.
+      _scoped_context = (per_accession_context or {}).get(acc, "")
+      if _scoped_context:
+        acc_score["source_texts"]["user_uploaded_file"] = _scoped_context
+      elif user_context_text:
         acc_score["source_texts"]["user_uploaded_file"] = user_context_text
 
       # ── Check for inaccessible paper links and warn the user ──────────────
@@ -1056,14 +1199,33 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           acc_score["_additional_fields"] = predicted_output_info[output_acc]["_additional_fields"]
 
         # ── Schema alignment pass: map all extracted fields to schema vocabulary ──
+        # Also dedupes Pass 2's raw-named fields (e.g. 'geo_loc_name') against the
+        # canonical schema name (e.g. 'geographic_location_country_and_or_sea') so
+        # the same fact never shows up as two separate columns.
         _schema_keys = {k for k in standardization_schema if not k.startswith('__')}
         if _schema_keys and not _is_ontology_mode and acc_score.get("_additional_fields"):
           try:
-            aligned = model.align_to_schema(
-                acc_score["_additional_fields"],
-                standardization_schema, acc)
+            _pass2_values = {
+                k: (v.get('value', '') if isinstance(v, dict) else v)
+                for k, v in acc_score["_additional_fields"].items()
+            }
+            aligned = model.align_to_schema(_pass2_values, standardization_schema, acc)
+            for canonical, info in aligned.items():
+              raw_key = info.get('from_field', '')
+              raw_entry = acc_score["_additional_fields"].get(raw_key, {})
+              explanation = raw_entry.get('explanation', '') if isinstance(raw_entry, dict) else ''
+              if raw_key and raw_key != canonical:
+                acc_score["_additional_fields"].pop(raw_key, None)
+              if any(canonical.lower() == nc.lower() for nc in (niche_cases or [])):
+                # Sheet 1 already has this field from Pass 1 (with its own citation) -- drop the dup.
+                acc_score["_additional_fields"].pop(canonical, None)
+                continue
+              merged_key = field_aliases.canonicalize_field_name(
+                  canonical, acc_score["_additional_fields"].keys())
+              acc_score["_additional_fields"][merged_key] = {
+                  'value': info.get('value', ''), 'explanation': explanation,
+              }
             if aligned:
-              acc_score["_additional_fields"].update(aligned)
               print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
           except Exception as _sa_err:
             print(f"[schema-align] WARNING for {acc}: {_sa_err}")
@@ -1076,8 +1238,9 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             for _k, _v in predicted_output_info[output_acc].get("predicted_output", {}).items():
               if isinstance(_v, dict) and _v.get("answer", "unknown").lower() != "unknown":
                 _all_extracted[_k] = _v["answer"]
-            # Collect Pass 2 fields
-            _all_extracted.update(acc_score.get("_additional_fields", {}))
+            # Collect Pass 2 fields (now {field: {"value", "explanation"}})
+            for _k, _v in (acc_score.get("_additional_fields") or {}).items():
+              _all_extracted[_k] = _v.get('value', '') if isinstance(_v, dict) else _v
             if _all_extracted:
               ontology_result = model.annotate_with_ontologies(
                   _all_extracted, text, acc)
@@ -1086,8 +1249,9 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 # Also add formatted strings to _additional_fields for Sheet 2
                 for cat, items in ontology_result.items():
                   if items:
+                    _joined = "\n".join(items) if isinstance(items, list) else str(items)
                     acc_score.setdefault("_additional_fields", {})[f"ontology_{cat}"] = \
-                        "\n".join(items) if isinstance(items, list) else str(items)
+                        {'value': _joined, 'explanation': ''}
                 print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
           except Exception as _ont_err:
             print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")

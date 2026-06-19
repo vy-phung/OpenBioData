@@ -17,8 +17,15 @@ PyPDF2
 python-docx
 beautifulsoup4
 lxml
+html5lib
 nltk
 aiohttp
 pycountry
 xlrd==2.0.1
 tiktoken
+# playwright: headless-browser fallback for bot-protected paper pages.
+# NOTE: pip install alone is not enough in a fresh deploy -- the browser
+# binary also needs `playwright install chromium` run once post-install
+# (already cached in this Codespace). Without it, the fallback fails soft
+# and the pipeline just continues to the next fallback (Unpaywall).
+playwright

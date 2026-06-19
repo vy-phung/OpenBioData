@@ -1,8 +1,11 @@
 import asyncio
 import json
 import os
+import re
 import tempfile
 import uuid
+
+import field_aliases
 from typing import Any, Dict, List, Optional
 
 try:
@@ -29,6 +32,31 @@ _ACTIVE_RUNS: Dict[str, asyncio.Event] = {}
 
 def _sse(event_type: str, payload: dict) -> str:
     return f"data: {json.dumps({'type': event_type, **payload})}\n\n"
+
+
+async def _thread_with_heartbeat(fn, *args, heartbeat_message: str = "Still working…",
+                                  interval: float = 10.0):
+    """Run a blocking call via asyncio.to_thread, yielding an SSE progress
+    event every `interval` seconds while it's in flight.
+
+    Some blocking calls (e.g. resolving a publisher paper page through
+    several fallback fetches) can legitimately take 30-90+ seconds with no
+    natural place to report intermediate progress. Without any bytes sent
+    on the SSE stream during that gap, Railway's edge proxy (this app's
+    deploy target, per Procfile) treats the connection as idle and closes
+    it -- the browser then sees the literal "Cannot reach the server"
+    network error even though the backend is still running fine. Periodic
+    heartbeats keep the stream alive until the real result is ready.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    waited = 0.0
+    while not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=interval)
+        except asyncio.TimeoutError:
+            waited += interval
+            yield _sse("progress", {"message": f"{heartbeat_message} ({int(waited)}s)"})
+    yield {"__result__": task.result()}
 
 
 def _serialize_rows(rows: list) -> list:
@@ -309,42 +337,31 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         explanation_parts: list = []
         conflict_parts:    list = []
         extra: dict = {}          # per-field explanation detail for Sheet 2
-        method_text = ""          # initialized here so it's always defined even when niche_list is empty
-        field = None
+        fields_emitted: list = [] # fields that got a row[] value, in order (niche + promoted Pass 2)
 
-        for field in niche_list:
-            field_data = data.get(field, {}) or {}
-            if isinstance(field_data, dict) and field_data:
-                answers  = [k for k in field_data if k]
-                methods: list = []
-                for ans_methods in field_data.values():
-                    if isinstance(ans_methods, list):
-                        methods.extend(ans_methods)
-                value       = _tc("\n".join(answers) or "unknown")
-                method_text = _tc("\n".join(methods))
-            else:
-                value       = "unknown"
-                method_text = ""
-
-            # If LLM flagged a conflict in the value itself (##CONFLICT:), extract it
+        def _emit_field(field: str, value: str, raw_explanation: str, strip_method_prefix: bool = False) -> str:
+            """Parse [Sources:]/[Conflict:] tags out of raw_explanation, append a clean
+            one-line narrative to explanation_parts, and record per-field citation
+            detail in `extra` for Sheet 2. Shared by Pass 1 (niche) and Pass 2
+            (generalized) fields so both get identical explanation/source treatment.
+            Returns the (possibly ##CONFLICT-stripped) display value.
+            """
+            value = _tc(value) or "unknown"
             if "##CONFLICT:" in value:
-                val_parts = value.split("##CONFLICT:", 1)
-                value     = val_parts[0].strip()
-                inline_conflict = val_parts[1].strip()
-                conflict_parts.append(f"• {field}: {inline_conflict}")
-            row[field] = value
+                value, inline_conflict = value.split("##CONFLICT:", 1)
+                value = value.strip()
+                conflict_parts.append(f"• {field}: {inline_conflict.strip()}")
 
             if value.lower() == "unknown":
-                explanation_parts.append(
-                    f"[{field}] not found in available sources"
-                )
-            elif method_text:
-                # Strip method prefix (e.g. "rag_llm-") for cleaner display
-                clean_method = method_text
-                if "-" in clean_method[:20]:
-                    clean_method = clean_method.split("-", 1)[-1].strip()
+                explanation_parts.append(f"[{field}] not found in available sources")
+                fields_emitted.append(field)
+                return value
 
-                # Extract [Sources:] and [Conflict:] tags before stripping them
+            clean_method = raw_explanation or ""
+            if strip_method_prefix and "-" in clean_method[:20]:
+                clean_method = clean_method.split("-", 1)[-1].strip()
+
+            if clean_method:
                 _src_match  = _source_tag_re.search(clean_method)
                 _conf_match = _conflict_tag_re.search(clean_method)
                 if _src_match:
@@ -355,19 +372,39 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                         extra[f"{field}_conflict"] = conflict_text
                         conflict_parts.append(f"• {field}: {conflict_text}")
 
-                # Narrative = text before the first tag (clean for explanation column)
                 narrative = _source_tag_re.sub("", clean_method)
                 narrative = _conflict_tag_re.sub("", narrative).strip()
-                # Trim narrative to one sentence for the explanation column
+            else:
+                narrative = ""
+
+            if narrative:
                 display_narrative = narrative
                 if ". " in display_narrative and '[' not in display_narrative:
                     display_narrative = display_narrative.split(". ")[0] + "."
-
                 explanation_parts.append(f"• {field}: {display_narrative}")
-                extra[f"{field}_explanation"] = method_text
+                extra[f"{field}_explanation"] = clean_method
                 extra[f"{field}_narrative"]   = narrative
             else:
                 explanation_parts.append(f"• {field}: {value}")
+
+            fields_emitted.append(field)
+            return value
+
+        for field in niche_list:
+            field_data = data.get(field, {}) or {}
+            if isinstance(field_data, dict) and field_data:
+                answers  = [k for k in field_data if k]
+                methods: list = []
+                for ans_methods in field_data.values():
+                    if isinstance(ans_methods, list):
+                        methods.extend(ans_methods)
+                value       = "\n".join(answers) or "unknown"
+                method_text = "\n".join(methods)
+            else:
+                value       = "unknown"
+                method_text = ""
+
+            row[field] = _emit_field(field, value, method_text, strip_method_prefix=True)
 
         # ── Source links appended at end of explanation ───────────────────────
         source_list = data.get("source", []) or []
@@ -414,10 +451,61 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         reason_str = "; ".join(conf_reasons[:2]) if conf_reasons else ""
         confidence_display = f"{conf_score} ({tier_icon})" + (f" — {reason_str}" if reason_str else "")
 
+        # ── Pass 2 fields (now {field: {"value", "explanation"}}) ──────────────
+        pass2_fields = dict(data.get("_additional_fields") or {})
+
+        # ── Ontology annotations → add as extra columns ───────────────────────
+        ontology_annots = data.get("_ontology_annotations") or {}
+        _ONTO_LABELS = {
+            "taxonomy":               "Taxonomy (NCBITaxon ID | label)",
+            "organism_part":          "Organism Part/Body Site (UBERON ID | label)",
+            "host_characteristics":   "Host/Subject Characteristics (PATO·SO·DOID IDs | labels)",
+            "experimental_conditions":"Collection/Experimental Conditions (OBI·CHMO·MS IDs | labels)",
+            "contextual_study":       "Contextual/Study Design (GO·DOID IDs | labels)",
+        }
+        for cat, label in _ONTO_LABELS.items():
+            if cat in ontology_annots and ontology_annots[cat]:
+                items = ontology_annots[cat]
+                val = "\n".join(items) if isinstance(items, list) else str(items)
+                # Ontology columns always go to Sheet 1 (they're the requested output)
+                row[label] = _tc(val)
+                pass2_fields.pop(f"ontology_{cat}", None)  # avoid duplication in Sheet 2
+
+        def _pass2_value_explanation(v):
+            if isinstance(v, dict):
+                return v.get("value", ""), v.get("explanation", "")
+            return str(v) if v is not None else "", ""
+
+        if not niche_list and not ontology_annots:
+            # No user-specified fields: promote Pass 2 fields directly into Sheet 1,
+            # through the same _emit_field path as niche fields so they get a
+            # real explanation/source citation instead of a bare value dump.
+            # Alias-canonicalize each key against columns already on this row so
+            # synonyms (geo_loc_name vs geographic_location_country_and_or_sea)
+            # merge into one column instead of creating a duplicate.
+            for k, v in pass2_fields.items():
+                value, explanation = _pass2_value_explanation(v)
+                merged_key = field_aliases.canonicalize_field_name(k, row.keys())
+                if merged_key not in row:
+                    row[merged_key] = _emit_field(merged_key, value, explanation)
+            row["_additional_fields"] = {}
+        else:
+            # Ontology mode or user-specified niche fields: Pass 2 stays in Sheet 2
+            # only, flattened to <field>/<field>_explanation pairs (consistent with
+            # the niche-field `extra` shape) instead of nested dicts.
+            pass2_flat: dict = {}
+            for k, v in pass2_fields.items():
+                value, explanation = _pass2_value_explanation(v)
+                pass2_flat[k] = value
+                if explanation:
+                    pass2_flat[f"{k}_explanation"] = explanation
+            row["_additional_fields"] = {**pass2_flat, **extra}
+
         # ── Final columns ─────────────────────────────────────────────────────
         # Build per-field source column: narrative + indented per-source citations
+        # for every field that actually landed on this row (niche + promoted Pass 2).
         per_field_source_lines = []
-        for field in niche_list:
+        for field in fields_emitted:
             field_val = str(row.get(field, ""))
             if field_val.lower() in ("unknown", ""):
                 continue
@@ -457,39 +545,6 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         row["confidence_score"] = _tc(confidence_display)
         row["conflict"]         = _tc(conflict_display)
         row["time_cost"]        = _tc(data.get("time_cost", ""))
-        pass2_fields = dict(data.get("_additional_fields") or {})
-
-        # ── Ontology annotations → add as extra columns ───────────────────────
-        ontology_annots = data.get("_ontology_annotations") or {}
-        _ONTO_LABELS = {
-            "taxonomy":               "Taxonomy (NCBITaxon ID | label)",
-            "organism_part":          "Organism Part/Body Site (UBERON ID | label)",
-            "host_characteristics":   "Host/Subject Characteristics (PATO·SO·DOID IDs | labels)",
-            "experimental_conditions":"Collection/Experimental Conditions (OBI·CHMO·MS IDs | labels)",
-            "contextual_study":       "Contextual/Study Design (GO·DOID IDs | labels)",
-        }
-        for cat, label in _ONTO_LABELS.items():
-            if cat in ontology_annots and ontology_annots[cat]:
-                items = ontology_annots[cat]
-                val = "\n".join(items) if isinstance(items, list) else str(items)
-                # Ontology columns always go to Sheet 1 (they're the requested output)
-                row[label] = _tc(val)
-                pass2_fields.pop(f"ontology_{cat}", None)  # avoid duplication in Sheet 2
-
-        if not niche_list and not ontology_annots:
-            # No user-specified fields: promote all Pass 2 extracted fields directly
-            # into Sheet 1 columns so the user sees them immediately.
-            # Sheet 2 will be identical to Sheet 1 (no separate extra columns needed).
-            for k, v in pass2_fields.items():
-                if k not in row:
-                    row[k] = _tc(v)
-            row["_additional_fields"] = {}
-        elif not niche_list and ontology_annots:
-            # Ontology mode: ontology columns already added above; extras go to Sheet 2
-            row["_additional_fields"] = pass2_fields
-        else:
-            # User specified fields: niche fields are Sheet 1; Pass 2 extras go to Sheet 2
-            row["_additional_fields"] = {**pass2_fields, **extra}
         rows.append(row)
 
     return rows
@@ -503,6 +558,11 @@ class NonNcbiInfo(BaseModel):
     dataset_files_url: Optional[str] = "" # URL to dataset files page for sub-sample scraping
 
 
+class PaperEntry(BaseModel):
+    doi_or_link: str
+    context_file_ids: Optional[List[str]] = None  # PDF/supplementary files attached to THIS paper only
+
+
 class AnalyzeRequest(BaseModel):
     bioproject_id: str
     metadata_fields: Optional[List[str]] = None
@@ -511,6 +571,11 @@ class AnalyzeRequest(BaseModel):
     context_file_ids: Optional[List[str]] = None # multi-file paths from /upload-context or /process-context-urls
     context_file_name: Optional[str] = None      # display name(s) for UI/logging
     sample_limit: Optional[int] = None           # max samples to process this run
+    papers: Optional[List[PaperEntry]] = None    # DOIs / paper links to resolve to NCBI accessions
+    # Files attached to one specific manually-entered accession (e.g. uploaded
+    # in response to a per-accession "paper inaccessible" warning from a prior
+    # run), so they aren't broadcast into every other accession's context too.
+    accession_context_file_ids: Optional[Dict[str, List[str]]] = None
     non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
     email: Optional[str] = ""                    # signed-in user email for usage tracking
@@ -552,7 +617,7 @@ class GenerateExcelRequest(BaseModel):
 
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".txt", ".csv", ".tsv", ".pdf", ".xlsx", ".xls",
-    ".json", ".xml", ".docx",
+    ".json", ".xml", ".docx", ".zip",
 }
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
 
@@ -568,22 +633,53 @@ def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
             return file_bytes.decode("latin-1", errors="replace")
 
     if ext == ".pdf":
+        text = ""
         try:
             import fitz  # PyMuPDF — much better than PyPDF2
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             pages = [page.get_text("text") for page in doc]
             doc.close()
-            return "\n\n".join(pages)
+            text = "\n\n".join(pages)
         except Exception:
-            pass
+            try:
+                import io
+                import PyPDF2
+                reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                pages = [p.extract_text() or "" for p in reader.pages]
+                text = "\n".join(pages)
+            except Exception as exc:
+                return f"[PDF text extraction failed: {exc}]"
+
+        # Plain page text loses which table cell belongs to which row/column
+        # (the same issue fixed for fetched papers in data_preprocess.py) --
+        # append structured table rows so an uploaded closed-access PDF gets
+        # the same treatment as one fetched live.
         try:
-            import io
-            import PyPDF2
-            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-            pages = [p.extract_text() or "" for p in reader.pages]
-            return "\n".join(pages)
+            from NER.PDF import pdf as _pdf_mod
+            from data_preprocess import clean_tables_format, _serialize_tables_as_text
+            import tempfile as _tempfile, pathlib as _pathlib
+            tmp_pdf = _pathlib.Path(_tempfile.mktemp(suffix=".pdf"))
+            tmp_pdf.write_bytes(file_bytes)
+            tables = clean_tables_format(_pdf_mod.PDF(str(tmp_pdf), str(tmp_pdf.parent)).extractTable())
+            tables_text = _serialize_tables_as_text(tables)
+            if tables_text:
+                text += "\n" + tables_text
+            tmp_pdf.unlink(missing_ok=True)
         except Exception as exc:
-            return f"[PDF text extraction failed: {exc}]"
+            print(f"[upload-context] PDF table extraction failed for {filename}: {exc}")
+        return text
+
+    if ext == ".zip":
+        try:
+            from data_preprocess import _extract_zip_text
+            import tempfile as _tempfile, pathlib as _pathlib
+            tmp_zip = _pathlib.Path(_tempfile.mktemp(suffix=".zip"))
+            tmp_zip.write_bytes(file_bytes)
+            text = _extract_zip_text(str(tmp_zip))
+            tmp_zip.unlink(missing_ok=True)
+            return text
+        except Exception as exc:
+            return f"[ZIP text extraction failed: {exc}]"
 
     if ext in (".xlsx", ".xls"):
         try:
@@ -612,42 +708,70 @@ def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
     return file_bytes.decode("utf-8", errors="replace")
 
 
+def _process_one_upload(filename: str, raw: bytes) -> dict:
+    """Blocking work for a single uploaded file: text + table extraction,
+    plus (for PDFs) auto-fetching any Data Availability / Supplementary
+    Material links found in the text. Run via asyncio.to_thread -- this can
+    take from seconds to a couple minutes (PDF table parsing, network
+    fetches for supplementary files), and doing it inline on the event loop
+    would freeze every other request the server is handling (including any
+    in-flight /analyze SSE stream) for the same duration.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return {
+            "filename": filename,
+            "status": "failed",
+            "error": f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
+        }
+
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return {"filename": filename, "status": "failed", "error": "File too large (max 20 MB)."}
+
+    text = _extract_text_from_upload(raw, filename or "upload")
+
+    # An uploaded closed-access PDF's text often still names a Data
+    # Availability / Supplementary Material URL even though the paper
+    # itself was paywalled -- that linked file is usually on the open
+    # web, so fetch it automatically instead of asking the user to find
+    # and upload it themselves (mirrors getSupMaterial()'s auto-follow
+    # for papers fetched live, which only works for HTML pages).
+    if ext == ".pdf":
+        try:
+            import paper_resolver
+            from data_preprocess import extract_url_text as _extract_url_text
+            sup_links = paper_resolver.discover_supplementary_links_in_text(text)[:5]
+            if sup_links:
+                sup_dir = tempfile.mkdtemp()
+                for sup_url in sup_links:
+                    try:
+                        sup_result = _extract_url_text(sup_url, sup_dir)
+                        if sup_result.get("status") == "ok" and sup_result.get("text"):
+                            text += (
+                                f"\n\n-- Auto-fetched supplementary link from {filename}: "
+                                f"{sup_result['name']} ({sup_url}) --\n{sup_result['text']}"
+                            )
+                    except Exception as _sup_exc:
+                        print(f"[upload-context] supplementary auto-fetch failed for {sup_url}: {_sup_exc}")
+        except Exception as _sup_scan_exc:
+            print(f"[upload-context] supplementary link scan failed for {filename}: {_sup_scan_exc}")
+
+    tmp_dir = tempfile.mkdtemp()
+    ctx_path = os.path.join(tmp_dir, "user_context.txt")
+    with open(ctx_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+    return {"filename": filename, "status": "ok", "context_file_id": ctx_path, "chars": len(text)}
+
+
 @app.post("/upload-context")
 async def upload_context(files: List[UploadFile] = File(...)):
     """Accept one or more files; return a list of per-file results."""
     results = []
     for file in files:
-        ext = os.path.splitext(file.filename or "")[1].lower()
-        if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-            results.append({
-                "filename": file.filename,
-                "status": "failed",
-                "error": f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
-            })
-            continue
-
         raw = await file.read()
-        if len(raw) > MAX_UPLOAD_BYTES:
-            results.append({
-                "filename": file.filename,
-                "status": "failed",
-                "error": "File too large (max 20 MB).",
-            })
-            continue
-
-        text = _extract_text_from_upload(raw, file.filename or "upload")
-
-        tmp_dir = tempfile.mkdtemp()
-        ctx_path = os.path.join(tmp_dir, "user_context.txt")
-        with open(ctx_path, "w", encoding="utf-8") as fh:
-            fh.write(text)
-
-        results.append({
-            "filename": file.filename,
-            "status": "ok",
-            "context_file_id": ctx_path,
-            "chars": len(text),
-        })
+        result = await asyncio.to_thread(_process_one_upload, file.filename or "upload", raw)
+        results.append(result)
 
     return {"files": results}
 
@@ -686,13 +810,18 @@ async def process_context_urls(req: ProcessUrlsRequest):
                 "status": r["status"],
                 "chars": len(r["text"]),
                 "error": r["error"],
+                "supplementary_count": len(r.get("supplementary") or []),
             }
             for r in raw_results
         ]
 
-        # Build combined context text
+        # Build combined context text. Each block is tagged with its source
+        # URL (===SOURCE_URL:: ...===) so /analyze can later pull it back out
+        # into a per-URL map -- letting the pipeline recognize a link it
+        # rediscovers via web search as one the user already supplied,
+        # instead of re-extracting it from scratch.
         combined_parts = [
-            f"The source - {r['name']}\n\n{r['text']}"
+            f"===SOURCE_URL:: {r['url']}===\nThe source - {r['name']}\n\n{r['text']}"
             for r in raw_results
             if r["status"] == "ok" and r["text"]
         ]
@@ -767,8 +896,16 @@ async def analyze(req: AnalyzeRequest):
             raw_text = req.bioproject_id.strip()
             effective_limit = req.sample_limit or MAX_SAMPLES
 
-            # Load user-uploaded context files if provided (single or multiple)
+            # Load user-uploaded context files if provided (single or multiple).
+            # Files from /process-context-urls are tagged with a
+            # ===SOURCE_URL:: <url>=== marker per block (see that route) --
+            # pull those back out into user_url_sources so the pipeline can
+            # register each URL under its own key and skip re-extracting it
+            # if web search rediscovers the same link. Plain file uploads
+            # (/upload-context) have no markers and stay in the flat blob.
             user_context_text: Optional[str] = None
+            user_url_sources: Dict[str, str] = {}
+            _src_marker_re = re.compile(r'===SOURCE_URL:: (.*?)===\n(.*?)(?=\n===SOURCE_URL::|\Z)', re.S)
             _all_ctx_ids = []
             if req.context_file_id:
                 _all_ctx_ids.append(req.context_file_id)
@@ -781,13 +918,135 @@ async def analyze(req: AnalyzeRequest):
                     if _ctx_real.startswith("/tmp") and os.path.isfile(_ctx_real):
                         try:
                             with open(_ctx_real, "r", encoding="utf-8") as _fh:
-                                _ctx_parts.append(_fh.read())
+                                _ctx_text = _fh.read()
+                            for _u, _t in _src_marker_re.findall(_ctx_text):
+                                _u, _t = _u.strip(), _t.strip()
+                                if _u and _t:
+                                    user_url_sources[_u] = _t
+                            # Strip marked URL blocks out of the blob so their
+                            # text isn't duplicated (once per-URL, once in the
+                            # flat blob) -- leftover is plain file-upload text.
+                            _ctx_parts.append(_src_marker_re.sub('', _ctx_text))
                         except Exception as _exc:
                             yield _sse("progress", {"message": f"Context file read warning: {_exc}"})
+                if user_url_sources:
+                    yield _sse("progress", {"message": f"{len(user_url_sources)} user-pasted link source(s) registered."})
+                _ctx_parts = [p for p in _ctx_parts if p.strip()]
                 if _ctx_parts:
                     user_context_text = "\n\n".join(_ctx_parts)
                     yield _sse("progress", {"message": f"User context loaded ({len(_all_ctx_ids)} source(s))."})
 
+
+            # Context text scoped to a specific *discovered token* (a BioProject/GEO
+            # series/etc. as found in the paper, or a manually-entered accession) --
+            # not yet the final per-sample key. A BioProject token fans out into many
+            # biosample-level sample IDs during NCBI resolution below, so this can't
+            # be keyed by sample ID until after that fan-out happens; see the remap
+            # into per_accession_context right after resolved_dict is built.
+            _token_context: Dict[str, str] = {}
+
+            def _read_context_text(file_ids: Optional[List[str]]) -> str:
+                parts = []
+                for _cid in (file_ids or []):
+                    _real = os.path.realpath(_cid)
+                    if _real.startswith("/tmp") and os.path.isfile(_real):
+                        try:
+                            with open(_real, "r", encoding="utf-8") as _fh:
+                                parts.append(_fh.read())
+                        except Exception:
+                            pass
+                return "\n\n".join(p for p in parts if p.strip())
+
+            # ── Paper (DOI/link) → NCBI accession discovery ────────────────────
+            # User pastes papers instead of accessions; find every NCBI accession
+            # each paper references (BioProject/GEO/etc.) and feed those into the
+            # existing accession-resolution path unchanged, since that path already
+            # expands a BioProject/GEO series to every sample under it. Each paper's
+            # own uploaded files (if any) are scoped only to the accessions
+            # discovered from that one paper.
+            if req.papers:
+                import paper_resolver
+                _paper_data_dir = tempfile.mkdtemp()
+                _discovered_tokens: list = []
+                for _paper_entry in req.papers:
+                    _paper_input = (_paper_entry.doi_or_link or "").strip()
+                    if not _paper_input:
+                        continue
+                    _paper_text = _read_context_text(_paper_entry.context_file_ids)
+                    yield _sse("progress", {"message": f"Resolving paper: {_paper_input}…"})
+                    await asyncio.sleep(0)
+                    try:
+                        _paper_result = None
+                        async for _hb in _thread_with_heartbeat(
+                            paper_resolver.resolve_paper, _paper_input, _paper_data_dir,
+                            None, _paper_text or None,
+                            heartbeat_message=f"Still resolving {_paper_input}…",
+                        ):
+                            if isinstance(_hb, dict):
+                                _paper_result = _hb["__result__"]
+                            else:
+                                yield _hb
+                    except Exception as _pr_exc:
+                        yield _sse("progress", {"message": f"⚠ Failed to resolve {_paper_input}: {_pr_exc}"})
+                        continue
+
+                    if _paper_result["status"] == "needs_pdf":
+                        yield _sse("paper_needs_pdf", {
+                            "paper": _paper_input,
+                            "message": (
+                                f"{_paper_input} appears closed-access (no open-access copy found). "
+                                "Upload its PDF using the '+ files' button next to this paper and rerun — "
+                                "accessions found in it are picked up automatically and scoped to this paper only."
+                            ),
+                        })
+                    elif _paper_result["status"] == "no_accessions_found":
+                        yield _sse("progress", {
+                            "message": f"No NCBI accessions found for {_paper_input}."
+                        })
+                    elif _paper_result["status"] == "ok":
+                        found = sorted(_paper_result["discovered_accessions"])
+                        _discovered_tokens.extend(found)
+                        if _paper_text:
+                            for _acc_tok in found:
+                                _token_context[_acc_tok.upper()] = _paper_text
+                        yield _sse("progress", {
+                            "message": f"{_paper_input}: found {len(found)} NCBI accession(s) — {', '.join(found)}"
+                        })
+                    else:
+                        yield _sse("progress", {"message": f"Could not fetch text for {_paper_input}."})
+
+                if _discovered_tokens:
+                    raw_text = (raw_text + "\n" + "\n".join(_discovered_tokens)).strip()
+
+            # Files attached directly to a manually-entered accession (e.g. from
+            # a per-accession "paper inaccessible" warning on a prior run) --
+            # scoped to that one accession only, same reasoning as above.
+            if req.accession_context_file_ids:
+                import paper_resolver as _paper_resolver_mod
+                for _acc_id, _file_ids in req.accession_context_file_ids.items():
+                    _acc_text = _read_context_text(_file_ids)
+                    if _acc_text:
+                        _token_context[_acc_id.strip().upper()] = _acc_text
+                        _acc_ctx_tokens = sorted(_paper_resolver_mod.discover_accessions_in_text(_acc_text))
+                        yield _sse("progress", {
+                            "message": f"Loaded {len(_file_ids)} file(s) scoped to {_acc_id}"
+                                       + (f" (also found: {', '.join(_acc_ctx_tokens)})" if _acc_ctx_tokens else "")
+                        })
+
+            # Scan any *unscoped* user-uploaded context text (the general
+            # "Context files & links" area, not tied to one paper/accession)
+            # for NCBI accessions too.
+            if user_context_text:
+                try:
+                    import paper_resolver
+                    _ctx_tokens = sorted(paper_resolver.discover_accessions_in_text(user_context_text))
+                    if _ctx_tokens:
+                        raw_text = (raw_text + "\n" + "\n".join(_ctx_tokens)).strip()
+                        yield _sse("progress", {
+                            "message": f"Found {len(_ctx_tokens)} NCBI accession(s) in uploaded context — {', '.join(_ctx_tokens)}"
+                        })
+                except Exception as _ctx_scan_exc:
+                    yield _sse("progress", {"message": f"⚠ Context accession scan failed: {_ctx_scan_exc}"})
 
             yield _sse("progress", {"message": "Parsing accession input…"})
             await asyncio.sleep(0)
@@ -897,6 +1156,28 @@ async def analyze(req: AnalyzeRequest):
             # Merge non-NCBI entries into resolved_dict
             resolved_dict.update(non_ncbi_entries)
 
+            # Remap _token_context (keyed by the BioProject/GEO/etc. token as
+            # discovered/entered) onto the final per-sample keys now that NCBI
+            # resolution above has fanned a BioProject/GEO series out into its
+            # individual biosample-level sample IDs -- a paper's context must
+            # follow every sample that came from it, not just the literal token.
+            per_accession_context: Dict[str, str] = {}
+            if _token_context:
+                for _sample_key, _entry in resolved_dict.items():
+                    _candidates = {
+                        str(_sample_key).upper(),
+                        str(_entry.get("bioproject", "")).upper(),
+                        str(_entry.get("biosample", "")).upper(),
+                        str(_entry.get("accession", "")).upper(),
+                        str(_entry.get("experiment", "")).upper(),
+                        str(_entry.get("geo_series", "")).upper(),
+                        str(_entry.get("geo_sample", "")).upper(),
+                    }
+                    for _cand in _candidates:
+                        if _cand and _cand in _token_context:
+                            per_accession_context[_sample_key] = _token_context[_cand]
+                            break
+
             if non_ncbi_entries:
                 db_names = ", ".join(
                     e.get("_source_database", "unknown")
@@ -944,6 +1225,7 @@ async def analyze(req: AnalyzeRequest):
             use_rich = bool(resolved_dict and any(
                 entry.get("biosample") or entry.get("experiment")
                 or entry.get("_source_database") or entry.get("accession")
+                or entry.get("geo_sample") or entry.get("_lazy_kind")
                 for entry in resolved_dict.values()
             ))
 
@@ -988,9 +1270,11 @@ async def analyze(req: AnalyzeRequest):
                             other_links=None,           # schema URLs are not metadata sources
                             standardization_urls=std_urls or None,
                             user_context_text=user_context_text,
+                            user_url_sources=user_url_sources or None,
                             progress_cb=_pipe_progress,
                             cancel_event=cancel_event,
                             user_file_label=req.context_file_name or None,
+                            per_accession_context=per_accession_context or None,
                         )
                     )
                     _pipeline_task_ref.append(pipeline_task)
@@ -1399,15 +1683,29 @@ def _update_user_usage_in_gsheet(email: str, new_samples: list) -> None:
             if str(row.get("email", "")).strip().lower() == email_lower:
                 old_count = int(row.get("usage_count") or 0)
                 old_samples = str(row.get("samples") or "").strip()
-                new_count = old_count + len(new_samples)
-                new_samples_str = ", ".join(new_samples)
+                old_samples_set = {s.strip().lower() for s in old_samples.split(",") if s.strip()}
+                # Only bill samples not already recorded for this user -- reruns
+                # of the same DOI/paper resolve to the same accessions, and
+                # those must not be counted (and charged) a second time.
+                seen_in_batch = set()
+                net_new = []
+                for s in new_samples:
+                    key = s.strip().lower()
+                    if key and key not in old_samples_set and key not in seen_in_batch:
+                        net_new.append(s)
+                        seen_in_batch.add(key)
+                if not net_new:
+                    return
+                new_count = old_count + len(net_new)
+                new_samples_str = ", ".join(net_new)
                 combined = (old_samples + ", " + new_samples_str) if old_samples else new_samples_str
                 ws.update_cell(i, 2, new_count)
                 ws.update_cell(i, 4, combined)
                 return
 
         # No existing row — create one
-        ws.append_row([email.strip(), len(new_samples), paid_limit, ", ".join(new_samples)])
+        deduped_new = list(dict.fromkeys(s.strip() for s in new_samples if s.strip()))
+        ws.append_row([email.strip(), len(deduped_new), paid_limit, ", ".join(deduped_new)])
     except Exception:
         pass  # never crash the pipeline for tracking
 

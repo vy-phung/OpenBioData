@@ -11,6 +11,44 @@ import pandas as pd
 from lxml.etree import ParserError, XMLSyntaxError
 import aiohttp
 import asyncio
+
+
+async def async_fetch_html_playwright(url: str, timeout_ms: int = 20000) -> str:
+    """Render a page with a real headless browser and return its HTML.
+
+    Fallback for pages blocked by bot-protection (Cloudflare/Akamai JS
+    challenges etc.) that a plain HTTP request can't pass -- this executes
+    JS like a normal browser visit would, regardless of whether the
+    underlying content is open access (the block is about traffic pattern,
+    not access tier). Returns '' on any failure (timeout, no browser
+    binaries installed, navigation error, etc.) so callers can fall through
+    to the next fallback.
+    """
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as e:
+        print(f"[playwright] not available: {e}")
+        return ""
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page(user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ))
+                await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                # Give an automatic JS challenge (e.g. Cloudflare) a moment to resolve.
+                await page.wait_for_timeout(3000)
+                return await page.content()
+            finally:
+                await browser.close()
+    except Exception as e:
+        print(f"[playwright] fetch failed for {url}: {e}")
+        return ""
+
+
 class HTML():
   def __init__(self, htmlFile, htmlLink, htmlContent: str=None):
     self.htmlLink = htmlLink
@@ -99,6 +137,13 @@ class HTML():
               if r.status_code != 200 or not r.text.strip():
                   print(f"❌ HTML GET failed ({r.status_code}) or empty page: {self.htmlLink}")
                   return BeautifulSoup("", 'html.parser')
+              # Update to the final redirected URL (e.g. doi.org -> nature.com) so
+              # getSupMaterial()'s relative-link resolution uses the real page's
+              # domain/path instead of the doi.org redirect entry point -- otherwise
+              # a relative href like "/articles/x#ref" resolves against doi.org and
+              # produces a broken URL like "https://doi.org/articles/x#ref".
+              if r.url and r.url != self.htmlLink:
+                  self.htmlLink = r.url
               soup = BeautifulSoup(r.content, 'html.parser')
           elif self.htmlFile:
               with open(self.htmlFile, encoding='utf-8') as fp:
@@ -235,7 +280,14 @@ class HTML():
         # Merge text
         textJson = self.mergeTextInJson(json)
         textHTML = self.getText()
-        return textHTML if len(textHTML) > len(textJson) else textJson
+        text = textHTML if len(textHTML) > len(textJson) else textJson
+        try:
+            tables_text = self.getTablesAsText()
+            if tables_text:
+                text += "\n" + tables_text
+        except Exception as e:
+            print("⚠️ async_getListSection: table serialization failed:", e)
+        return text
 
     except Exception as e:
         print("❌ async_getListSection failed:", e)
@@ -317,10 +369,16 @@ class HTML():
         if len(textHTML) > len(textJson):
           text = textHTML
         else: text = textJson
+        try:
+            tables_text = self.getTablesAsText()
+            if tables_text:
+                text += "\n" + tables_text
+        except Exception as e:
+            print("⚠️ getListSection: table serialization failed:", e)
         return text #json
     except:
         print("failed all")
-        return ""  
+        return ""
   def getReference(self):
     # get reference to collect more next data
     ref = []
@@ -343,9 +401,10 @@ class HTML():
     """
     from urllib.parse import urljoin as _urljoin, urlparse as _urlparse
 
-    _SUPP_KW = {"supplementary", "supplemental", "material", "additional", "support", "data availability"}
+    _SUPP_KW = {"supplementary", "supplemental", "material", "additional", "support",
+                "data availability", "code availability", "software availability",
+                "availability of data", "associated data"}
     _FILE_EXTS = {".zip", ".xlsx", ".xls", ".docx", ".doc", ".pdf", ".csv", ".tsv", ".txt"}
-    base_url = self.htmlLink or ""
 
     def _is_supp_heading(text):
         t = text.lower()
@@ -364,6 +423,12 @@ class HTML():
 
     json = {}
     soup = self.openHTMLFile()
+    # Read AFTER openHTMLFile() runs -- it updates self.htmlLink to the final
+    # redirected URL (e.g. doi.org -> nature.com), so relative hrefs on the
+    # page resolve against the real page domain instead of the doi.org
+    # redirect entry point (which produced broken URLs like
+    # "https://doi.org/articles/x#ref" before this fix).
+    base_url = self.htmlLink or ""
     seen = set()
 
     # ── Pass 1: heading-based (h2, h3, h4) ────────────────────────────────
@@ -398,7 +463,8 @@ class HTML():
                 global_links.append(full)
 
     # Also check <a> tags whose visible text mentions supplementary/data
-    _text_kw = {"supplementary", "supplemental", "supp", "additional data", "data availability"}
+    _text_kw = {"supplementary", "supplemental", "supp", "additional data", "data availability",
+                "code availability", "software availability", "associated data"}
     for a in soup.find_all("a", href=True):
         link_text = a.get_text(strip=True).lower()
         if any(kw in link_text for kw in _text_kw):
@@ -421,6 +487,33 @@ class HTML():
         df = []
         print("No tables found in HTML file")
     return df
+
+  def getTablesAsText(self):
+    """Serialize every HTML <table> as labeled, row-wise "col=val" lines.
+
+    getText()/getListSection() concatenate table cell text with no row or
+    column boundaries, so an LLM reading the blob cannot reliably tell which
+    value (e.g. disease status) belongs to which row (e.g. subject_id). This
+    keeps each row's fields explicitly paired so that association survives.
+    """
+    try:
+      tables = self.extractTable()
+    except Exception as e:
+      print("❌ getTablesAsText: extractTable failed:", e)
+      return ""
+    out = []
+    for t_idx, df in enumerate(tables):
+      try:
+        df = df.fillna("").astype(str)
+        cols = [str(c).strip() for c in df.columns]
+        out.append(f"\n## Table {t_idx + 1}")
+        for _, row in df.iterrows():
+          pairs = [f"{cols[i]}={row.iloc[i]}" for i in range(len(cols)) if str(row.iloc[i]).strip()]
+          if pairs:
+            out.append("Row: " + ", ".join(pairs))
+      except Exception as e:
+        print(f"❌ getTablesAsText: failed to serialize table {t_idx}:", e)
+    return "\n".join(out)
   def mergeTextInJson(self,jsonHTML):
     try:
       #cl = cleanText.cleanGenText()

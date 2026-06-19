@@ -1311,7 +1311,9 @@ def align_to_schema(extracted_dict: dict, schema: dict, acc: str) -> dict:
     Map free-text extracted fields to the closest matching schema field names
     and standardize their values to the schema's allowed values.
 
-    Returns {schema_field: standardized_value} only for high-confidence matches.
+    Returns {schema_field: {"value": standardized_value, "from_field": original_key}}
+    only for high-confidence matches. "from_field" lets the caller remove the
+    duplicate raw-named entry once it's been folded into the canonical name.
     """
     if not schema or not extracted_dict:
         return {}
@@ -1357,7 +1359,8 @@ def align_to_schema(extracted_dict: dict, schema: dict, acc: str) -> dict:
         "3. Never invent values not in the allowed list.\n"
         "4. If a value matches an allowed entry regardless of case/punctuation, use the "
         "exact allowed value string.\n"
-        "Return ONLY a JSON object: {\"schema_field_name\": \"standardized_value\"}.\n"
+        "Return ONLY a JSON object: {\"schema_field_name\": {\"value\": \"standardized_value\", "
+        "\"from_field\": \"<the original extracted field name above that this came from>\"}}.\n"
         "No markdown fences, no explanation.\n"
     )
 
@@ -1374,9 +1377,19 @@ def align_to_schema(extracted_dict: dict, schema: dict, acc: str) -> dict:
         if brace_start != -1 and brace_end > brace_start:
             raw = raw[brace_start:brace_end + 1]
         result = json.loads(raw.strip())
-        return {k: str(v).strip()
-                for k, v in result.items()
-                if k in schema and v is not None and str(v).strip()}
+        out: dict = {}
+        for k, v in result.items():
+            if k not in schema or v is None:
+                continue
+            if isinstance(v, dict):
+                val = str(v.get('value', '')).strip()
+                from_field = str(v.get('from_field', '')).strip()
+            else:
+                val = str(v).strip()
+                from_field = ''
+            if val:
+                out[k] = {'value': val, 'from_field': from_field}
+        return out
     except Exception as e:
         print(f"[align_to_schema] WARNING: {e}")
         return {}
@@ -1530,7 +1543,10 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
       b) detect conflicts when two sources report different values for the
          same field (marked with '##CONFLICT:' in the value string).
 
-    Returns {field_name: value} — all non-empty strings.
+    Returns {field_name: {"value": str, "explanation": str}} — explanation
+    contains a one-sentence narrative + a trailing [Sources: ...] tag in the
+    same format Pass 1 uses, so downstream code can parse both identically
+    instead of leaving Pass-2 fields with no citation at all.
     Safe: always returns a dict (empty on any failure).
     """
     if not context_text or not context_text.strip():
@@ -1540,8 +1556,13 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
     exclude_fields = ['country_name', 'modern/ancient/unknown'] + list(niche_cases or [])
     exclude_str = ', '.join(exclude_fields) if exclude_fields else 'none'
 
-    # Keep the full context so nothing is lost; trim only if truly enormous
-    MAX_CHARS = 120000
+    # Keep the full context so nothing is lost; trim only if truly enormous.
+    # additional_pipeline.py already caps the combined source text at 800K
+    # chars before it reaches here, so this only protects against a single
+    # call site bypassing that cap -- it must not re-truncate within that
+    # budget, or content past the old 120K cut (e.g. a late-appearing table)
+    # is silently dropped from this pass.
+    MAX_CHARS = 800000
     context_snippet = context_text if len(context_text) <= MAX_CHARS else context_text[:MAX_CHARS]
 
     generalized_prompt = (
@@ -1565,19 +1586,25 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         "  lat_lon, env_biome, env_feature, env_material, depth, altitude, temperature, pH,\n"
         "  SRA_accession, BioSample_accession, and any other custom sample attributes.\n\n"
         f"Do NOT include these already-extracted fields: {exclude_str}\n\n"
-        "Return ONLY a flat JSON object:\n"
+        "Return ONLY a JSON object mapping each field to an object with TWO keys, value and explanation:\n"
+        '  {"field_name": {"value": "<extracted value>", "explanation": "<one sentence citing WHERE this came '
+        "from, naming the specific source/section/attribute, followed by a "
+        "[Sources: <key> (<location>, '<verbatim excerpt <=15 words>')] tag>\"}}\n"
         "  - Keys  : lowercase field names, underscores for spaces (e.g. 'collection_date')\n"
-        "  - Values: the extracted/best value as a non-empty string\n"
+        "  - value : the extracted/best value as a non-empty string\n"
+        "  - explanation : MANDATORY, never blank; must include the [Sources: ...] tag using the exact header "
+        "from 'The source - <key>:' blocks in the text\n"
         "  - Omit fields whose value is null, empty, 'not applicable', 'missing', or 'unknown'\n"
         "  - Preserve the original attribute name from NCBI XML when possible\n\n"
         "Source text:\n"
         "---\n"
         f"{context_snippet}\n"
         "---\n\n"
-        "Return ONLY valid JSON. No markdown fences, no explanation.\n"
-        'Example: {"geo_loc_name": "USA: California", "host": "Homo sapiens", '
-        '"collection_date": "2019-03", "tissue": "blood ##CONFLICT: BioSample=blood, paper=plasma", '
-        '"sex": "male", "sequencing_platform": "Illumina NovaSeq 6000"}'
+        "Return ONLY valid JSON. No markdown fences.\n"
+        'Example: {"geo_loc_name": {"value": "USA: California", "explanation": '
+        "\"BioSample attribute geo_loc_name is 'USA: California'. [Sources: NCBI_biosample (geo_loc_name "
+        "attribute, 'USA: California')]\"}, \"sex\": {\"value\": \"male\", \"explanation\": \"Methods section "
+        "states male donor. [Sources: https://doi.org/10.1234/x (Methods, 'male donor')]\"}}"
     )
 
     try:
@@ -1598,14 +1625,22 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
             raw = raw[brace_start:brace_end + 1]
 
         result = json.loads(raw.strip())
-        # Ensure all values are non-empty strings; drop blanks/nulls
-        cleaned = {}
+        # Normalize to {field: {"value": str, "explanation": str}}; tolerate the
+        # model falling back to a flat {field: value} despite instructions.
+        cleaned: dict = {}
         skip_vals = {'none', 'null', 'n/a', 'na', 'missing', 'not applicable', 'unknown', ''}
         for k, v in result.items():
             k_str = str(k).strip().lower().replace(' ', '_')
-            v_str = str(v).strip() if v is not None else ''
-            if k_str and v_str and v_str.lower() not in skip_vals:
-                cleaned[k_str] = v_str
+            if not k_str:
+                continue
+            if isinstance(v, dict):
+                v_str = str(v.get('value', '')).strip()
+                expl = str(v.get('explanation', '')).strip()
+            else:
+                v_str = str(v).strip() if v is not None else ''
+                expl = ''
+            if v_str and v_str.lower() not in skip_vals:
+                cleaned[k_str] = {'value': v_str, 'explanation': expl}
         return cleaned
 
     except Exception as e:
@@ -1708,20 +1743,12 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       acc = list_accs[metadata_list_pos]
       again_output_format, general_knowledge_prompt = "", ""
       output_acc = {}
-      # if at least 1 answer is unknown, then do smart queries to get more sources besides doi
-      unknown_count = sum(1 for v in metadata_list.values() if v.get("answer").lower() == "unknown")
-      if unknown_count >= 1:
-        print("at least 1 unknown outputs")
-        context_for_llm, linksWithTexts, more_links = await getMoreInfoForAcc(iso=None, acc=acc, saveLinkFolder=saveLinkFolder, niche_cases=niche_cases, limit_context=250000)
-        links += more_links
-        if acc_cleaned.lower() in context_for_llm.lower():
-          accession_found_in_text = True
-          # update again accession found in text due to new context for llm
-          outputs[acc]["accession_found_in_text"] = accession_found_in_text
-        # update links for output of acc
-        outputs[acc]["links"] = links  
-      else:
-        context_for_llm = prompts[acc]
+      # NOTE: an unknown-field retry used to re-run getMoreInfoForAcc() here,
+      # but both pipeline.py and additional_pipeline.py already call it
+      # (smart web search) before building prompts[acc] -- that search result
+      # is already folded into this context, so re-running it found nothing
+      # new and only doubled the search cost/time. Use the context as-is.
+      context_for_llm = prompts[acc]
       # Collect unknown fields and known fields in one pass
       unknown_fields = []
       for key in metadata_list:
