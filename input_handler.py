@@ -61,8 +61,16 @@ def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
         (resolved_dict, skipped_list) where:
             resolved_dict = {SAMN_id: {bioproject, biosample, accession, experiment}}
             skipped_list  = ["Could not resolve FOO — skipping", ...]
+
+    Note: BioProject and GEO series tokens are expanded via the cheap
+    enumerate_project_samples() lazy path instead of fully resolving every
+    sample up front. Entries with a '_lazy_kind' key still need
+    ncbi_resolver.resolve_lazy_entry() called on them before use — the
+    pipeline does this one sample at a time, immediately before processing
+    it, so the first result isn't held up by the whole project resolving
+    and a cancellation can take effect between samples.
     """
-    from ncbi_resolver import resolve_accessions, detect_accession_type
+    from ncbi_resolver import resolve_accessions, detect_accession_type, enumerate_project_samples
 
     tokens = parse_user_input(raw_input)
     if not tokens:
@@ -85,7 +93,10 @@ def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
         # Pass remaining slots so BioProject expansion doesn't over-fetch
         remaining_slots = max_samples - len(all_resolved)
         try:
-            resolved = resolve_accessions(token, max_samples=remaining_slots)
+            if acc_type in ("bioproject", "geo_series"):
+                resolved = enumerate_project_samples(token, acc_type, max_samples=remaining_slots)
+            else:
+                resolved = resolve_accessions(token, max_samples=remaining_slots)
         except Exception as e:
             log.warning("build_pipeline_input: resolve_accessions failed for '%s': %s",
                         token, e)
@@ -110,11 +121,13 @@ def build_pipeline_input(raw_input: str, max_samples: int = 50) -> tuple:
             experiment  = str(entry.get("experiment",  "") or "").strip()
             accession   = str(entry.get("accession",   "") or "").strip()
 
+            geo_sample  = str(entry.get("geo_sample",  "") or "").strip()
             is_genuinely_unresolved = (
                 acc_type == "unknown"
                 and not bioproject
                 and not biosample
                 and not experiment
+                and not geo_sample
             )
             if is_genuinely_unresolved:
                 msg = f"Could not resolve {token} — skipping"
@@ -138,10 +151,12 @@ def get_pipeline_accession(entry: dict, fallback: str = "") -> str:
       1. GenBank accession (e.g. OL757400) — has full document text
       2. SRR run (e.g. SRR17084312) — SRA metadata available
       3. BioSample ID (e.g. SAMN23469632) — fallback, minimal metadata
-      4. fallback argument (original user input)
+      4. GSM sample ID (for GEO-only entries)
+      5. fallback argument (original user input)
 
     Args:
         entry:    dict with keys bioproject, biosample, accession, experiment
+                  (and optional geo_sample, geo_series for GEO entries)
         fallback: original token string to return if nothing else is available
 
     Returns:
@@ -150,6 +165,7 @@ def get_pipeline_accession(entry: dict, fallback: str = "") -> str:
     accession  = str(entry.get("accession",  "") or "").strip()
     experiment = str(entry.get("experiment", "") or "").strip()
     biosample  = str(entry.get("biosample",  "") or "").strip()
+    geo_sample = str(entry.get("geo_sample", "") or "").strip()
 
     if accession:
         return accession
@@ -163,4 +179,6 @@ def get_pipeline_accession(entry: dict, fallback: str = "") -> str:
         return biosample
     if experiment:
         return experiment
+    if geo_sample:
+        return geo_sample
     return fallback or str(entry.get("bioproject", "") or "").strip()

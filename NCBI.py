@@ -775,6 +775,35 @@ def get_doi_via_europepmc(pmid):
     return results[0].get('doi')
 
 
+def get_unpaywall_oa_url(doi: str, email: str = "vyphung1901@gmail.com") -> str:
+    """Look up a free, legally-hosted full-text copy of an open-access DOI via
+    the Unpaywall API. Many publisher pages sit behind bot-protection (Cloudflare
+    etc.) that blocks plain HTTP requests regardless of whether the article is
+    open access -- Unpaywall often points to a repository/preprint mirror
+    instead, which usually has no such protection.
+
+    Returns the best OA URL (PDF preferred, else landing page), or '' if none
+    found / the lookup fails.
+    """
+    if not doi:
+        return ""
+    doi = doi.strip()
+    url = f"https://api.unpaywall.org/v2/{doi}?email={email}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return ""
+        data = response.json()
+    except Exception as e:
+        print(f"Unpaywall request failed for DOI {doi}: {e}")
+        return ""
+
+    if not data.get("is_oa"):
+        return ""
+    best = data.get("best_oa_location") or {}
+    return best.get("url_for_pdf") or best.get("url") or ""
+
+
 def fetch_pmc_fulltext(pmid: str) -> dict:
     """Fetch the PMC full-text XML for a PubMed ID.
 

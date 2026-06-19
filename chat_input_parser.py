@@ -178,6 +178,8 @@ def _eutils_summary_accs(db: str, uids: list) -> list:
                 acc = entry.get("experiment_acc") or entry.get("uid", "")
             elif db == "nuccore":
                 acc = entry.get("accessionversion") or entry.get("accession", "")
+            elif db == "gds":
+                acc = entry.get("accession", "")
             else:
                 acc = ""
             if acc:

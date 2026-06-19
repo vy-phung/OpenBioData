@@ -226,25 +226,49 @@ def _extract_docx_text(docx_path) -> str:
         return ""
 
 
-def extract_url_text(url: str, data_dir) -> dict:
+def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = True) -> dict:
     """Extract text from a single URL. Binary files are saved to data_dir.
 
+    For HTML pages, also looks for supplementary/data-availability download
+    links on the page (the same detection extractHTML.getSupMaterial() uses
+    for DOI links discovered automatically from NCBI metadata) and extracts
+    their text too -- so a user-pasted paper/DOI link gets the same
+    supplementary-material treatment as links found by the main pipeline,
+    instead of only getting the visible article text.
+
+    _seen / _follow_sup are internal: _seen dedupes across the recursive
+    supplementary fetch (so the same URL is never extracted twice), and
+    _follow_sup is set to False on the recursive call so supplementary pages
+    aren't themselves scanned for further supplementary links (one level
+    deep, matching how the main pipeline handles DOI pages).
+
     Returns:
-        {"url": str, "name": str, "kind": str,
-         "status": "ok"|"failed", "text": str, "error": str}
+        {"url": str, "name": str, "kind": str, "status": "ok"|"failed",
+         "text": str, "error": str, "supplementary": list[str]}
     """
     from pathlib import Path as _Path
     data_dir = _Path(data_dir)
     url = url.strip()
     name = _get_filename_from_url(url)
     kind = classify_url(url)
-    result = {"url": url, "name": name, "kind": kind, "status": "ok", "text": "", "error": ""}
+    result = {"url": url, "name": name, "kind": kind, "status": "ok", "text": "",
+              "error": "", "supplementary": []}
+
+    if _seen is None:
+        _seen = set()
+    _seen.add(url)
 
     if kind == "html":
         try:
+            sup_json = {}
             if extractHTML is not None:
                 html = extractHTML.HTML(htmlContent=None, htmlLink=url, htmlFile="")
                 text = html.getListSection()
+                if _follow_sup:
+                    try:
+                        sup_json = html.getSupMaterial()
+                    except Exception as _sup_scan_err:
+                        print(f"[extract_url_text] supplementary scan failed for {url}: {_sup_scan_err}")
             else:
                 import requests as _req
                 from bs4 import BeautifulSoup as _BS
@@ -259,6 +283,26 @@ def extract_url_text(url: str, data_dir) -> dict:
             else:
                 result["status"] = "failed"
                 result["error"] = "No readable text found"
+
+            # Follow supplementary/data-availability links found on this page.
+            sup_links = []
+            for _vals in (sup_json or {}).values():
+                sup_links.extend(_vals or [])
+            for sup_url in sup_links:
+                sup_url = (sup_url or "").strip()
+                if not sup_url or sup_url in _seen:
+                    continue
+                _seen.add(sup_url)
+                try:
+                    sup_result = extract_url_text(sup_url, data_dir, _seen, _follow_sup=False)
+                    if sup_result["status"] == "ok" and sup_result["text"]:
+                        result["text"] += (
+                            f"\n\n-- Supplementary: {sup_result['name']} ({sup_url}) --\n"
+                            f"{sup_result['text']}"
+                        )
+                        result["supplementary"].append(sup_url)
+                except Exception as _sup_err:
+                    print(f"[extract_url_text] supplementary fetch failed for {sup_url}: {_sup_err}")
         except Exception as e:
             result["status"] = "failed"
             result["error"] = str(e)
@@ -272,9 +316,23 @@ def extract_url_text(url: str, data_dir) -> dict:
             # Extract text from the downloaded file
             if kind == "pdf" and pdf is not None:
                 text = pdf.PDFFast(str(dest), str(data_dir)).extract_text()
+                try:
+                    tables = clean_tables_format(pdf.PDF(str(dest), str(data_dir)).extractTable())
+                    tables_text = _serialize_tables_as_text(tables)
+                    if tables_text:
+                        text += "\n" + tables_text
+                except Exception as e:
+                    print(f"[extract_url_text] pdf table extraction failed for {url}: {e}")
             elif kind == "docx":
                 if wordDoc is not None:
                     text = wordDoc.WordDocFast(str(dest), str(data_dir)).extractText()
+                    try:
+                        tables = clean_tables_format(wordDoc.WordDocFast(str(dest), str(data_dir)).extractTablesAsList())
+                        tables_text = _serialize_tables_as_text(tables)
+                        if tables_text:
+                            text += "\n" + tables_text
+                    except Exception as e:
+                        print(f"[extract_url_text] docx table extraction failed for {url}: {e}")
                 else:
                     text = _extract_docx_text(dest)
             elif kind == "xlsx":
@@ -661,6 +719,31 @@ def extract_table(link,saveFolder):
   except:
       table = []
   return table
+
+def _serialize_tables_as_text(tables) -> str:
+    """Serialize List[List[List[str]]] tables as labeled, row-wise "col=val" lines.
+
+    Plain text extraction (PDF/DOCX page text) frequently loses which value
+    belongs to which row/column when a table is rendered inline, so a sample's
+    field (e.g. disease_status) can be present in the raw text yet not
+    attributable to its subject_id. Pairing header-to-cell explicitly per row
+    keeps that association intact for the LLM.
+    """
+    out = []
+    for t_idx, table in enumerate(tables or []):
+        if not table:
+            continue
+        header = table[0]
+        out.append(f"\n## Table {t_idx + 1}")
+        for row in table[1:] if len(table) > 1 else table:
+            pairs = [
+                f"{header[i] if i < len(header) else f'col{i}'}={cell}"
+                for i, cell in enumerate(row) if str(cell).strip()
+            ]
+            if pairs:
+                out.append("Row: " + ", ".join(pairs))
+    return "\n".join(out)
+
 
 def clean_tables_format(tables):
     """
