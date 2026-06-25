@@ -1,217 +1,101 @@
-# BioMetadataAudit 🧬
+# OpenBioData — NCBI Metadata Recovery Tool
 
-**AI-powered metadata extraction and standardization for NCBI accessions.**  
-Built by [OpenBioData](https://openbiodata.lovable.app/)
-
-## 🔬 Live Tool
-👉 **[app.openbiodata.it.com](https://app.openbiodata.it.com)**
-
-## What It Does
-Paste any NCBI accession (BioProject, BioSample, SRR, GenBank) and get 
-standardized metadata instantly — no manual curation required.
-
-- Extracts disease status, organism, body site, country, sequencing platform
-- Standardizes against cMD and custom schemas
-- Confidence scores with source provenance
-- Excel export
-- Works with batch accessions
-
-## Who It's For
-Researchers doing meta-analyses, systematic reviews, or anyone working 
-with public NCBI/SRA data who needs clean, structured biosample metadata.
-
-## Company
-**OpenBioData** — building open, AI-driven metadata infrastructure for 
-biological research.  
-🌐 [openbiodata.it.com](https://openbiodata.lovable.app/)  
-📧 vy@openbiodata.it.com
+**Tool:** https://app.openbiodata.it.com
 
 ---
 
-## How It Works — A Guide for Researchers
+## What this is
 
-This section explains how the tool retrieves, infers, and scores biological sample metadata — written so you can evaluate whether the system is credible and reliable enough for your research.
+I kept running into the same problem while working with public genomic datasets: NCBI BioSample and SRA records are often missing important fields - disease status, isolation source, geographic location, host - even when that information is clearly written in the paper that deposited the data.
 
-### What problem does this tool solve?
-
-Public biological databases (NCBI BioSample, GenBank, SRA, PRIDE, etc.) often contain incomplete or inconsistently recorded metadata. A sample may be missing its collection country, sample type, disease status, or host information — even when that information is clearly stated in the linked publication. This tool systematically recovers that missing metadata by cross-referencing multiple sources and rates how confident it is in each answer.
+So I built a tool to recover it automatically. You paste an accession (BioProject, BioSample, SRR, GEO, GenBank) or a paper link, and it traces back to the source publication and supplementary tables, pulls the missing fields, and returns them with a confidence score and a direct citation (PMID + table/section) so you can verify exactly where each value came from.
 
 ---
 
-### The Three Inputs — and Why Each One Matters
+## How to use it
 
-**1. Accession ID(s)**  
-This is the unique identifier for your biological sample in a public database (e.g., `SAMN12345678`, `SRR1234567`, `MSV000080918`). It is the anchor: the tool uses it to fetch the official database record and to locate the publication that first deposited the sample.
+**Option 1 - Paste accession IDs**
 
-**Supported databases:** NCBI BioSample, SRA, GenBank, and non-NCBI databases including MassIVE, PRIDE, MetaboLights, MGnify, BioStudies, EGA, and PDB.
+Paste any NCBI accession: BioProject, BioSample, SRR, GenBank, or GEO series. One per line or comma-separated. The tool finds the linked paper automatically.
 
-**2. Metadata Fields to Extract**  
-You specify which metadata fields matter for your study — for example: `country`, `disease_status`, `host_age`, `tissue_type`. This tells the LLM exactly what to look for rather than guessing.
+If the paper is paywalled, use the "+ Files" button to upload the PDF and any supplementary tables — it will match each file to the right sample row.
 
-**3. Standardization Schema URL** *(optional but recommended)*  
-A CSV file or ontology URL (e.g., from GO, OBO, or UBERON) that defines controlled vocabulary for each field. When provided, the tool maps extracted values onto your schema's allowed terms. Without this, values are returned as free text; with it, outputs are standardized and directly compatible with your database or analysis pipeline.
+**Option 2 - Paste a paper link**
 
----
+Paste a DOI or PubMed link. The tool finds all NCBI accessions linked to that paper and runs all of them at once — no need to know the accession IDs.
 
-### Why Upload a Context File?
+**Optional: specify which fields you want**
 
-An uploaded file (e.g., a supplementary table, a manual curation spreadsheet, or a methods section) gives the LLM direct, high-quality text that is:
+In the "Metadata Fields to Extract" box, list the fields that matter for your study (e.g. `disease_status, country, host, isolation_source`). This makes the output more accurate than leaving it blank and asking for everything.
 
-- Not behind a paywall — the tool cannot always access full-text journal articles
-- Specific to your samples — general web searches may find unrelated papers with similar accession patterns
-- Machine-readable immediately — no HTML parsing or PDF extraction errors
+**Optional: add a standardization schema**
 
-When a context file is present, the tool reads it first before searching the web. This directly raises the confidence score because more source documents confirm the same value.
+If you have a controlled vocabulary (e.g. a CSV from cMD or your own ontology), paste the URL. The tool will map extracted values to your schema's allowed terms.
 
 ---
 
-### Step-by-Step: What Happens When You Submit Accession IDs
+## Current limits and why
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Step 1 — Fetch official database record                        │
-│  NCBI API returns: country, sample type, collection date,       │
-│  isolate name, PubMed ID, title, DOI, BioSample features        │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 2 — Retrieve linked publication text                      │
-│  Uses DOI → full article HTML, supplementary files, CrossRef    │
-│  metadata. If no DOI or article is paywalled → fetches PubMed   │
-│  abstract. Also searches web for the sample isolate name +      │
-│  accession to find any citing papers.                           │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 3 — Signals recorded                                      │
-│  • has_geo_loc_name: NCBI has a country field?                  │
-│  • has_pubmed: a linked PubMed record exists?                   │
-│  • accession_found_in_text: accession ID appears in the paper?  │
-│  • num_publications: how many source documents were found?      │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 4 — LLM extraction (Pass 1)                               │
-│  All gathered text is passed to the LLM (Claude Haiku or        │
-│  Gemini Flash-Lite). The model answers: what is the country,    │
-│  sample type, and each requested metadata field? It also        │
-│  provides a short explanation for each answer.                  │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 5 — LLM extraction (Pass 2)                               │
-│  A second generalized pass extracts any metadata fields that    │
-│  appear in the text but were not requested by name — e.g.,      │
-│  collection method, sequencing platform, geographic region.     │
-│  These appear in the "Full Raw Attributes" sheet.               │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 6 — Confidence scoring                                    │
-│  Four signals are combined into a 0–100 score (see below).      │
-│  Output: numeric score + tier (High / Medium / Low) + reason    │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  Step 7 — Output table                                          │
-│  One row per accession. Columns: BioSample ID, BioProject,      │
-│  SRA accession, each metadata field, explanation, confidence    │
-│  score, source links, processing time.                          │
-└─────────────────────────────────────────────────────────────────┘
-```
+**30 samples maximum per run.**
+
+The tool uses an LLM API (Claude) under the hood to read papers and extract metadata. I'm running this on my own infrastructure right now and wanted to make sure it actually holds up before opening it fully. 30 samples is enough to test it on a real dataset and see if it's useful for your workflow.
+
+If you have a BioProject with 500 samples, it counts each sample toward the 30 - not the project as one unit.
+
+**Login is required to save your runs.**
+
+I built login mainly so your runs don't disappear. The tool is early and I rerun samples a lot to debug and improve accuracy - if your data is saved, you can reload and rerun without it counting toward your limit again. It also keeps my API costs from getting exhausted by anonymous batch runs while I'm still figuring out whether this works at scale beyond my own laptop.
+
+If you want to stay anonymous, you can still try the first 30 samples without logging in.
 
 ---
 
-### How the Confidence Score Is Calculated
+## What it outputs
 
-The confidence score (0–100) is calculated using four independent signals. The same logic applies to every metadata field.
+One row per accession. Columns include:
 
-**Signal 1 — Direct Evidence (up to +40 points)**
+- BioSample ID, BioProject, SRA accession
+- Each requested metadata field
+- Confidence score (0–100) and tier (High / Medium / Low)
+- One-line explanation of where the value came from
+- Source citation (PMID + table or section)
+- Flags where the NCBI record and the paper disagree
 
-| Evidence available | Points |
-|---|---|
-| GenBank field present **AND** linked publication found **AND** accession appears in that publication's text | **+40** |
-| GenBank field present **AND** linked publication found | **+30** |
-| GenBank field present only | **+20** |
-| Accession ID appears in web-searched text only | **+10** |
-
-**Signal 2 — Cross-Source Consistency (up to +20 or −30 points)**
-
-| Situation | Points |
-|---|---|
-| Predicted value matches NCBI structured metadata | **+20** |
-| No contradiction detected across sources | **+10** |
-| Predicted value conflicts with NCBI metadata | **−30** |
-
-**Signal 3 — Evidence Density (up to +20 points)**
-
-| Publications found | Points |
-|---|---|
-| 2 or more | **+20** |
-| Exactly 1 | **+10** |
-| None | **0** |
-
-**Signal 4 — Risk Penalties (up to −20 points)**
-
-| Situation | Points |
-|---|---|
-| Requested metadata fields are missing/unknown | **−10** |
-| Accession matches a known failure pattern (model returned "unknown") | **−20** |
-
-**Score → Tier mapping**
-
-| Score | Tier |
-|---|---|
-| 70 – 100 | 🟢 **High** — strong multi-source agreement |
-| 40 – 69 | 🟡 **Medium** — partial evidence, some uncertainty |
-| 0 – 39 | 🔴 **Low** — limited or conflicting evidence |
-
-**Example walkthrough**
-
-A sample where NCBI has a country field (+20), the LLM predicted the same country (+20), and one linked publication was found (+10) gives a total of **50 → Medium (🟡)**. If that publication also mentions the accession ID by name, the direct evidence signal rises to +30, giving **70 → High (🟢)**.
+Excel export available.
 
 ---
 
-### What LLM Is Used and Why?
+## How the confidence score works
 
-The tool uses **Claude Haiku** (Anthropic) as the primary LLM, with **Gemini 2.5 Flash-Lite** as a fallback. These are chosen because they are fast, cost-efficient, handle long-context inputs (full papers, supplementary tables), and follow structured output formats reliably. The LLM is used **only for reading and extracting** — it does not invent information. If no relevant text is found, the field is marked `unknown`.
+Four signals combine into a 0–100 score:
 
----
+- **Direct evidence** (+10 to +40): did the value come from NCBI's structured field, the paper, or just a web search?
+- **Cross-source consistency** (−30 to +20): does the extracted value agree with what NCBI already has?
+- **Evidence density** (+0 to +20): how many publications confirmed it?
+- **Risk penalties** (−10 to −20): was the field missing or did the model return "unknown"?
 
-### What the Tool Does NOT Do
-
-- It does not modify the original database records
-- It does not generate or fabricate values — if evidence is absent, the field is marked `unknown`
-- It does not bypass paywalled articles (it uses CrossRef metadata and PubMed abstracts in those cases)
-- It does not guarantee correctness — the confidence score reflects evidence strength, not truth
+Score 70+ = High (strong multi-source agreement). 40–69 = Medium. Below 40 = Low.
 
 ---
 
-### Transparency: Where to Check the Code
+## Is this open source?
 
-| What | File | Location |
-|---|---|---|
-| Confidence score rules and weights | `confidence_score.py` | `set_rules()` line 44 |
-| Score calculation logic | `confidence_score.py` | `compute_confidence_score_and_tier()` line 192 |
-| NCBI metadata fetch | `mtdna_classifier.py` | `fetch_ncbi_metadata()` line 37 |
-| LLM prompt construction | `model.py` | `multi_prompts()` line 1083 |
-| LLM API call with fallback | `model.py` | `call_llm_api()` line 94 |
-| Source text gathering | `pipeline.py` | `extractSources()` line 295 |
-| Non-NCBI database support | `non_ncbi_resolver.py` | — |
-| Output row construction | `api.py` | `_rows_from_new_pipeline()` line 151 |
+The code is on GitHub: https://github.com/vy-phung/OpenBioData
+
+To be upfront: I wrote the core logic and pipeline, but I also used Claude Code (Anthropic's coding tool) to help build parts of it — especially the LLM extraction layer and the User Interface. The reason I used an LLM API for extraction rather than rule-based parsing is that it handles the messiness of real papers better: tables in weird formats, values buried in methods sections, supplementary files with inconsistent structure. It's genuinely more accurate than anything I could write with regex.
+
+The confidence scoring, source-fetching logic, and output structure are all deterministic code you can read and audit in the repo.
 
 ---
 
-### Frequently Asked Questions
+## Who should use it
 
-**Q: Can I trust a "High" confidence score?**  
-A score of 70+ means the value was confirmed in NCBI's structured field, found in the linked publication, and the sources agreed. It does not mean the original depositor was correct — it means the tool found strong, consistent evidence across multiple sources.
 
-**Q: Why is a sample scored "Low" even though I know the answer?**  
-The score reflects what was *findable* by the pipeline. If the publication is paywalled, the accession is not cited in text, or the sample has no linked PubMed record, fewer signals fire. Uploading your own context file (e.g., a supplementary table) will increase the score.
+If you work with large public datasets and want to test it on something you know the ground truth for, send me an accession and I'll run it and share the result. That's the most useful feedback at this stage.
 
-**Q: What if the tool and NCBI disagree?**  
-Both values appear in the output. The confidence score receives a −30 penalty for conflicts, and the explanation column states the conflict explicitly. You can review and decide manually.
+---
 
-**Q: Is the same logic used for all metadata fields?**  
-Yes. The confidence scoring is field-agnostic — the same four signals and weights apply whether the field is `country`, `disease_status`, `host_age`, or a custom field you specify.
+## Contact
+
+Vy Phung
+vyphung1901@gmail.com
