@@ -6,7 +6,7 @@
 
 ## What this is
 
-I kept running into the same problem while working with public genomic datasets: NCBI BioSample and SRA records are often missing important fields - disease status, isolation source, geographic location, host - even when that information is clearly written in the paper that deposited the data.
+Problem while working with public genomic datasets: NCBI BioSample and SRA records are often missing important fields - disease status, isolation source, geographic location, host - even when that information is clearly written in the paper that deposited the data.
 
 So I built a tool to recover it automatically. You paste an accession (BioProject, BioSample, SRR, GEO, GenBank) or a paper link, and it traces back to the source publication and supplementary tables, pulls the missing fields, and returns them with a confidence score and a direct citation (PMID + table/section) so you can verify exactly where each value came from.
 
@@ -36,7 +36,7 @@ If you have a controlled vocabulary (e.g. a CSV from cMD or your own ontology), 
 
 ## Current limits and why
 
-**30 samples maximum per run.**
+**30 samples maximum.**
 
 The tool uses an LLM API (Claude) under the hood to read papers and extract metadata. I'm running this on my own infrastructure right now and wanted to make sure it actually holds up before opening it fully. 30 samples is enough to test it on a real dataset and see if it's useful for your workflow.
 
@@ -65,6 +65,38 @@ Excel export available.
 
 ---
 
+## Step by step — what happens when you submit
+ 
+1. **Fetch the NCBI record** — pulls structured fields from BioSample, SRA, or GenBank via API (country, sample type, collection date, linked PubMed ID, DOI)
+2. **Find the linked paper** — uses the DOI to fetch article HTML and supplementary files. If the paper is paywalled, falls back to PubMed abstract. Also searches for any papers that cite the accession by name
+3. **Record signals** — notes whether NCBI has a geo_loc field, whether a PubMed record exists, whether the accession ID appears in the paper text, how many publications were found
+4. **LLM extraction pass 1** — all gathered text goes to Claude (with Gemini as fallback). It answers: what is the country, disease status, host, and each requested field? It gives a short explanation per answer
+5. **LLM extraction pass 2** — a second pass picks up any metadata fields that appear in the text but weren't explicitly requested (sequencing platform, collection method, geographic region, etc.). These go in the "Full Raw Attributes" sheet
+6. **Confidence scoring** — four signals combine into a 0–100 score with a tier (High / Medium / Low) and a reason
+7. **Output table** — one row per accession with all fields, explanations, citations, confidence scores, and source links
+---
+ 
+## What the tool does NOT do
+ 
+- It does not modify the original NCBI records
+- It does not fabricate values — if no evidence is found, the field is marked `unknown`
+- It does not bypass paywalled articles — it uses CrossRef metadata and PubMed abstracts in those cases, which gives less evidence and a lower confidence score
+- It does not guarantee correctness — the confidence score tells you how much evidence was found, not whether the original depositor was right
+---
+ 
+## Transparency — where to check the code
+ 
+| What | File | Location |
+|---|---|---|
+| Confidence score rules and weights | `confidence_score.py` | `set_rules()` line 44 |
+| Score calculation logic | `confidence_score.py` | `compute_confidence_score_and_tier()` line 192 |
+| NCBI metadata fetch | `mtdna_classifier.py` | `fetch_ncbi_metadata()` line 37 |
+| LLM prompt construction | `model.py` | `multi_prompts()` line 1083 |
+| LLM API call with fallback | `model.py` | `call_llm_api()` line 94 |
+| Source text gathering | `pipeline.py` | `extractSources()` line 295 |
+| Non-NCBI database support | `non_ncbi_resolver.py` | — |
+| Output row construction | `api.py` | `_rows_from_new_pipeline()` line 151 |
+
 ## How the confidence score works
 
 Four signals combine into a 0–100 score:
@@ -78,20 +110,15 @@ Score 70+ = High (strong multi-source agreement). 40–69 = Medium. Below 40 = L
 
 ---
 
-## Is this open source?
+## About the code
 
 The code is on GitHub: https://github.com/vy-phung/OpenBioData
 
-To be upfront: I wrote the core logic and pipeline, but I also used Claude Code (Anthropic's coding tool) to help build parts of it — especially the LLM extraction layer and the User Interface. The reason I used an LLM API for extraction rather than rule-based parsing is that it handles the messiness of real papers better: tables in weird formats, values buried in methods sections, supplementary files with inconsistent structure. It's genuinely more accurate than anything I could write with regex.
+To be upfront: I wrote the core logic and pipeline, but I also used Claude Code (Anthropic's coding tool) to help build parts of it - especially the LLM extraction layer and the User Interface. The reason I used an LLM API for extraction rather than rule-based parsing is that it handles the messiness of real papers better: tables in weird formats, values buried in methods sections, supplementary files with inconsistent structure. It's genuinely more accurate than anything I could write with regex.
 
 The confidence scoring, source-fetching logic, and output structure are all deterministic code you can read and audit in the repo.
 
----
-
-## Who should use it
-
-
-If you work with large public datasets and want to test it on something you know the ground truth for, send me an accession and I'll run it and share the result. That's the most useful feedback at this stage.
+My friend Gowtham also helped fix some bugs early on. Thanks Gowtham!
 
 ---
 
