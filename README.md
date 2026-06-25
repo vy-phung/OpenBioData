@@ -1,4 +1,4 @@
-# OpenBioData — NCBI Metadata Recovery Tool
+# OpenBioData - NCBI Metadata Recovery Tool
 
 **Tool:** https://app.openbiodata.it.com
 
