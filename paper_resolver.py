@@ -284,23 +284,32 @@ def resolve_paper(doi_or_link: str, data_dir, pdf_path: str = None,
             print(f"[paper_resolver] local PDF extraction failed for {pdf_path}: {e}")
         result["pdf_used"] = True
     else:
-        access = check_accessible(doi_or_link)
-        if not access["open"]:
-            needs_pdf = True
-        elif _data_preprocess is None:
+        # Accessibility is decided purely by whether extract_url_text can actually
+        # pull text from the link -- more reliable than the unpaywall/PMC "open vs.
+        # closed" heuristic (which both over- and under-reports). We still consult
+        # unpaywall for a better OA fetch target, but the verdict is "did we get
+        # text?"; if not, the link is treated as inaccessible (needs_pdf).
+        if _data_preprocess is None:
             result["status"] = "failed"
             return result
-        else:
-            link = access["oa_url"] or (f"https://doi.org/{doi}" if doi else doi_or_link)
+        candidate_links = []
+        try:
+            oa_url = check_accessible(doi_or_link).get("oa_url")
+            if oa_url:
+                candidate_links.append(oa_url)
+        except Exception as e:
+            print(f"[paper_resolver] OA lookup failed for {doi_or_link}: {e}")
+        candidate_links.append(f"https://doi.org/{doi}" if doi else doi_or_link)
+        for link in candidate_links:
             try:
                 fetch = _data_preprocess.extract_url_text(link, data_dir)
-                if fetch.get("status") == "ok":
+                if fetch.get("status") == "ok" and (fetch.get("text") or "").strip():
                     combined_text = fetch.get("text", "")
-                else:
-                    needs_pdf = True
+                    break
             except Exception as e:
                 print(f"[paper_resolver] extract_url_text failed for {link}: {e}")
-                needs_pdf = True
+        if not combined_text:
+            needs_pdf = True
 
     result["text_chars"] = len(combined_text)
     discovered = discover_accessions_in_text(combined_text) if combined_text else set()

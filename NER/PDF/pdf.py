@@ -1,6 +1,6 @@
 #!pip install pdfreader
-import pdfreader
-from pdfreader import PDFDocument, SimplePDFViewer
+# pdfreader is an optional fallback (imported lazily where used) -- PyMuPDF/tabula
+# cover the common path, so a missing pdfreader must not break module import.
 #!pip install bs4
 from bs4 import BeautifulSoup
 import requests
@@ -104,6 +104,11 @@ class PDF():
   def extractTextWithPDFReader(self):
     jsonPage = {}
     try:
+        from pdfreader import PDFDocument, SimplePDFViewer
+    except ImportError:
+        print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
+        return jsonPage
+    try:
         pdf = self.openPDFFile()
         print("open pdf file")  
         print(pdf)  
@@ -182,7 +187,6 @@ import requests
 from bs4 import BeautifulSoup
 import fitz  # PyMuPDF
 import tabula
-from pdfreader import PDFDocument, SimplePDFViewer
 from NER import cleanText
 
 class PDFFast:
@@ -286,7 +290,12 @@ class PDFFast:
             return self.extract_text_pdfreader()
 
     def extract_text_pdfreader(self):
-        """Fallback using PDFReader."""
+        """Fallback using PDFReader (optional dependency)."""
+        try:
+            from pdfreader import PDFDocument, SimplePDFViewer
+        except ImportError:
+            print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
+            return ""
         try:
             with open(self.local_path, "rb") as f:
                 doc = PDFDocument(f)

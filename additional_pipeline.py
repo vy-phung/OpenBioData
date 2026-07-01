@@ -980,6 +980,18 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       elif user_context_text:
         acc_score["source_texts"]["user_uploaded_file"] = user_context_text
 
+      # Surface the attached upload in the live links panel for exactly the
+      # samples that actually received it, so the user can see their file was
+      # loaded (it otherwise only shows up in the output "sources" list, and
+      # only if the LLM happened to cite it for a field).
+      if "user_uploaded_file" in acc_score["source_texts"]:
+        await _progress({"__links_update__": {
+            "acc": acc,
+            "links": [],
+            "stage": "user_file",
+            "user_file": user_file_label or "uploaded context file(s)",
+        }})
+
       # ── Check for inaccessible paper links and warn the user ──────────────
       _paper_link_markers = ("doi.org", "pubmed.ncbi.nlm.nih", "europepmc.org",
                               "ncbi.nlm.nih.gov/pmc", "biorxiv.org", "medrxiv.org")

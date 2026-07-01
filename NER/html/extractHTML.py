@@ -247,7 +247,7 @@ class HTML():
         #if scienceDirect is not None or len(json) == 0:
         if is_sciencedirect_source and (scienceDirect is not None or len(json) == 0):
             print("async fetching ScienceDirect metadata...")
-            api_key = "d0f25e6ae2b275e0d2b68e0e98f68d70"
+            api_key = os.environ.get("SCIENCE_DIRECT_API")
             doi = self.htmlLink.split("https://doi.org/")[-1]
             base_url = f"https://api.elsevier.com/content/article/doi/{doi}"
             headers = {"Accept": "application/json", "X-ELS-APIKey": api_key}
