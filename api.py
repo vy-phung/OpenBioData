@@ -561,6 +561,8 @@ class NonNcbiInfo(BaseModel):
 class PaperEntry(BaseModel):
     doi_or_link: str
     context_file_ids: Optional[List[str]] = None  # PDF/supplementary files attached to THIS paper only
+    link_context_id: Optional[str] = None          # text already extracted from doi_or_link via /process-context-urls
+                                                    # (so the backend need not re-fetch the link)
 
 
 class AnalyzeRequest(BaseModel):
@@ -620,6 +622,20 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".json", ".xml", ".docx", ".zip",
 }
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+# Uploaded-context files are written here by /upload-context and
+# /process-context-urls, then read back by realpath during /analyze. Using one
+# stable, app-owned directory -- instead of a fresh tempfile.mkdtemp() per
+# upload -- keeps paths predictable and lets the read guard trust exactly this
+# prefix regardless of the host's TMPDIR (which may not be under /tmp; the old
+# `startswith("/tmp")` guard silently dropped uploads whenever it wasn't). The
+# reader still realpath-checks each id against this prefix to reject traversal.
+# NOTE: this does not survive across separate server instances -- if uploads and
+# /analyze land on different replicas the file won't be found; that case is now
+# reported loudly to the user instead of failing silently.
+UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "obd_context_uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+_UPLOAD_DIR_REAL = os.path.realpath(UPLOAD_DIR)
 
 
 def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
@@ -756,7 +772,7 @@ def _process_one_upload(filename: str, raw: bytes) -> dict:
         except Exception as _sup_scan_exc:
             print(f"[upload-context] supplementary link scan failed for {filename}: {_sup_scan_exc}")
 
-    tmp_dir = tempfile.mkdtemp()
+    tmp_dir = tempfile.mkdtemp(dir=UPLOAD_DIR)
     ctx_path = os.path.join(tmp_dir, "user_context.txt")
     with open(ctx_path, "w", encoding="utf-8") as fh:
         fh.write(text)
@@ -827,7 +843,7 @@ async def process_context_urls(req: ProcessUrlsRequest):
         ]
         combined_text = ("\n\n" + "─" * 80 + "\n\n").join(combined_parts)
 
-        tmp_dir = tempfile.mkdtemp()
+        tmp_dir = tempfile.mkdtemp(dir=UPLOAD_DIR)
         ctx_path = os.path.join(tmp_dir, "url_context.txt")
         with open(ctx_path, "w", encoding="utf-8") as fh:
             fh.write(combined_text)
@@ -915,7 +931,7 @@ async def analyze(req: AnalyzeRequest):
                 _ctx_parts = []
                 for _cid in _all_ctx_ids:
                     _ctx_real = os.path.realpath(_cid)
-                    if _ctx_real.startswith("/tmp") and os.path.isfile(_ctx_real):
+                    if _ctx_real.startswith(_UPLOAD_DIR_REAL) and os.path.isfile(_ctx_real):
                         try:
                             with open(_ctx_real, "r", encoding="utf-8") as _fh:
                                 _ctx_text = _fh.read()
@@ -935,6 +951,13 @@ async def analyze(req: AnalyzeRequest):
                 if _ctx_parts:
                     user_context_text = "\n\n".join(_ctx_parts)
                     yield _sse("progress", {"message": f"User context loaded ({len(_all_ctx_ids)} source(s))."})
+                elif not user_url_sources:
+                    # IDs were sent but nothing came back -- temp file(s) missing.
+                    yield _sse("progress", {"message": (
+                        f"⚠ {len(_all_ctx_ids)} uploaded context source(s) could not be read and will NOT "
+                        "be used — the upload may have expired or was stored on another server instance. "
+                        "Re-upload and rerun."
+                    )})
 
 
             # Context text scoped to a specific *discovered token* (a BioProject/GEO
@@ -949,7 +972,7 @@ async def analyze(req: AnalyzeRequest):
                 parts = []
                 for _cid in (file_ids or []):
                     _real = os.path.realpath(_cid)
-                    if _real.startswith("/tmp") and os.path.isfile(_real):
+                    if _real.startswith(_UPLOAD_DIR_REAL) and os.path.isfile(_real):
                         try:
                             with open(_real, "r", encoding="utf-8") as _fh:
                                 parts.append(_fh.read())
@@ -957,22 +980,54 @@ async def analyze(req: AnalyzeRequest):
                             pass
                 return "\n\n".join(p for p in parts if p.strip())
 
-            # ── Paper (DOI/link) → NCBI accession discovery ────────────────────
-            # User pastes papers instead of accessions; find every NCBI accession
-            # each paper references (BioProject/GEO/etc.) and feed those into the
-            # existing accession-resolution path unchanged, since that path already
-            # expands a BioProject/GEO series to every sample under it. Each paper's
-            # own uploaded files (if any) are scoped only to the accessions
-            # discovered from that one paper.
-            if req.papers:
+            # Paper links the user supplied, registered as metadata sources so the
+            # pipeline reads each paper for its own discovered samples (not just the
+            # NCBI records). Populated by extract_samples_from_paper below.
+            _paper_other_links: list = []
+
+            # ── Mode A: discovery ──────────────────────────────────────────────
+            # Triggered when the user pasted paper links / uploaded files but typed
+            # NO accession (frontend leaves the accession box empty and sends the
+            # rows as `papers`). For each paper source it uses the already-extracted
+            # text (paper files + any pre-fetched link text) or fetches the link,
+            # discovers every NCBI accession referenced, and feeds those tokens into
+            # the normal resolution path -- which already fans a BioProject/GEO
+            # series out to all of its samples. Each paper's own files are scoped
+            # only to the accessions discovered from that one paper, and the paper
+            # link is registered as a source. Mutates raw_text / _token_context /
+            # _paper_other_links; yields SSE progress. Returns nothing.
+            async def extract_samples_from_paper():
+                nonlocal raw_text
                 import paper_resolver
                 _paper_data_dir = tempfile.mkdtemp()
                 _discovered_tokens: list = []
                 for _paper_entry in req.papers:
                     _paper_input = (_paper_entry.doi_or_link or "").strip()
-                    if not _paper_input:
+                    # Paper's own uploaded files + any text already extracted from
+                    # its link both serve as discovery text and scoped context.
+                    _file_text = _read_context_text(_paper_entry.context_file_ids)
+                    _link_text = _read_context_text(
+                        [_paper_entry.link_context_id] if _paper_entry.link_context_id else None)
+                    _paper_text = "\n\n".join(p for p in (_file_text, _link_text) if p)
+                    if not _paper_input and not _paper_text:
                         continue
-                    _paper_text = _read_context_text(_paper_entry.context_file_ids)
+                    if _paper_input:
+                        _paper_other_links.append(_paper_input)   # register link as a source
+
+                    # File-only row: nothing to fetch, just scan the uploaded text.
+                    if not _paper_input:
+                        found = sorted(paper_resolver.discover_accessions_in_text(_paper_text))
+                        if found:
+                            _discovered_tokens.extend(found)
+                            for _acc_tok in found:
+                                _token_context[_acc_tok.upper()] = _paper_text
+                            yield _sse("progress", {
+                                "message": f"Uploaded file(s): found {len(found)} NCBI accession(s) — {', '.join(found)}"
+                            })
+                        else:
+                            yield _sse("progress", {"message": "No NCBI accessions found in uploaded file(s)."})
+                        continue
+
                     yield _sse("progress", {"message": f"Resolving paper: {_paper_input}…"})
                     await asyncio.sleep(0)
                     try:
@@ -994,15 +1049,13 @@ async def analyze(req: AnalyzeRequest):
                         yield _sse("paper_needs_pdf", {
                             "paper": _paper_input,
                             "message": (
-                                f"{_paper_input} appears closed-access (no open-access copy found). "
-                                "Upload its PDF using the '+ files' button next to this paper and rerun — "
-                                "accessions found in it are picked up automatically and scoped to this paper only."
+                                f"{_paper_input} could not be read (closed-access or unreachable). "
+                                "Download it and upload the PDF using the '+ files' button next to this "
+                                "paper, then rerun — accessions found in it are scoped to this paper only."
                             ),
                         })
                     elif _paper_result["status"] == "no_accessions_found":
-                        yield _sse("progress", {
-                            "message": f"No NCBI accessions found for {_paper_input}."
-                        })
+                        yield _sse("progress", {"message": f"No NCBI accessions found for {_paper_input}."})
                     elif _paper_result["status"] == "ok":
                         found = sorted(_paper_result["discovered_accessions"])
                         _discovered_tokens.extend(found)
@@ -1018,20 +1071,63 @@ async def analyze(req: AnalyzeRequest):
                 if _discovered_tokens:
                     raw_text = (raw_text + "\n" + "\n".join(_discovered_tokens)).strip()
 
-            # Files attached directly to a manually-entered accession (e.g. from
-            # a per-accession "paper inaccessible" warning on a prior run) --
-            # scoped to that one accession only, same reasoning as above.
-            if req.accession_context_file_ids:
+            # ── Mode B: augmentation ───────────────────────────────────────────
+            # Triggered when the user typed accession IDs and attached files/links
+            # to them (frontend sends `accession_context_file_ids` keyed by each
+            # entered accession; also reused by the run-time "paper inaccessible"
+            # warning flow). Each accession's files/links become scoped context for
+            # that accession only -- a BioProject/GEO series later fans this context
+            # out to all its samples during the resolved_dict remap below. Unlike
+            # Mode A this does NOT append anything to raw_text, so a file that
+            # happens to mention other accessions won't pull them into the run.
+            # Mutates _token_context; yields SSE progress. Returns nothing.
+            async def attach_files_to_accessions():
                 import paper_resolver as _paper_resolver_mod
                 for _acc_id, _file_ids in req.accession_context_file_ids.items():
                     _acc_text = _read_context_text(_file_ids)
                     if _acc_text:
                         _token_context[_acc_id.strip().upper()] = _acc_text
-                        _acc_ctx_tokens = sorted(_paper_resolver_mod.discover_accessions_in_text(_acc_text))
+                        # Informational only -- these are accessions merely *cited* in
+                        # the attached file, NOT samples we run (Mode B never adds to
+                        # raw_text). Drop RefSeq genome IDs (NC_######), which a paper's
+                        # reference list can mention by the hundreds, and cap the rest so
+                        # the progress line doesn't look like a giant run exploded.
+                        _acc_ctx_tokens = sorted(
+                            t for t in _paper_resolver_mod.discover_accessions_in_text(_acc_text)
+                            if not t.startswith("NC_")
+                        )
+                        _MENTION_CAP = 10
+                        if _acc_ctx_tokens:
+                            _shown = ", ".join(_acc_ctx_tokens[:_MENTION_CAP])
+                            _extra = len(_acc_ctx_tokens) - _MENTION_CAP
+                            _mentions = f" (context only, not run — also mentions: {_shown}" + (
+                                f", … and {_extra} more)" if _extra > 0 else ")")
+                        else:
+                            _mentions = ""
                         yield _sse("progress", {
-                            "message": f"Loaded {len(_file_ids)} file(s) scoped to {_acc_id}"
-                                       + (f" (also found: {', '.join(_acc_ctx_tokens)})" if _acc_ctx_tokens else "")
+                            "message": f"Loaded {len(_file_ids)} context source(s) scoped to {_acc_id}" + _mentions
                         })
+                    elif _file_ids:
+                        # Files were attached but none could be read back -- the
+                        # upload's temp file is gone (expired, or written on a
+                        # different server instance). Say so instead of silently
+                        # running without the context the user attached.
+                        yield _sse("progress", {
+                            "message": (
+                                f"⚠ {len(_file_ids)} context file(s)/link(s) attached to {_acc_id} "
+                                "could not be read and will NOT be used — the upload may have expired "
+                                "or was stored on another server instance. Re-attach the file(s)/link(s) "
+                                "and rerun so they're used as context."
+                            )
+                        })
+
+            if req.papers:
+                async for _ev in extract_samples_from_paper():
+                    yield _ev
+
+            if req.accession_context_file_ids:
+                async for _ev in attach_files_to_accessions():
+                    yield _ev
 
             # Scan any *unscoped* user-uploaded context text (the general
             # "Context files & links" area, not tied to one paper/accession)
@@ -1271,7 +1367,9 @@ async def analyze(req: AnalyzeRequest):
                         _rich_pipeline(
                             resolved_dict,
                             niche_cases=niche_cases,
-                            other_links=None,           # schema URLs are not metadata sources
+                            # Discovery-mode paper links: read each as a source for
+                            # its own discovered samples (schema URLs stay separate).
+                            other_links=_paper_other_links or None,
                             standardization_urls=std_urls or None,
                             user_context_text=user_context_text,
                             user_url_sources=user_url_sources or None,

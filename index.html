@@ -261,16 +261,7 @@
   #fb-submit:hover{background:var(--primary-dark)}
   #fb-submit:disabled{opacity:.55;cursor:not-allowed}
   #fb-status{font-size:12px;color:var(--muted);margin-top:6px;text-align:right;min-height:16px}
-  /* ── Context file upload ── */
-  #ctx-dropzone{border:2px dashed var(--border);border-radius:7px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;color:var(--muted);font-size:13px;line-height:1.6;background:#fafcfb}
-  #ctx-dropzone:hover,#ctx-dropzone.ctx-dragover{border-color:var(--primary);background:var(--primary-light);color:var(--primary-dark)}
-  #ctx-dropzone small{display:block;font-size:11px;opacity:.75;margin-top:2px}
-  #ctx-url-row{display:flex;gap:6px;margin-top:8px;align-items:flex-start}
-  #ctx-url-input{flex:1;border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;font-family:inherit;background:#fafcfb;resize:vertical;min-height:60px;line-height:1.5;color:var(--text)}
-  #ctx-url-input:focus{outline:none;border-color:var(--primary)}
-  #ctx-add-urls-btn{background:var(--primary);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:background .15s}
-  #ctx-add-urls-btn:hover{background:var(--primary-dark)}
-  #ctx-add-urls-btn:disabled{opacity:.55;cursor:not-allowed}
+  /* ── Context file/link chips (per paper row) ── */
   .ctx-item{display:flex;align-items:flex-start;gap:7px;padding:6px 8px;border-radius:6px;font-size:12px;background:#f6faf8;border:1px solid var(--border);margin-bottom:4px;line-height:1.4}
   .ctx-item-ok{border-color:#b7dcc8}
   .ctx-item-failed{border-color:#f4b8b0;background:#fff5f4}
@@ -366,17 +357,24 @@
       <div id="form-mode">
         <div class="field">
           <label>Accession ID(s)</label>
-          <textarea id="acc-input" rows="3" placeholder="BioProject, BioSample, GenBank, SRR/SRX — one per line or comma-separated&#10;e.g. PRJNA976261  SAMN23469632  OL757400  SRR17084312"></textarea>
+          <textarea id="acc-input" rows="3" oninput="refreshContextMode()" placeholder="BioProject, BioSample, GenBank, SRR/SRX — one per line or comma-separated&#10;e.g. PRJNA976261  SAMN23469632  OL757400  SRR17084312"></textarea>
         </div>
         <div class="field">
-          <label>Papers — DOIs or links (optional)
+          <label id="papers-label">Papers &amp; context — links or files (optional)
             <span style="font-weight:400;font-size:11px;color:var(--muted);margin-left:6px">
-              Every NCBI accession the paper references (BioProject, GEO, BioSample, SRA) is found
-              automatically and expanded to all of its samples — no need to know the accession IDs.
-              If a paper is closed-access, attach its PDF (and any supplementary files) using the
-              "+ files" button on that paper's row, so they're matched to the right paper only.
+              With no accession above, we trace every NCBI sample the paper/file references and
+              expand it to all of its samples. With accessions above, the files &amp; links you attach
+              become extra context for them. If a link is closed-access we'll ask you to download and
+              upload it. Each row's files/links stay scoped to that row only.
             </span>
           </label>
+          <div id="context-status" style="font-size:12px;color:var(--primary);margin:2px 0 8px"></div>
+          <div id="same-paper-prompt" style="display:none;font-size:12px;margin:0 0 8px;padding:6px 8px;background:rgba(127,127,127,.08);border:1px solid var(--border);border-radius:6px">
+            <label style="font-weight:400;cursor:pointer;text-transform:none;letter-spacing:0;display:flex;gap:6px;align-items:flex-start">
+              <input type="checkbox" id="same-paper-check" onchange="onSamePaperToggle(this.checked)" style="margin-top:2px">
+              <span>These accessions are all from the same paper/project — share the uploaded context across all of them.</span>
+            </label>
+          </div>
           <div id="paper-rows"></div>
           <button type="button" id="paper-add-row-btn" onclick="addPaperRow()" style="margin-top:6px;font-size:12px;color:var(--primary);background:none;border:none;cursor:pointer;padding:0">+ Add another paper</button>
           <input type="file" id="paper-file-input" style="display:none" multiple accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml,.docx,.zip" onchange="handlePaperFiles(this.files)">
@@ -393,32 +391,6 @@
         <div class="field">
           <label>Standardization schema (optional — comma-separated CSV/GitHub URLs)</label>
           <textarea id="std-url" rows="2" placeholder="e.g. https://github.com/waldronlab/curatedMetagenomicDataCuration/blob/master/inst/extdata/cMD_data_dictionary.csv, https://github.com/.../cMD_data_dictionary_codebook.csv"></textarea>
-        </div>
-        <div class="field">
-          <label>
-            Context files &amp; links (optional)
-            <span id="ctx-toggle" onclick="toggleCtxUpload()" style="margin-left:8px;font-weight:400;color:var(--primary);cursor:pointer;font-size:11px;text-transform:none;letter-spacing:0">+ Add</span>
-          </label>
-          <div id="ctx-upload-area" style="display:none">
-            <p style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">Upload papers, supplementary files, or paste links. The AI will use them as extra context to improve extraction accuracy.</p>
-
-            <!-- File drop zone — multiple files allowed -->
-            <div id="ctx-dropzone" onclick="document.getElementById('ctx-file-input').click()" ondragover="event.preventDefault();this.classList.add('ctx-dragover')" ondragleave="this.classList.remove('ctx-dragover')" ondrop="handleCtxDrop(event)">
-              <input type="file" id="ctx-file-input" style="display:none" multiple accept=".txt,.csv,.tsv,.pdf,.xlsx,.xls,.json,.xml,.docx,.zip" onchange="handleCtxFiles(this.files)">
-              <span id="ctx-dropzone-label">Click to browse or drag &amp; drop (multiple files OK)<br><small>PDF, DOCX, CSV, TXT, Excel, JSON, XML, ZIP — max 20 MB each</small></span>
-            </div>
-
-            <!-- URL input -->
-            <div id="ctx-url-row">
-              <textarea id="ctx-url-input" placeholder="Paste links (one per line or comma-separated)&#10;e.g. https://doi.org/10.1016/...&#10;     https://...supplement.pdf"></textarea>
-              <button id="ctx-add-urls-btn" onclick="addCtxUrls()">+ Add links</button>
-            </div>
-
-            <!-- Per-item status list -->
-            <div id="ctx-items-list" style="margin-top:8px"></div>
-
-            <div id="ctx-upload-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
-          </div>
         </div>
       </div><!-- /form-mode -->
 
@@ -643,30 +615,104 @@ let currentExcelPath      = '';
 let reportTarget          = { accession: '', rowIndex: -1 };
 let authMode              = 'signup';   // 'signup' | 'login'
 let authSource            = 'manual';   // what triggered the auth popup
-let ctxItems              = [];         // [{uid, type:'file'|'url', id, name, chars, status:'ok'|'failed'|'uploading', error}]
-let _ctxUid               = 0;         // monotonic UID for item removal
-
-// ── Papers (DOI/link) rows ──────────────────────────────────────────────────
-// Each row's files are scoped to that row's paper only -- this is what keeps
-// e.g. paper 2's supplementary table from being broadcast into paper 1's samples.
-let paperRows  = [];   // [{uid, doiOrLink, files: [{uid, name, status, id, error}]}]
+// ── Papers & per-row context (links + files) ────────────────────────────────
+// One row = one source. Its files and links are scoped to that row only, so
+// e.g. paper 2's supplementary table is never broadcast into paper 1's samples.
+// Mode is inferred from the accession box (never chosen explicitly):
+//   • no accession typed  → DISCOVERY: each row is a free paper (link/file) we
+//     trace to every NCBI sample it references.
+//   • accessions typed    → AUGMENTATION: one row is auto-generated per entered
+//     accession and labeled with it; that row's files/links become context for
+//     that accession (a BioProject/GSE fans the context out to all its samples).
+// Row shape: {uid, accession, files:[{uid,name,status,id,error}],
+//                            links:[{uid,url,status,id,error}]}
+let paperRows  = [];
 let _paperRowUid  = 0;
-let _paperFileUid = 0;
+let _paperItemUid = 0;
 let _activePaperRowUid = null;  // which row's "+ files" button was clicked
+let _sharedContext = false;     // "same paper?" -> pool context across individual accessions
+
+// Accessions currently typed in the box.
+function _accTokens() {
+  return document.getElementById('acc-input').value.split(/[,\n;\s]+/).map(s => s.trim()).filter(Boolean);
+}
+// BioProject (PRJ…) and GEO series (GSE…) fan out to many samples on the
+// backend, so their context never needs the "same paper?" prompt.
+function _isProjectAcc(t) { return /^PRJ[A-Z]{2}\d+$/i.test(t) || /^GSE\d+$/i.test(t); }
+function _rowHasContext(r) { return r.files.length > 0 || r.links.length > 0; }
+function _okIds(r) {
+  return r.files.filter(f => f.status === 'ok').map(f => f.id)
+    .concat(r.links.filter(l => l.status === 'ok').map(l => l.id));
+}
+
+// Reconcile the visible rows with the current form state and refresh the live
+// status line + "same paper?" prompt. Called on accession-box input and after
+// any row/file/link change. This is the single place that infers the mode.
+function refreshContextMode() {
+  const tokens  = _accTokens();
+  const augment = tokens.length > 0;
+
+  if (augment) {
+    // One labeled row per entered accession; preserve already-attached
+    // files/links for accessions that are still present.
+    const byAcc = {};
+    paperRows.forEach(r => { if (r.accession) byAcc[r.accession.toUpperCase()] = r; });
+    const seen = new Set();
+    const rows = [];
+    tokens.forEach(t => {
+      const key = t.toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const existing = byAcc[key] || { uid: ++_paperRowUid, accession: t, files: [], links: [] };
+      existing.accession = t;
+      rows.push(existing);
+    });
+    paperRows = rows;
+  } else {
+    // Discovery: drop accession-labeled rows, keep free rows, ensure one exists.
+    paperRows = paperRows.filter(r => !r.accession);
+    if (!paperRows.length) paperRows.push({ uid: ++_paperRowUid, accession: null, files: [], links: [] });
+  }
+
+  _updateContextStatus(tokens, augment);
+  renderPaperRows();
+}
+
+function _updateContextStatus(tokens, augment) {
+  const el     = document.getElementById('context-status');
+  const addBtn = document.getElementById('paper-add-row-btn');
+  if (augment) {
+    const n = tokens.length;
+    el.textContent = `${n} accession${n > 1 ? 's' : ''} entered — uploaded files/links will be used as context for ${n > 1 ? 'these' : 'this'}.`;
+    if (addBtn) addBtn.style.display = 'none';   // rows are derived from accessions
+  } else {
+    el.textContent = "No accession entered — we'll find every sample this paper/file references.";
+    if (addBtn) addBtn.style.display = '';
+  }
+
+  // "Same paper?" applies only to 2+ individual (non-project) accessions that
+  // actually have context attached — a BioProject/GSE already fans out on its own.
+  const individual = tokens.filter(t => !_isProjectAcc(t));
+  const showPrompt = augment && individual.length >= 2 && paperRows.some(_rowHasContext);
+  const promptEl   = document.getElementById('same-paper-prompt');
+  if (promptEl) promptEl.style.display = showPrompt ? 'block' : 'none';
+  if (!showPrompt) {
+    _sharedContext = false;
+    const chk = document.getElementById('same-paper-check');
+    if (chk) chk.checked = false;
+  }
+}
+
+function onSamePaperToggle(checked) { _sharedContext = checked; }
 
 function addPaperRow() {
-  paperRows.push({ uid: ++_paperRowUid, doiOrLink: '', files: [] });
+  paperRows.push({ uid: ++_paperRowUid, accession: null, files: [], links: [] });
   renderPaperRows();
 }
 
 function removePaperRow(uid) {
   paperRows = paperRows.filter(r => r.uid !== uid);
-  renderPaperRows();
-}
-
-function updatePaperRowText(uid, value) {
-  const row = paperRows.find(r => r.uid === uid);
-  if (row) row.doiOrLink = value;
+  refreshContextMode();
 }
 
 function triggerPaperFileInput(uid) {
@@ -674,12 +720,18 @@ function triggerPaperFileInput(uid) {
   document.getElementById('paper-file-input').click();
 }
 
+// Shared file intake for every row in both modes (no duplicate upload paths).
+// IMPORTANT: copy the FileList with Array.from BEFORE resetting the input --
+// input.value = '' empties the live FileList, which is what previously made the
+// "+ files" button silently do nothing. Uploads via /upload-context (which
+// extracts text server-side) and records per-file status on the row.
 async function handlePaperFiles(fileList) {
-  const row = paperRows.find(r => r.uid === _activePaperRowUid);
-  document.getElementById('paper-file-input').value = '';
-  if (!row || !fileList || !fileList.length) return;
-  const files = Array.from(fileList);
-  const uids = files.map(() => ++_paperFileUid);
+  const input = document.getElementById('paper-file-input');
+  const row   = paperRows.find(r => r.uid === _activePaperRowUid);
+  if (!row || !fileList || !fileList.length) { input.value = ''; return; }
+  const files = Array.from(fileList);   // copy first — see note above
+  input.value = '';
+  const uids = files.map(() => ++_paperItemUid);
   files.forEach((file, i) => row.files.push({ uid: uids[i], name: file.name, status: 'uploading', id: null, error: '' }));
   renderPaperRows();
 
@@ -700,38 +752,154 @@ async function handlePaperFiles(fileList) {
   } catch (err) {
     uids.forEach(uid => { const it = row.files.find(f => f.uid === uid); if (it) { it.status = 'failed'; it.error = 'Network error: ' + err; } });
   }
-  renderPaperRows();
+  refreshContextMode();
 }
 
 function removePaperFile(rowUid, fileUid) {
   const row = paperRows.find(r => r.uid === rowUid);
   if (row) row.files = row.files.filter(f => f.uid !== fileUid);
-  renderPaperRows();
+  refreshContextMode();
+}
+
+function addPaperLinks(rowUid) {
+  const row = paperRows.find(r => r.uid === rowUid);
+  const inp = document.getElementById('paper-link-input-' + rowUid);
+  if (!row || !inp) return;
+  const urls = (inp.value || '').split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
+  if (!urls.length) return;
+  inp.value = '';
+  _processRowLinks(row, urls);
+}
+
+// Shared link intake for every row in both modes. Each URL is sent to
+// /process-context-urls, whose extract_url_text is the single accessibility
+// test: a link it cannot reach comes back status != 'ok', which we surface as
+// "download & upload". Reachable links carry a context_file_id reused as scoped
+// context (augmentation) or pre-extracted paper text (discovery). Mutates row.links.
+async function _processRowLinks(row, urls) {
+  for (const url of urls) {
+    const uid  = ++_paperItemUid;
+    const item = { uid, url, status: 'uploading', id: null, error: '' };
+    row.links.push(item);
+    renderPaperRows();
+    try {
+      const resp = await fetch('/process-context-urls', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: [url] }),
+      });
+      const data = resp.ok ? await resp.json() : { results: [] };
+      const r0 = (data.results || [])[0];
+      if (r0 && r0.status === 'ok' && (r0.chars || 0) > 0) { item.status = 'ok'; item.id = data.context_file_id; }
+      else { item.status = 'failed'; item.error = (r0 && r0.error) || 'Cannot access — download & upload the file'; }
+    } catch (err) {
+      item.status = 'failed'; item.error = 'Network error: ' + err;
+    }
+    renderPaperRows();
+  }
+  refreshContextMode();
+}
+
+function removePaperLink(rowUid, linkUid) {
+  const row = paperRows.find(r => r.uid === rowUid);
+  if (row) row.links = row.links.filter(l => l.uid !== linkUid);
+  refreshContextMode();
+}
+
+function _chip(icon, label, title, onRemove) {
+  return `<span class="ctx-item" style="display:inline-flex;align-items:center;gap:4px;margin:2px 4px 2px 0;padding:2px 6px;font-size:11px" title="${_escHtml(title || '')}">
+      ${icon} ${_escHtml(label)}
+      <button onclick="${onRemove}" style="border:none;background:none;cursor:pointer;color:var(--muted)" title="Remove">✕</button>
+    </span>`;
 }
 
 function renderPaperRows() {
   const container = document.getElementById('paper-rows');
   if (!container) return;
   container.innerHTML = paperRows.map(row => {
-    const fileChips = row.files.map(f => {
-      const icon = f.status === 'ok' ? '✅' : f.status === 'failed' ? '❌' : '⏳';
-      return `<span class="ctx-item" style="display:inline-flex;align-items:center;gap:4px;margin:2px 4px 2px 0;padding:2px 6px;font-size:11px" title="${_escHtml(f.error||'')}">
-        ${icon} ${_escHtml(f.name.length > 28 ? f.name.slice(0,25)+'…' : f.name)}
-        <button onclick="removePaperFile(${row.uid},${f.uid})" style="border:none;background:none;cursor:pointer;color:var(--muted)" title="Remove">✕</button>
-      </span>`;
-    }).join('');
+    const fileChips = row.files.map(f =>
+      _chip(f.status === 'ok' ? '📄' : f.status === 'failed' ? '❌' : '⏳',
+            f.name.length > 28 ? f.name.slice(0, 25) + '…' : f.name,
+            f.error || '', `removePaperFile(${row.uid},${f.uid})`)).join('');
+    const linkChips = row.links.map(l =>
+      _chip(l.status === 'ok' ? '🌐' : l.status === 'failed' ? '⚠' : '⏳',
+            l.url.length > 40 ? l.url.slice(0, 37) + '…' : l.url,
+            l.status === 'failed' ? (l.error || 'Cannot access — download & upload') : l.url,
+            `removePaperLink(${row.uid},${l.uid})`)).join('');
+    const chips = (fileChips + linkChips)
+      ? `<div style="flex-basis:100%">${fileChips}${linkChips}</div>` : '';
+
+    // Discovery rows show a paper-link input; augmentation rows show the
+    // accession label instead (its link/file are context, not a paper to trace).
+    const head = row.accession
+      ? `<span style="flex:1;font-size:13px;font-weight:600;padding:6px 0">${_escHtml(row.accession)}
+           <span style="font-weight:400;color:var(--muted);font-size:11px">— attach context files/links</span></span>`
+      : `<input type="text" id="paper-link-input-${row.uid}" placeholder="https://doi.org/… or PubMed link (press + links)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();addPaperLinks(${row.uid})}" style="flex:1">`;
+    const removeBtn = row.accession ? '' :
+      `<button type="button" onclick="removePaperRow(${row.uid})" title="Remove this paper"
+               style="font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;padding:4px">✕</button>`;
+
     return `<div class="field" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;margin-bottom:6px">
-      <input type="text" value="${_escHtml(row.doiOrLink)}" placeholder="https://doi.org/10.1234/journal.xyz or PubMed link"
-             oninput="updatePaperRowText(${row.uid}, this.value)" style="flex:1">
-      <button type="button" onclick="triggerPaperFileInput(${row.uid})" title="Attach PDF/supplementary for this paper"
+      ${head}
+      <button type="button" onclick="addPaperLinks(${row.uid})" title="Add context link(s)"
+              style="font-size:11px;color:var(--primary);background:none;border:1px solid var(--primary);border-radius:4px;cursor:pointer;padding:4px 8px;white-space:nowrap">+ links</button>
+      <button type="button" onclick="triggerPaperFileInput(${row.uid})" title="Attach PDF/supplementary files"
               style="font-size:11px;color:var(--primary);background:none;border:1px solid var(--primary);border-radius:4px;cursor:pointer;padding:4px 8px;white-space:nowrap">+ files</button>
-      <button type="button" onclick="removePaperRow(${row.uid})" title="Remove this paper"
-              style="font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;padding:4px">✕</button>
-      ${fileChips ? `<div style="flex-basis:100%">${fileChips}</div>` : ''}
+      ${removeBtn}
+      ${chips}
     </div>`;
   }).join('');
 }
-addPaperRow();  // start with one empty paper row visible
+// Build {accession -> [context_file_id,...]} for AUGMENTATION mode. Merges each
+// row's reachable files/links onto its labeled accession (the backend fans a
+// BioProject/GSE out to all its samples). If "same paper?" is on, the pooled
+// context of every row is applied to all entered accessions instead. Also keeps
+// any files attached via the run-time "paper inaccessible" warning flow.
+function _buildAccessionContext() {
+  const out = {};
+  for (const [a, ids] of Object.entries(_accessionContext)) out[a] = ids.slice();
+  const tokens     = _accTokens();
+  const individual = tokens.filter(t => !_isProjectAcc(t));
+  if (_sharedContext && individual.length >= 2) {
+    const pooled = [];
+    paperRows.forEach(r => pooled.push(..._okIds(r)));
+    tokens.forEach(t => { out[t] = (out[t] || []).concat(pooled); });
+  } else {
+    paperRows.forEach(r => {
+      if (!r.accession) return;
+      const ids = _okIds(r);
+      if (ids.length) out[r.accession] = (out[r.accession] || []).concat(ids);
+    });
+  }
+  for (const k of Object.keys(out)) out[k] = [...new Set(out[k])];
+  return out;
+}
+
+// Build the `papers` payload for DISCOVERY mode from the free rows: one entry
+// per reachable link (carrying its pre-extracted context_file_id so the backend
+// need not re-fetch it), plus a link-less entry for a row that only has files.
+// The row's own uploaded files ride on the first entry so they stay scoped to
+// that paper only.
+function _buildDiscoveryPapers() {
+  const papers = [];
+  paperRows.forEach(r => {
+    if (r.accession) return;
+    const fileIds = r.files.filter(f => f.status === 'ok').map(f => f.id);
+    const okLinks = r.links.filter(l => l.status === 'ok');
+    if (okLinks.length) {
+      okLinks.forEach((l, i) => papers.push({
+        doi_or_link:      l.url,
+        link_context_id:  l.id,
+        context_file_ids: i === 0 ? fileIds : [],
+      }));
+    } else if (fileIds.length) {
+      papers.push({ doi_or_link: '', link_context_id: null, context_file_ids: fileIds });
+    }
+  });
+  return papers;
+}
+
+refreshContextMode();  // render initial state (discovery, one empty row)
 let _linksState           = {};         // acc → {links: Set, user_file: str|null, blocked: Set}
 let _linksWarnings        = {};         // acc → {inaccessible: string[], message: string}
 let _accessionContext     = {};         // acc → [context_file_id, ...] -- scoped to that one accession only
@@ -778,199 +946,6 @@ function isNcbiToken(tok) {
 // ── Context files & links ─────────────────────────────────────────────────────
 function _escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function _getCtxFileIds() {
-  return ctxItems.filter(i => i.status === 'ok').map(i => i.id);
-}
-function _getCtxFileNames() {
-  return ctxItems.filter(i => i.status === 'ok').map(i => i.name).join(', ');
-}
-
-function renderCtxItems() {
-  const list = document.getElementById('ctx-items-list');
-  if (!ctxItems.length) { list.innerHTML = ''; return; }
-  list.innerHTML = ctxItems.map(item => {
-    const icon = item.type === 'file' ? '📄' : '🌐';
-    let metaHtml = '';
-    if (item.status === 'ok') {
-      metaHtml = `<div class="ctx-item-meta">✅ ${(item.chars||0).toLocaleString()} chars extracted</div>`;
-    } else if (item.status === 'failed') {
-      metaHtml = `<div class="ctx-item-error">❌ Cannot extract — <strong>download manually and re-upload</strong><br><span style="opacity:.8">${_escHtml(item.error||'Unknown error')}</span></div>`;
-    } else {
-      metaHtml = `<div class="ctx-item-meta" style="color:var(--primary)">⏳ Processing…</div>`;
-    }
-    return `<div class="ctx-item ctx-item-${item.status}">
-      <span class="ctx-item-icon">${icon}</span>
-      <div class="ctx-item-body">
-        <div class="ctx-item-name" title="${_escHtml(item.name)}">${_escHtml(item.name.length > 60 ? item.name.slice(0,57)+'…' : item.name)}</div>
-        ${metaHtml}
-      </div>
-      <button class="ctx-item-remove" onclick="removeCtxItem(${item.uid})" title="Remove">✕</button>
-    </div>`;
-  }).join('');
-}
-
-function removeCtxItem(uid) {
-  ctxItems = ctxItems.filter(i => i.uid !== uid);
-  renderCtxItems();
-  _updateCtxStatus();
-}
-
-function _updateCtxStatus() {
-  const ok = ctxItems.filter(i => i.status === 'ok').length;
-  const failed = ctxItems.filter(i => i.status === 'failed').length;
-  const busy = ctxItems.filter(i => i.status === 'uploading').length;
-  const el = document.getElementById('ctx-upload-status');
-  if (!ctxItems.length) { el.textContent = ''; return; }
-  let msg = '';
-  if (ok)     msg += `${ok} source${ok>1?'s':''} ready`;
-  if (failed) msg += `${msg?', ':''}${failed} failed (download &amp; re-upload)`;
-  if (busy)   msg += `${msg?', ':''}${busy} processing…`;
-  el.innerHTML = msg;
-  el.style.color = failed ? 'var(--low)' : 'var(--high)';
-}
-
-function toggleCtxUpload() {
-  const area   = document.getElementById('ctx-upload-area');
-  const toggle = document.getElementById('ctx-toggle');
-  const hidden = area.style.display === 'none';
-  area.style.display  = hidden ? 'block' : 'none';
-  toggle.textContent  = hidden ? '− Hide' : '+ Add';
-  if (!hidden) _clearAllCtx();
-}
-
-function handleCtxDrop(e) {
-  e.preventDefault();
-  document.getElementById('ctx-dropzone').classList.remove('ctx-dragover');
-  if (e.dataTransfer.files.length) handleCtxFiles(e.dataTransfer.files);
-}
-
-async function handleCtxFiles(fileList) {
-  if (!fileList || !fileList.length) return;
-  const files = Array.from(fileList);
-
-  // Add placeholder items immediately
-  const uids = files.map(() => ++_ctxUid);
-  files.forEach((file, i) => {
-    ctxItems.push({ uid: uids[i], type: 'file', id: null, name: file.name, chars: 0, status: 'uploading', error: '' });
-  });
-  renderCtxItems();
-  _updateCtxStatus();
-
-  // Upload all files in one request
-  const formData = new FormData();
-  files.forEach(f => formData.append('files', f));
-
-  try {
-    const resp = await fetch('/upload-context', { method: 'POST', body: formData });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      uids.forEach(uid => {
-        const item = ctxItems.find(i => i.uid === uid);
-        if (item) { item.status = 'failed'; item.error = err.detail || 'Upload failed'; }
-      });
-    } else {
-      const data = await resp.json();
-      (data.files || []).forEach((res, i) => {
-        const item = ctxItems.find(x => x.uid === uids[i]);
-        if (!item) return;
-        if (res.status === 'ok') {
-          item.status = 'ok';
-          item.id     = res.context_file_id;
-          item.chars  = res.chars || 0;
-        } else {
-          item.status = 'failed';
-          item.error  = res.error || 'Upload failed';
-        }
-      });
-    }
-  } catch (err) {
-    uids.forEach(uid => {
-      const item = ctxItems.find(i => i.uid === uid);
-      if (item) { item.status = 'failed'; item.error = 'Network error: ' + err; }
-    });
-  }
-
-  // Reset the file input so the same file can be re-added
-  document.getElementById('ctx-file-input').value = '';
-  renderCtxItems();
-  _updateCtxStatus();
-}
-
-async function addCtxUrls() {
-  const textarea = document.getElementById('ctx-url-input');
-  const raw = textarea.value.trim();
-  if (!raw) return;
-
-  // Parse: split by newline or comma, filter blanks
-  const urls = raw.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
-  if (!urls.length) return;
-
-  textarea.value = '';
-  const btn = document.getElementById('ctx-add-urls-btn');
-  btn.disabled = true;
-  btn.textContent = '⏳ Processing…';
-
-  // Add placeholder items
-  const uids = urls.map(() => ++_ctxUid);
-  urls.forEach((url, i) => {
-    const name = url.split('/').pop().split('?')[0] || url.slice(0, 60);
-    ctxItems.push({ uid: uids[i], type: 'url', id: null, name: name || url, chars: 0, status: 'uploading', error: '', url });
-  });
-  renderCtxItems();
-  _updateCtxStatus();
-
-  try {
-    const resp = await fetch('/process-context-urls', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ urls }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      uids.forEach(uid => {
-        const item = ctxItems.find(i => i.uid === uid);
-        if (item) { item.status = 'failed'; item.error = err.detail || 'Processing failed'; }
-      });
-    } else {
-      const data = await resp.json();
-      // All successful items share one combined context_file_id from the server
-      const combinedId = data.context_file_id || null;
-      (data.results || []).forEach((res, i) => {
-        const item = ctxItems.find(x => x.uid === uids[i]);
-        if (!item) return;
-        item.name = res.name || item.name;
-        if (res.status === 'ok') {
-          item.status = 'ok';
-          item.chars  = res.chars || 0;
-          // All URLs share the combined context file; only first one owns the ID to avoid duplicates
-          item.id = (i === 0) ? combinedId : '__shared__' + combinedId;
-        } else {
-          item.status = 'failed';
-          item.error  = res.error || 'Could not extract';
-        }
-      });
-    }
-  } catch (err) {
-    uids.forEach(uid => {
-      const item = ctxItems.find(i => i.uid === uid);
-      if (item) { item.status = 'failed'; item.error = 'Network error: ' + err; }
-    });
-  }
-
-  btn.disabled = false;
-  btn.textContent = '+ Add links';
-  renderCtxItems();
-  _updateCtxStatus();
-}
-
-function _clearAllCtx() {
-  ctxItems = [];
-  document.getElementById('ctx-file-input').value = '';
-  document.getElementById('ctx-url-input').value  = '';
-  renderCtxItems();
-  document.getElementById('ctx-upload-status').textContent = '';
 }
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -1154,6 +1129,7 @@ function restoreHistory(i) {
   document.getElementById('acc-input').value   = item.acc;
   document.getElementById('meta-fields').value = item.fields || '';
   document.getElementById('std-url').value     = item.url   || '';
+  refreshContextMode();  // programmatic value set doesn't fire oninput -- sync rows/status
   _lastRestoredAcc = item.acc;  // mark as history re-run so samples won't be counted
   track('feature_click', { feature: 'restore_history', accession_input: item.acc.slice(0, 100) });
 }
@@ -1196,9 +1172,10 @@ function resetInputs() {
   document.getElementById('acc-input').value   = '';
   document.getElementById('meta-fields').value = '';
   document.getElementById('std-url').value     = '';
-  _clearAllCtx();
-  const area = document.getElementById('ctx-upload-area');
-  if (area && area.style.display !== 'none') toggleCtxUpload();
+  paperRows = [];
+  _accessionContext = {};
+  _sharedContext = false;
+  refreshContextMode();   // rebuilds a single empty discovery row + status line
 }
 
 // ── Non-NCBI dialog ───────────────────────────────────────────────────────────
@@ -1406,11 +1383,10 @@ function _renderLinksPanel() {
 // ── Analysis ─────────────────────────────────────────────────────────────────
 async function runAnalysis() {
   const accText  = document.getElementById('acc-input').value.trim();
-  const validPaperRows = paperRows.filter(r => r.doiOrLink.trim());
   const metaRaw = document.getElementById('meta-fields').value.trim();
   const stdUrl  = document.getElementById('std-url').value.trim();
 
-  if (!accText && !validPaperRows.length) { alert('Please enter at least one accession ID or paper DOI/link.'); return; }
+  if (!accText && !paperRows.some(_rowHasContext)) { alert('Please enter at least one accession ID, or add a paper link/file.'); return; }
 
   const tokens = accText.split(/[,\n;\s]+/).map(s => s.trim()).filter(Boolean);
   const used   = getSamplesUsed();
@@ -1443,17 +1419,32 @@ async function runAnalysis() {
   if (nonNcbiTokens.length > 0) {
     showNonNcbiDialog(nonNcbiTokens, (resolvedInfo) => {
       _nonNcbiResolved = resolvedInfo;
-      _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun, validPaperRows);
+      _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun);
     });
     return;
   }
 
   _nonNcbiResolved = {};
-  _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun, validPaperRows);
+  _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun);
 }
 
-async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun = false, validPaperRows = []) {
+async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isHistoryRerun = false) {
   const metaFields = metaRaw ? metaRaw.split(/[,\n]+/).map(s => s.trim()).filter(Boolean) : null;
+  // Infer mode from the form (never a toggle): accessions typed -> augmentation
+  // (files/links are context for those accessions); none -> discovery (trace
+  // samples from the paper rows). See _buildAccessionContext / _buildDiscoveryPapers.
+  const _augment    = tokens.length > 0;
+  const _accCtx     = _augment ? _buildAccessionContext() : {};
+  const _papers     = _augment ? [] : _buildDiscoveryPapers();
+  // Human-readable label of every reachable attached file/link, sent so the
+  // live links panel can confirm to the user that their context was loaded.
+  const _ctxNames = [];
+  paperRows.forEach(r => {
+    (r.files || []).forEach(f => { if (f.status === 'ok') _ctxNames.push(f.name); });
+    (r.links || []).forEach(l => { if (l.status === 'ok') _ctxNames.push(l.url); });
+  });
+  let _ctxLabel = _ctxNames.join(', ');
+  if (_ctxLabel.length > 80) _ctxLabel = _ctxLabel.slice(0, 77) + '…';
   // History re-runs don't consume quota — allow up to the account's sample limit
   const remaining  = isHistoryRerun ? limit : (limit - used);
   const sampleLimit = Math.max(0, remaining);
@@ -1471,14 +1462,14 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
   });
 
   const user = getUser();
-  const _ctxIds = _getCtxFileIds();
+  const _hasContext = Object.keys(_accCtx).length > 0 || _papers.length > 0;
   track('analysis_start', {
     accession_count: tokens.length,
     accession_types: accTypes,
     has_metadata_fields: !!(metaFields && metaFields.length),
     metadata_field_count: metaFields ? metaFields.length : 0,
     has_std_url: !!stdUrl,
-    has_context_file: _ctxIds.length > 0,
+    has_context_file: _hasContext,
     is_logged_in: !!user,
     accession_input: accText.slice(0, 500),
     metadata_fields: metaRaw.slice(0, 300),
@@ -1524,15 +1515,11 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         bioproject_id:       accText,
-        accession_context_file_ids: Object.keys(_accessionContext).length ? _accessionContext : null,
-        papers:              validPaperRows.length ? validPaperRows.map(r => ({
-                               doi_or_link:       r.doiOrLink.trim(),
-                               context_file_ids:  r.files.filter(f => f.status === 'ok').map(f => f.id),
-                             })) : null,
+        accession_context_file_ids: Object.keys(_accCtx).length ? _accCtx : null,
+        context_file_name:   _ctxLabel || null,
+        papers:              _papers.length ? _papers : null,
         metadata_fields:     metaFields,
         standardization_url: stdUrl || null,
-        context_file_ids:    _ctxIds.filter(id => !id.startsWith('__shared__')),
-        context_file_name:   _getCtxFileNames() || null,
         sample_limit:        sampleLimit,
         run_id:              currentRunId,
         non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
