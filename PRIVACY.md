@@ -27,6 +27,7 @@ Google Sheet that only I (the maintainer) hold the credentials for.
 | Usage summary | `UserLog` sheet | same as above, condensed |
 | Signup | `Users` sheet | email, name |
 | Per-user usage | `UserUsage` sheet | email, running count of samples used, the full list of every accession you've ever queried |
+| Per-session usage (anonymous) | `AnonUsage` sheet | session ID, running count of samples used, the full list of every accession queried in that session — no email, not mappable to you |
 | Extracted results | `KnownCachedSamples` sheet | **shared across all users** — keyed only by sample ID, not by who ran it |
 | Feedback you submit | `Report` sheet | your freetext feedback + email |
 
@@ -60,6 +61,15 @@ Paper text and uploaded file content is sent to:
 - **Google Sheets / Google Drive API** — storage for everything in the
   table above
 
+The following are optional integrations (see `.env.example`) that send
+narrower, more derived data when configured:
+- **Serper** — the accession ID or search terms being looked up, to find
+  candidate papers via Google search results
+- **GeoNames** — extracted location strings (e.g. a city or country name
+  pulled from a paper), to standardize them to a country
+- **Elsevier ScienceDirect API** — the DOI of a paper, to fetch its full
+  text when it's hosted on ScienceDirect
+
 I don't control these providers' retention windows beyond their published
 API terms. I do not use your data to train any model, and I don't sell or
 share it with anyone outside of running the tool itself.
@@ -73,25 +83,27 @@ share it with anyone outside of running the tool itself.
 
 ## Your choices
 
-- **Use it anonymously.** You can run up to the free-tier sample limit
-  without signing in. Without an email, you're only identified by a
-  session ID, which I can't map back to you.
+- **Use it anonymously.** You can run up to 10 samples without signing in.
+  Signing in is free, not a trial — it raises your cap to 30 samples
+  because I'm running this on my own infrastructure and want to validate
+  accuracy before opening it up further. Without an email, you're only
+  identified by a session ID, which I can't map back to you.
 - **Delete your data.** There's no self-serve delete button yet. Email
   **vyphung1901@gmail.com** with the email or session ID you used, and I
-  will remove your rows from the `Users`, `UserLog`, and `UserUsage`
-  sheets. I will not delete cached extraction results tied to a shared
-  accession (since those aren't yours alone and other users rely on them),
-  but I will remove anything that identifies *you* as having queried them.
+  will remove your rows from the `Users`, `UserLog`, `UserUsage`, and
+  `AnonUsage` sheets. I will not delete cached extraction results tied to a
+  shared accession (since those aren't yours alone and other users rely on
+  them), but I will remove anything that identifies *you* as having queried
+  them.
 - **Only upload files you have the legal right to use.** The tool doesn't
   check this for you — if you upload a paywalled paper, you're attesting
   you have legitimate access to it (e.g. via your institution).
 
 ## Why any of this is collected at all
 
-- Email + usage tracking exists so the 30-sample limit can persist across
-  sessions instead of resetting every time you reload, and so I can extend
-  limits for specific users on request without rebuilding billing
-  infrastructure.
+- Email + usage tracking exists so your sample count can persist across
+  sessions instead of resetting every time you reload, and so I can adjust
+  limits for specific users on request.
 - The accession text you paste is logged so I can debug failed runs and
   improve extraction accuracy — it is not used for anything else.
 - The shared extraction cache exists purely to cut LLM API costs so the

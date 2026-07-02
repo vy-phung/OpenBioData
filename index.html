@@ -3,17 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BioMetadataAudit — AI-Powered NCBI Metadata Extraction</title>
+<title>OpenBioData — AI-Powered NCBI Metadata Extraction</title>
 <meta name="description" content="Instantly extract and standardize biosample metadata from NCBI BioProject, BioSample, SRR and GenBank accessions using AI. Export to Excel with confidence scores.">
 <meta name="keywords" content="bioinformatics, NCBI, BioProject, BioSample, metadata extraction, metagenomics, cMD, sequencing, AI, biosample, SRR, GenBank">
 <meta name="robots" content="index, follow">
 <meta name="google-site-verification" content="Ged1A1_bfhFrDxnGkgoUyG8vd958mCNNqEzK0IKHjPo" />  
 <meta property="og:type" content="website">
-<meta property="og:title" content="BioMetadataAudit — AI-Powered NCBI Metadata Extraction">
+<meta property="og:title" content="OpenBioData — AI-Powered NCBI Metadata Extraction">
 <meta property="og:description" content="Extract disease status, organism, body site, country, sequencing platform and more from any NCBI accession in seconds. Free to try.">
 <meta property="og:image" content="/og-preview.png">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="BioMetadataAudit — AI-Powered NCBI Metadata Extraction">
+<meta name="twitter:title" content="OpenBioData — AI-Powered NCBI Metadata Extraction">
 <meta name="twitter:description" content="Extract and standardize biosample metadata from NCBI accessions instantly.">
 <style>
   :root {
@@ -83,7 +83,7 @@
   #reset-btn{background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:7px;padding:11px 16px;font-size:14px;cursor:pointer;transition:background .2s,color .2s,border-color .2s}
   #reset-btn:hover{background:#f5f5f5;color:var(--text);border-color:var(--muted)}
 
-  /* ── Free tier banner ── */
+  /* ── Sign-in nudge banner ── */
   #free-banner{background:linear-gradient(90deg,#fff8e8,#fff3d0);border:1px solid #f0d060;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:13px}
   #free-banner.hidden{display:none}
   #free-banner .banner-icon{font-size:20px}
@@ -299,7 +299,7 @@
 <!-- Sidebar -->
 <aside id="sidebar">
   <header>
-    <h2>🧬 BioMetadataAudit</h2>
+    <h2>🧬 OpenBioData</h2>
     <p>Search history</p>
   </header>
   <div id="history-list">
@@ -312,7 +312,7 @@
 <!-- Main -->
 <div id="main">
   <div id="topbar">
-    <h1>BioMetadataAudit</h1>
+    <h1>OpenBioData</h1>
     <span class="badge">MVP</span>
     <div id="topbar-right">
       <span id="free-counter">Free: 0 / 10 samples used</span>
@@ -333,12 +333,12 @@
       <button onclick="document.getElementById('shared-banner').classList.add('hidden')" style="background:transparent;color:#aad4e8;border:none;cursor:pointer;font-size:18px;line-height:1;" title="Dismiss">&times;</button>
     </div>
 
-    <!-- Free tier banner (shown when near limit) -->
+    <!-- Sign-in nudge banner (shown when near the anonymous limit) -->
     <div id="free-banner" class="hidden">
       <span class="banner-icon">✨</span>
       <span class="banner-text">
         <strong id="banner-title">You're close to your free limit</strong>
-        <span id="banner-body">Sign up to unlock 20 more samples per run and download Excel files.</span>
+        <span id="banner-body">Sign in to save your run history, download Excel files, and continue past 10 samples.</span>
       </span>
       <button class="banner-cta" onclick="showAuthPopup('signup','banner')">Sign up free</button>
     </div>
@@ -548,12 +548,12 @@
     <div class="auth-logo">🧬</div>
     <h2 id="auth-title">Create your free account</h2>
     <p class="auth-sub" id="auth-subtitle">
-      You're using BioMetadataAudit free tier.<br>
-      Sign up to unlock <strong>20 more samples per run</strong> and <strong>download Excel files</strong>.
+      You're using OpenBioData without an account.<br>
+      Sign in to save your run history and raise your sample limit from <strong>10 to 30 per run</strong>.
     </p>
 
     <ul class="auth-benefits">
-      <li>20 samples per run (vs 10 free)</li>
+      <li>30 samples per run (vs 10 without an account)</li>
       <li>Download biosample_metadata.xlsx</li>
       <li>Search history saved in your workspace</li>
       <li>Rerun past analyses for free — history items never count twice</li>
@@ -584,7 +584,7 @@
 <script>
 // ── Constants (overridden by /config on load) ─────────────────────────────────
 let FREE_SAMPLE_LIMIT  = 10;
-let PAID_SAMPLE_LIMIT  = 30;  // after signup
+let SIGNED_IN_SAMPLE_LIMIT  = 30;  // after signup
 
 // ── Session tracking ─────────────────────────────────────────────────────────
 const SESSION_ID = (() => {
@@ -961,7 +961,7 @@ function _samplesKey() {
 function getSamplesUsed() { return parseInt(localStorage.getItem(_samplesKey()) || '0', 10); }
 function addSamplesUsed(n){ localStorage.setItem(_samplesKey(), getSamplesUsed() + n); }
 
-function getLimit()  { return getUser() ? PAID_SAMPLE_LIMIT : FREE_SAMPLE_LIMIT; }
+function getLimit()  { return getUser() ? SIGNED_IN_SAMPLE_LIMIT : FREE_SAMPLE_LIMIT; }
 
 function updateAuthButton() {
   const u   = getUser();
@@ -970,7 +970,7 @@ function updateAuthButton() {
     btn.textContent = u.email.split('@')[0];
     btn.classList.add('logged-in');
     btn.onclick = () => {
-      if (confirm('Log out of BioMetadataAudit?')) { clearUser(); location.reload(); }
+      if (confirm('Log out of OpenBioData?')) { clearUser(); location.reload(); }
     };
     document.getElementById('share-workspace-btn').style.display = 'block';
   } else {
@@ -1001,7 +1001,7 @@ function updateFreeCounter() {
     document.getElementById('banner-title').textContent =
       `${FREE_SAMPLE_LIMIT - used} free sample${FREE_SAMPLE_LIMIT - used === 1 ? '' : 's'} remaining`;
     document.getElementById('banner-body').textContent =
-      'Sign up free to unlock 20 more samples per run and download Excel files.';
+      'Sign in to save your run history, download Excel files, and continue past 10 samples.';
   } else if (!getUser() && used >= FREE_SAMPLE_LIMIT) {
     banner.classList.remove('hidden');
     document.getElementById('banner-title').textContent = 'Free limit reached';
@@ -1032,7 +1032,7 @@ function setAuthMode(mode) {
   const isSignup = mode === 'signup';
   document.getElementById('auth-title').textContent       = isSignup ? 'Create your free account' : 'Welcome back';
   document.getElementById('auth-subtitle').innerHTML      = isSignup
-    ? 'You\'re using BioMetadataAudit free tier.<br>Sign up to unlock <strong>20 more samples per run</strong>, <strong>download Excel files</strong>, and <strong>rerun history analyses for free</strong>.'
+    ? 'You\'re using OpenBioData without an account.<br>Sign in to save your run history, raise your sample limit from <strong>10 to 30 per run</strong>, and <strong>download Excel files</strong>.'
     : 'Log in to access your workspace, full sample quota, and free history reruns.';
   document.getElementById('auth-name-field').style.display = isSignup ? 'block' : 'none';
   document.getElementById('auth-submit-btn').textContent  = isSignup ? 'Create free account' : 'Log in';
@@ -1070,7 +1070,7 @@ async function handleAuth() {
   // Fetch per-user limit from server and sync local usage count
   try {
     const uc = await fetch('/user-config?email=' + encodeURIComponent(email)).then(r => r.json());
-    if (typeof uc.permitted_samples === 'number') PAID_SAMPLE_LIMIT = uc.permitted_samples;
+    if (typeof uc.permitted_samples === 'number') SIGNED_IN_SAMPLE_LIMIT = uc.permitted_samples;
     // Sync server-side usage count into localStorage so the counter is accurate
     if (typeof uc.usage_count === 'number') {
       localStorage.setItem(_samplesKey(), uc.usage_count);
@@ -1524,6 +1524,7 @@ async function _doRunAnalysis(accText, metaRaw, stdUrl, tokens, used, limit, isH
         run_id:              currentRunId,
         non_ncbi_info:       Object.keys(_nonNcbiResolved).length > 0 ? _nonNcbiResolved : null,
         email:               getUser()?.email || '',
+        session_id:          SESSION_ID,
       }),
       signal: currentAbortController.signal,
     });
@@ -1637,7 +1638,7 @@ function handleDownload() {
   if (!getUser()) {
     showAuthPopup('signup', 'download_gate');
     document.getElementById('auth-subtitle').innerHTML =
-      'Sign up to <strong>download your results as Excel</strong> and unlock 20 samples per run.';
+      'Sign in to <strong>download your results as Excel</strong> and raise your sample limit from 10 to 30 per run.';
     return;
   }
   if (!currentRows.length) return;
@@ -2321,7 +2322,7 @@ async function loadConfig() {
     if (!resp.ok) return;
     const cfg = await resp.json();
     if (typeof cfg.free_limit === 'number') FREE_SAMPLE_LIMIT = cfg.free_limit;
-    if (typeof cfg.paid_limit === 'number') PAID_SAMPLE_LIMIT = cfg.paid_limit;
+    if (typeof cfg.signed_in_limit === 'number') SIGNED_IN_SAMPLE_LIMIT = cfg.signed_in_limit;
   } catch { /* use hardcoded defaults if server unreachable */ }
 
   // If already logged in, fetch per-user limit and sync usage count
@@ -2329,7 +2330,7 @@ async function loadConfig() {
   if (existingUser?.email) {
     try {
       const uc = await fetch('/user-config?email=' + encodeURIComponent(existingUser.email)).then(r => r.json());
-      if (typeof uc.permitted_samples === 'number') PAID_SAMPLE_LIMIT = uc.permitted_samples;
+      if (typeof uc.permitted_samples === 'number') SIGNED_IN_SAMPLE_LIMIT = uc.permitted_samples;
       if (typeof uc.usage_count === 'number') localStorage.setItem(_samplesKey(), uc.usage_count);
     } catch (_) {}
   }
