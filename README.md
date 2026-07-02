@@ -16,7 +16,7 @@ OpenBioData automates that trace. Give it an accession (BioProject, BioSample, S
 
 ## Try it hosted
 
-https://app.openbiodata.it.com — free, up to 10 samples without an account. Signing in is free, not a trial — it raises your cap to 30 samples.
+https://app.openbiodata.it.com/ — up to 10 samples without an account. Signing in raises your cap to 30 samples.
 
 Why the limit: this runs on my own infrastructure and calls the Claude API per sample, so a cap protects against runaway cost while I validate accuracy at scale. If you have a BioProject with 500 samples, it counts each sample toward your limit, not the project as one unit. Signing in also saves your run history so you don't lose progress when reloading.
 
