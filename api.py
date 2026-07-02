@@ -581,6 +581,7 @@ class AnalyzeRequest(BaseModel):
     non_ncbi_info: Optional[Dict[str, NonNcbiInfo]] = None  # {acc_id: info}
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
     email: Optional[str] = ""                    # signed-in user email for usage tracking
+    session_id: Optional[str] = ""                # anonymous session id for usage tracking (no email)
 
 
 class ChatMessageRequest(BaseModel):
@@ -910,7 +911,30 @@ async def analyze(req: AnalyzeRequest):
 
             niche_cases = req.metadata_fields or None
             raw_text = req.bioproject_id.strip()
-            effective_limit = req.sample_limit or MAX_SAMPLES
+
+            # ── Server-side usage enforcement ──────────────────────────────────
+            # req.sample_limit is client-supplied and cannot be trusted -- a
+            # direct API call could set it to anything. The real cap for this
+            # run is computed here from usage already recorded server-side
+            # (UserUsage sheet for a given email, AnonUsage sheet for a given
+            # session_id), never from what the client asked for.
+            _email_norm = (req.email or "").strip().lower()
+            _session_id = (req.session_id or "").strip()
+            if _email_norm:
+                _usage_cfg = await asyncio.to_thread(_get_user_config_from_gsheet, _email_norm)
+            else:
+                _usage_cfg = await asyncio.to_thread(_get_anon_usage_from_gsheet, _session_id)
+            _permitted = _usage_cfg["permitted_samples"]
+            _used = _usage_cfg["usage_count"]
+            _remaining = max(0, _permitted - _used)
+            if _remaining <= 0:
+                yield _sse("limit_reached", {"limit": _permitted})
+                yield _sse("error", {"message": (
+                    f"Sample limit reached ({_used}/{_permitted})."
+                    + ("" if _email_norm else " Sign in to raise your limit.")
+                )})
+                return
+            effective_limit = min(req.sample_limit or MAX_SAMPLES, _remaining, MAX_SAMPLES)
 
             # Load user-uploaded context files if provided (single or multiple).
             # Files from /process-context-urls are tagged with a
@@ -1554,17 +1578,23 @@ async def analyze(req: AnalyzeRequest):
                 },
             )
 
-            # Track per-user usage for signed-in users (fire-and-forget)
-            if req.email and all_rows:
+            # Track usage server-side (fire-and-forget) so the enforcement check
+            # above sees accurate numbers on the next call.
+            if all_rows:
                 sample_ids = [
                     r.get("biosample_accession") or r.get("genbank_accession") or ""
                     for r in all_rows
                 ]
                 sample_ids = [s for s in sample_ids if s]
                 if sample_ids:
-                    asyncio.ensure_future(
-                        asyncio.to_thread(_update_user_usage_in_gsheet, req.email, sample_ids)
-                    )
+                    if _email_norm:
+                        asyncio.ensure_future(
+                            asyncio.to_thread(_update_user_usage_in_gsheet, _email_norm, sample_ids)
+                        )
+                    elif _session_id:
+                        asyncio.ensure_future(
+                            asyncio.to_thread(_update_anon_usage_in_gsheet, _session_id, sample_ids)
+                        )
 
         except Exception as exc:
             import traceback, logging
@@ -1686,7 +1716,7 @@ def _get_user_config_from_gsheet(email: str) -> dict:
     """Return {permitted_samples, usage_count, samples} for a signed-in user.
 
     If the user has no row in UserUsage yet, one is created with the global
-    paid_limit as the default permitted_samples.
+    signed_in_limit as the default permitted_samples.
     """
     fallback = {"permitted_samples": 30, "usage_count": 0, "samples": []}
     if not email:
@@ -1707,14 +1737,14 @@ def _get_user_config_from_gsheet(email: str) -> dict:
         client = gspread.authorize(creds)
         wb = client.open("Report")
 
-        # Read global paid_limit to use as default permitted_samples for new users
-        paid_limit = 30
+        # Read global signed_in_limit to use as default permitted_samples for new users
+        signed_in_limit = 30
         try:
             cfg_ws = wb.worksheet("Config")
             for row in cfg_ws.get_all_records():
-                if str(row.get("key", "")).strip() == "paid_limit":
+                if str(row.get("key", "")).strip() == "signed_in_limit":
                     try:
-                        paid_limit = int(row.get("value", 30))
+                        signed_in_limit = int(row.get("value", 30))
                     except (ValueError, TypeError):
                         pass
         except Exception:
@@ -1730,14 +1760,14 @@ def _get_user_config_from_gsheet(email: str) -> dict:
         for row in rows:
             if str(row.get("email", "")).strip().lower() == email_lower:
                 usage_count = int(row.get("usage_count") or 0)
-                permitted = int(row.get("permitted_samples") or paid_limit)
+                permitted = int(row.get("permitted_samples") or signed_in_limit)
                 samples_str = str(row.get("samples") or "")
                 samples_list = [s.strip() for s in samples_str.split(",") if s.strip()]
                 return {"permitted_samples": permitted, "usage_count": usage_count, "samples": samples_list}
 
         # New user: create their row with defaults
-        ws.append_row([email.strip(), 0, paid_limit, ""])
-        return {"permitted_samples": paid_limit, "usage_count": 0, "samples": []}
+        ws.append_row([email.strip(), 0, signed_in_limit, ""])
+        return {"permitted_samples": signed_in_limit, "usage_count": 0, "samples": []}
     except Exception:
         return fallback
 
@@ -1762,13 +1792,13 @@ def _update_user_usage_in_gsheet(email: str, new_samples: list) -> None:
         client = gspread.authorize(creds)
         wb = client.open("Report")
 
-        paid_limit = 30
+        signed_in_limit = 30
         try:
             cfg_ws = wb.worksheet("Config")
             for cfg_row in cfg_ws.get_all_records():
-                if str(cfg_row.get("key", "")).strip() == "paid_limit":
+                if str(cfg_row.get("key", "")).strip() == "signed_in_limit":
                     try:
-                        paid_limit = int(cfg_row.get("value", 30))
+                        signed_in_limit = int(cfg_row.get("value", 30))
                     except (ValueError, TypeError):
                         pass
         except Exception:
@@ -1786,9 +1816,9 @@ def _update_user_usage_in_gsheet(email: str, new_samples: list) -> None:
                 old_count = int(row.get("usage_count") or 0)
                 old_samples = str(row.get("samples") or "").strip()
                 old_samples_set = {s.strip().lower() for s in old_samples.split(",") if s.strip()}
-                # Only bill samples not already recorded for this user -- reruns
+                # Only count samples not already recorded for this user -- reruns
                 # of the same DOI/paper resolve to the same accessions, and
-                # those must not be counted (and charged) a second time.
+                # those must not be counted against the limit a second time.
                 seen_in_batch = set()
                 net_new = []
                 for s in new_samples:
@@ -1807,14 +1837,138 @@ def _update_user_usage_in_gsheet(email: str, new_samples: list) -> None:
 
         # No existing row — create one
         deduped_new = list(dict.fromkeys(s.strip() for s in new_samples if s.strip()))
-        ws.append_row([email.strip(), len(deduped_new), paid_limit, ", ".join(deduped_new)])
+        ws.append_row([email.strip(), len(deduped_new), signed_in_limit, ", ".join(deduped_new)])
+    except Exception:
+        pass  # never crash the pipeline for tracking
+
+
+def _get_anon_usage_from_gsheet(session_id: str) -> dict:
+    """Return {permitted_samples, usage_count, samples} for an anonymous session.
+
+    Mirrors _get_user_config_from_gsheet but keyed by session_id instead of
+    email, and capped at the global free_limit instead of signed_in_limit.
+    """
+    fallback = {"permitted_samples": 10, "usage_count": 0, "samples": []}
+    if not session_id:
+        return fallback
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        raw = os.environ.get("GCP_CREDS_JSON", "")
+        if not raw:
+            return fallback
+        creds_dict = json.loads(raw)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        wb = client.open("Report")
+
+        free_limit = 10
+        try:
+            cfg_ws = wb.worksheet("Config")
+            for row in cfg_ws.get_all_records():
+                if str(row.get("key", "")).strip() == "free_limit":
+                    try:
+                        free_limit = int(row.get("value", 10))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+        ws = _open_or_create_worksheet(
+            wb, "AnonUsage",
+            ["session_id", "usage_count", "permitted_samples", "samples"]
+        )
+        rows = ws.get_all_records()
+
+        for row in rows:
+            if str(row.get("session_id", "")).strip() == session_id:
+                usage_count = int(row.get("usage_count") or 0)
+                permitted = int(row.get("permitted_samples") or free_limit)
+                samples_str = str(row.get("samples") or "")
+                samples_list = [s.strip() for s in samples_str.split(",") if s.strip()]
+                return {"permitted_samples": permitted, "usage_count": usage_count, "samples": samples_list}
+
+        # New session: create its row with defaults
+        ws.append_row([session_id, 0, free_limit, ""])
+        return {"permitted_samples": free_limit, "usage_count": 0, "samples": []}
+    except Exception:
+        return fallback
+
+
+def _update_anon_usage_in_gsheet(session_id: str, new_samples: list) -> None:
+    """Increment usage_count and append accession IDs for this anonymous session."""
+    if not session_id or not new_samples:
+        return
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        raw = os.environ.get("GCP_CREDS_JSON", "")
+        if not raw:
+            return
+        creds_dict = json.loads(raw)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        wb = client.open("Report")
+
+        free_limit = 10
+        try:
+            cfg_ws = wb.worksheet("Config")
+            for cfg_row in cfg_ws.get_all_records():
+                if str(cfg_row.get("key", "")).strip() == "free_limit":
+                    try:
+                        free_limit = int(cfg_row.get("value", 10))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
+        ws = _open_or_create_worksheet(
+            wb, "AnonUsage",
+            ["session_id", "usage_count", "permitted_samples", "samples"]
+        )
+        rows = ws.get_all_records()
+
+        for i, row in enumerate(rows, start=2):  # row 1 is the header
+            if str(row.get("session_id", "")).strip() == session_id:
+                old_count = int(row.get("usage_count") or 0)
+                old_samples = str(row.get("samples") or "").strip()
+                old_samples_set = {s.strip().lower() for s in old_samples.split(",") if s.strip()}
+                seen_in_batch = set()
+                net_new = []
+                for s in new_samples:
+                    key = s.strip().lower()
+                    if key and key not in old_samples_set and key not in seen_in_batch:
+                        net_new.append(s)
+                        seen_in_batch.add(key)
+                if not net_new:
+                    return
+                new_count = old_count + len(net_new)
+                new_samples_str = ", ".join(net_new)
+                combined = (old_samples + ", " + new_samples_str) if old_samples else new_samples_str
+                ws.update_cell(i, 2, new_count)
+                ws.update_cell(i, 4, combined)
+                return
+
+        # No existing row — create one
+        deduped_new = list(dict.fromkeys(s.strip() for s in new_samples if s.strip()))
+        ws.append_row([session_id, len(deduped_new), free_limit, ", ".join(deduped_new)])
     except Exception:
         pass  # never crash the pipeline for tracking
 
 
 def _get_config_from_gsheet() -> dict:
-    """Read free_limit and paid_limit from the Config sheet in the Report workbook."""
-    defaults = {"free_limit": 10, "paid_limit": 30}
+    """Read free_limit and signed_in_limit from the Config sheet in the Report workbook."""
+    defaults = {"free_limit": 10, "signed_in_limit": 30}
     try:
         import gspread
         from oauth2client.service_account import ServiceAccountCredentials
@@ -1839,14 +1993,14 @@ def _get_config_from_gsheet() -> dict:
 
         if not rows:
             config_ws.append_row(["free_limit", "10", "Max samples for guest (not signed-in) users"])
-            config_ws.append_row(["paid_limit", "30", "Max samples for signed-in users"])
+            config_ws.append_row(["signed_in_limit", "30", "Max samples for signed-in users"])
             return defaults
 
         result = dict(defaults)
         for row in rows:
             key = str(row.get("key", "")).strip()
             val = row.get("value", "")
-            if key in ("free_limit", "paid_limit"):
+            if key in ("free_limit", "signed_in_limit"):
                 try:
                     result[key] = int(val)
                 except (ValueError, TypeError):
