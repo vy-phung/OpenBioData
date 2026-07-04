@@ -5,7 +5,7 @@ import re
 import tempfile
 import uuid
 
-import field_aliases
+import metadata_merge
 from typing import Any, Dict, List, Optional
 
 try:
@@ -338,6 +338,7 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
         conflict_parts:    list = []
         extra: dict = {}          # per-field explanation detail for Sheet 2
         fields_emitted: list = [] # fields that got a row[] value, in order (niche + promoted Pass 2)
+        field_sources: dict = {}  # field -> [source_label, ...] from merge_metadata_into_table, when available
 
         def _emit_field(field: str, value: str, raw_explanation: str, strip_method_prefix: bool = False) -> str:
             """Parse [Sources:]/[Conflict:] tags out of raw_explanation, append a clean
@@ -480,14 +481,17 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             # No user-specified fields: promote Pass 2 fields directly into Sheet 1,
             # through the same _emit_field path as niche fields so they get a
             # real explanation/source citation instead of a bare value dump.
-            # Alias-canonicalize each key against columns already on this row so
-            # synonyms (geo_loc_name vs geographic_location_country_and_or_sea)
-            # merge into one column instead of creating a duplicate.
-            for k, v in pass2_fields.items():
-                value, explanation = _pass2_value_explanation(v)
-                merged_key = field_aliases.canonicalize_field_name(k, row.keys())
-                if merged_key not in row:
-                    row[merged_key] = _emit_field(merged_key, value, explanation)
+            # Merge by meaning (not just exact key) via merge_metadata_into_table so
+            # synonyms (geo_loc_name vs geographic_location_country_and_or_sea) that
+            # weren't already resolved by additional_pipeline's schema-alignment pass
+            # corroborate one column instead of the second silently dropping.
+            pass2_table: dict = {}
+            metadata_merge.merge_metadata_into_table(
+                pass2_table, pass2_fields, source_label="Pass 2 (LLM)", is_llm=True,
+            )
+            for merged_key, entry in pass2_table.items():
+                row[merged_key] = _emit_field(merged_key, entry["value"], entry["explanation"])
+                field_sources[merged_key] = entry.get("sources") or []
             row["_additional_fields"] = {}
         else:
             # Ontology mode or user-specified niche fields: Pass 2 stays in Sheet 2
@@ -527,7 +531,13 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             elif narrative_text:
                 per_field_source_lines.append(f"• {field}: {narrative_text}\n  → see linked sources")
             else:
-                per_field_source_lines.append(f"• {field}: see linked sources")
+                corroborating = field_sources.get(field) or []
+                if len(set(corroborating)) > 1:
+                    per_field_source_lines.append(
+                        f"• {field}: corroborated by {', '.join(dict.fromkeys(corroborating))}"
+                    )
+                else:
+                    per_field_source_lines.append(f"• {field}: see linked sources")
 
         if not per_field_source_lines:
             per_field_source_lines_text = source_text

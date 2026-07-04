@@ -42,7 +42,7 @@ import json
 import copy
 import requests as _requests
 import csv as _csv
-import field_aliases
+import metadata_merge
 
 
 def _github_blob_to_raw(url: str) -> str:
@@ -1222,21 +1222,24 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 for k, v in acc_score["_additional_fields"].items()
             }
             aligned = model.align_to_schema(_pass2_values, standardization_schema, acc)
+            aligned_batch = {}
             for canonical, info in aligned.items():
               raw_key = info.get('from_field', '')
               raw_entry = acc_score["_additional_fields"].get(raw_key, {})
               explanation = raw_entry.get('explanation', '') if isinstance(raw_entry, dict) else ''
-              if raw_key and raw_key != canonical:
-                acc_score["_additional_fields"].pop(raw_key, None)
               if any(canonical.lower() == nc.lower() for nc in (niche_cases or [])):
                 # Sheet 1 already has this field from Pass 1 (with its own citation) -- drop the dup.
                 acc_score["_additional_fields"].pop(canonical, None)
+                acc_score["_additional_fields"].pop(raw_key, None)
                 continue
-              merged_key = field_aliases.canonicalize_field_name(
-                  canonical, acc_score["_additional_fields"].keys())
-              acc_score["_additional_fields"][merged_key] = {
-                  'value': info.get('value', ''), 'explanation': explanation,
-              }
+              if raw_key and raw_key != canonical:
+                acc_score["_additional_fields"].pop(raw_key, None)
+              aligned_batch[canonical] = {'value': info.get('value', ''), 'explanation': explanation}
+            if aligned_batch:
+              metadata_merge.merge_metadata_into_table(
+                  acc_score["_additional_fields"], aligned_batch,
+                  source_label="Schema alignment (Pass 2)", is_llm=True,
+              )
             if aligned:
               print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
           except Exception as _sa_err:
