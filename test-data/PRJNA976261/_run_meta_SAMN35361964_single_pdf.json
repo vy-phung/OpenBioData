@@ -1,0 +1,155 @@
+{
+  "pdf_extraction": [
+    {
+      "file": "test-data/PRJNA976261/FarinaR_2019.pdf",
+      "bytes": 1584626,
+      "chars_extracted": 66469
+    },
+    {
+      "file": "test-data/PRJNA976261/Molecular Oral Microbiology - 2023 - Favale - Functional profile of oral plaque microbiome  Further insight into the.pdf",
+      "bytes": 4032413,
+      "chars_extracted": 87001
+    }
+  ],
+  "ncbi_resolution": {
+    "SAMN35361964": {
+      "bioproject": "PRJNA976261",
+      "biosample": "SAMN35361964",
+      "accession": "",
+      "experiment": "SRR24828457"
+    }
+  },
+  "combined_context": {
+    "path": "test-data/PRJNA976261/contextLLM_SAMN35361964.txt",
+    "chars": 180845
+  },
+  "source_text_keys": {
+    "NCBI_bioproject": 1696,
+    "NCBI_biosample": 2138,
+    "NCBI_experiment": 4757,
+    "https://doi.org/10.1111/omi.12418": 18213,
+    "https://doi.org/10.1016/j.archoralbio.2019.05.025": 11,
+    "user_uploaded_file": 153472
+  },
+  "llm_calls": [
+    {
+      "index": 1,
+      "prompt_path": "test-data/PRJNA976261/call_llm_api_prompt.txt",
+      "answer_path": "test-data/PRJNA976261/call_llm_api_prompt_1_answer.txt",
+      "api": "Anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "prompt_chars": 188263,
+      "response_chars": 5373
+    },
+    {
+      "index": 2,
+      "prompt_path": "test-data/PRJNA976261/call_llm_api_prompt_2.txt",
+      "answer_path": "test-data/PRJNA976261/call_llm_api_prompt_2_answer.txt",
+      "api": "Anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "prompt_chars": 186927,
+      "response_chars": 3051
+    }
+  ],
+  "predefined_field_results": {
+    "study_name": {
+      "farina_2019": [
+        "rag_llm-Study name: The primary published study identified in the NCBI BioProject is Farina et al. 2019, authored by Roberto Farina and colleagues. The study name follows the convention 'Farina_2019'. [Sources: NCBI_bioproject (publications field, 'Whole metagenomic shotgun sequencing of the subgingival microbiome of diabetics and non-diabetics with different periodontal conditions'; pubmed: 31153098, doi: 10.1016/j.archoralbio.2019.05.025); user_uploaded_file (title and authorship, 'Roberto Farina et al., Archives of Oral Biology 104 (2019) 13\u201323')] [Conflict: none]"
+      ]
+    },
+    "subject_id": {
+      "10": [
+        "rag_llm-Subject ID: The BioSample record lists the sample identifier 'ind10' under the db_label='Sample name' attribute. [Sources: NCBI_biosample (Ids section, 'Id db_label=\"Sample name\">ind10</Id>'); NCBI_experiment (SAMPLE, SUBMITTER_ID: 'ind10')] [Conflict: none]"
+      ]
+    },
+    "sample_id": {
+      "ind10": [
+        "rag_llm-Sample ID: The accession number for this biological sample is SAMN35361964, as explicitly stated in the prompt and confirmed in all source records. [Sources: NCBI_biosample (primary accession, 'SAMN35361964'); NCBI_experiment (IDENTIFIERS, EXTERNAL_ID: 'SAMN35361964')] [Conflict: none]"
+      ]
+    },
+    "target_condition": {
+      "periodontitis": [
+        "rag_llm-Target condition: This sample belongs to subject ind10 in the study, identified as individual #10. Cross-referencing Table 1 (Characteristics of the study population) in the user_uploaded_file shows that patient #10 is located in the T2D\u2212P\u2212 group (healthy controls with neither type 2 diabetes nor periodontitis). The target condition for this sample is therefore 'no periodontitis' or 'none' (unaffected/control status). Per CROSS-FIELD CONSISTENCY rules, since this sample is in the control/unaffected group, the condition field must reflect absence of disease. [Sources: user_uploaded_file (Table 1, 'T2D-P- #3 Female 59 \u2013 \u2013 32 0 12'); NCBI_bioproject (description, 'four study groups based on presence/absence of poorly controlled type 2 Diabetes Mellitus and moderate-severe periodontitis')] [Conflict: none]"
+      ]
+    },
+    "control": {
+      "no": [
+        "rag_llm-Control status: Sample ind10 (subject #3 in the T2D\u2212P\u2212 group per Table 1) has no history of periodontitis and no type 2 diabetes diagnosis, meeting the full criteria for the unaffected/reference group. This sample is a control (fully unaffected group with none of the study's conditions/exposures present). [Sources: user_uploaded_file (Table 1, T2D-P- group row; Materials & Methods section 2.2.1.4, 'no history of type 2 diabetes diagnosis; no history of periodontitis')] [Conflict: none]"
+      ]
+    },
+    "body_site": {
+      "subgingival oral plaque": [
+        "rag_llm-Body site: The isolation_source attribute in NCBI BioSample explicitly states 'subgingival oral plaque'. [Sources: NCBI_biosample (Attributes section, 'isolation_source: subgingival oral plaque'); user_uploaded_file (Materials & Methods section 2.3, 'Subgingival plaque was collected with a curette')] [Conflict: none]"
+      ]
+    },
+    "sequencing_platform": {
+      "illumina nextseq 500": [
+        "rag_llm-Sequencing platform: The sequencing protocol used was 'Illumina NextSeq 500', as specified in the NCBI experiment design and confirmed in the user-uploaded paper. [Sources: NCBI_experiment (PLATFORM, ILLUMINA, INSTRUMENT_MODEL: 'NextSeq 500'); user_uploaded_file (Materials & Methods section 2.4.2, 'Samples were sequenced with an Illumina NextSeq 500 sequencer with 2 \u00d7 150-bp read')] [Conflict: none]"
+      ]
+    },
+    "host_species": {
+      "homo sapiens": [
+        "rag_llm-Host species: The host attribute in NCBI BioSample and the organism description in the experiment record both identify the host as 'Homo sapiens' (human). [Sources: NCBI_biosample (Attributes section, 'host: Homo sapiens'); NCBI_experiment (SAMPLE_ATTRIBUTE, TAG: 'host', VALUE: 'Homo sapiens')] [Conflict: none]"
+      ]
+    },
+    "age": {},
+    "gender": {}
+  },
+  "pass2_additional_fields": {
+    "host": {
+      "value": "Homo sapiens",
+      "explanation": "BioSample attribute 'host' explicitly states 'Homo sapiens'. [Sources: NCBI_biosample (Attribute attribute_name='host', 'Homo sapiens')]"
+    },
+    "isolation_source": {
+      "value": "subgingival oral plaque",
+      "explanation": "BioSample attribute 'isolation_source' specifies 'subgingival oral plaque'. [Sources: NCBI_biosample (Attribute attribute_name='isolation_source', 'subgingival oral plaque')]"
+    },
+    "collection_date": {
+      "value": "2018",
+      "explanation": "BioSample attribute 'collection_date' indicates '2018'. [Sources: NCBI_biosample (Attribute attribute_name='collection_date', '2018')]"
+    },
+    "geo_loc_name": {
+      "value": "Italy: Ferrara",
+      "explanation": "BioSample attribute 'geo_loc_name' states 'Italy: Ferrara'. [Sources: NCBI_biosample (Attribute attribute_name='geo_loc_name', 'Italy: Ferrara')]"
+    },
+    "lat_lon": {
+      "value": "44.7667642 N 11.827939 E",
+      "explanation": "BioSample attribute 'lat_lon' provides the geographic coordinates '44.7667642 N 11.827939 E'. [Sources: NCBI_biosample (Attribute attribute_name='lat_lon', '44.7667642 N 11.827939 E')]"
+    },
+    "organism": {
+      "value": "human oral metagenome",
+      "explanation": "BioSample organism field specifies 'human oral metagenome' with taxonomy ID 447426. [Sources: NCBI_biosample (Organism taxonomy_name='human oral metagenome')]"
+    },
+    "library_strategy": {
+      "value": "WGS",
+      "explanation": "SRA experiment XML specifies LIBRARY_STRATEGY as 'WGS' (whole genome shotgun). [Sources: NCBI_experiment (LIBRARY_STRATEGY, 'WGS')]"
+    },
+    "library_source": {
+      "value": "METAGENOMIC",
+      "explanation": "SRA experiment XML indicates LIBRARY_SOURCE as 'METAGENOMIC'. [Sources: NCBI_experiment (LIBRARY_SOURCE, 'METAGENOMIC')]"
+    },
+    "library_selection": {
+      "value": "size fractionation",
+      "explanation": "SRA experiment XML specifies LIBRARY_SELECTION as 'size fractionation'. [Sources: NCBI_experiment (LIBRARY_SELECTION, 'size fractionation')]"
+    },
+    "instrument_model": {
+      "value": "NextSeq 500",
+      "explanation": "SRA experiment XML indicates INSTRUMENT_MODEL as 'NextSeq 500'. [Sources: NCBI_experiment (INSTRUMENT_MODEL, 'NextSeq 500')]"
+    },
+    "dna_extraction_kit": {
+      "value": "Maxwell RSC DNA Blood Kit (Promega)",
+      "explanation": "User-uploaded paper (Farina et al. 2019) Methods section states 'DNA was isolated from frozen samples by using the Maxwell RSC DNA Blood Kit (Promega) according to the manufacturer's protocol.' [Sources: user_uploaded_file (Methods, 'Maxwell RSC DNA Blood Kit (Promega)')]"
+    }
+  },
+  "signals": {
+    "in_NCBI": true,
+    "has_pubmed": true,
+    "accession_found_in_text": true,
+    "predicted_output": false,
+    "consistent_outputs": null,
+    "num_publications": 6,
+    "missing_key_fields": false,
+    "any_key_field_lacked_id_linkage": true
+  },
+  "file_all_output_docx": "/tmp/tmp_1c6_xf_/extracted_text_SAMN35361964.docx"
+}

@@ -1,0 +1,44 @@
+{
+  "accession": "SAMN35361964",
+  "resolved_accessions_record": {
+    "SAMN35361964": {
+      "bioproject": "PRJNA976261",
+      "biosample": "SAMN35361964",
+      "accession": "",
+      "experiment": "SRR24828457"
+    }
+  },
+  "pdf_chars_extracted": 134344,
+  "source_text_keys_in_order": [
+    "NCBI_bioproject",
+    "NCBI_biosample",
+    "NCBI_experiment",
+    "https://doi.org/10.1111/omi.12418",
+    "https://doi.org/10.1016/j.archoralbio.2019.05.025",
+    "user_uploaded_file"
+  ],
+  "source_text_lengths": {
+    "NCBI_bioproject": 1696,
+    "NCBI_biosample": 2138,
+    "NCBI_experiment": 4757,
+    "https://doi.org/10.1111/omi.12418": 18213,
+    "https://doi.org/10.1016/j.archoralbio.2019.05.025": 11,
+    "user_uploaded_file": 134344
+  },
+  "combined_context_for_llm_chars": 161717,
+  "local_docx_path": "/tmp/tmpi52ye9i2/extracted_text_SAMN35361964.docx",
+  "signals": {
+    "in_NCBI": true,
+    "has_pubmed": true,
+    "accession_found_in_text": false,
+    "predicted_output": null,
+    "consistent_outputs": null,
+    "num_publications": 0,
+    "missing_key_fields": false,
+    "any_key_field_lacked_id_linkage": false
+  },
+  "captured_llm_prompts_keys": [
+    "SAMN35361964"
+  ],
+  "captured_llm_prompt_matches_combined_text": true
+}

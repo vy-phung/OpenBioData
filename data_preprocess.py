@@ -747,30 +747,67 @@ def _serialize_tables_as_text(tables) -> str:
 
 def clean_tables_format(tables):
     """
-    Ensures all tables are in consistent format: List[List[List[str]]]
-    Cleans by:
-    - Removing empty strings and rows
-    - Converting all cells to strings
-    - Handling DataFrames and list-of-lists
+    Ensures all tables are in consistent format: List[List[List[str]]] --
+    one true header row followed by data rows, cell positions preserved.
+
+    - Pandas DataFrame: header comes from the DataFrame's own column names
+      (df.columns), never from a data row -- a table's real header can
+      wrap across multiple lines during PDF/HTML extraction, leaving a
+      header-shaped fragment in row 0 of the data that is NOT the header.
+    - List of lists (no separate header available, e.g. a Word table):
+      row 0 is used as the header, same as before.
+    - Blank/merged cells are forward-filled from the last non-blank value
+      seen in that column, rather than dropped -- dropping a blank cell
+      shifts every later cell in that row one column left, misaligning it
+      with the header for the rest of that row.
+    - Rows that are entirely blank in the source are still dropped.
     """
     cleaned = []
-    if tables:
-      for table in tables:
-          standardized = []
+    if not tables:
+        return cleaned
 
-          # Case 1: Pandas DataFrame
-          if isinstance(table, pd.DataFrame):
-              table = table.fillna("").astype(str).values.tolist()
+    for table in tables:
+        header = None
+        raw_rows = None
 
-          # Case 2: List of Lists
-          if isinstance(table, list) and all(isinstance(row, list) for row in table):
-              for row in table:
-                  filtered_row = [str(cell).strip() for cell in row if str(cell).strip()]
-                  if filtered_row:
-                      standardized.append(filtered_row)
+        # Case 1: Pandas DataFrame -- has a real header in .columns
+        if isinstance(table, pd.DataFrame):
+            if table.empty:
+                continue
+            header = [str(c).strip() for c in table.columns]
+            raw_rows = [[cell.strip() for cell in row]
+                        for row in table.fillna("").astype(str).values.tolist()]
 
-          if standardized:
-              cleaned.append(standardized)
+        # Case 2: List of lists -- no separate header metadata; row 0 is
+        # the closest thing to one and is kept at that position.
+        elif isinstance(table, list) and table and all(isinstance(row, list) for row in table):
+            header = [str(c).strip() for c in table[0]]
+            raw_rows = [[str(cell).strip() for cell in row] for row in table[1:]]
+
+        if header is None:
+            continue
+
+        width = len(header)
+        for row in raw_rows:
+            width = max(width, len(row))
+
+        last_seen = [""] * width
+        filled_rows = []
+        for row in raw_rows:
+            if not any(cell for cell in row):
+                continue  # fully blank row -- drop it, same as before
+            filled_row = []
+            for i in range(width):
+                cell = row[i] if i < len(row) else ""
+                if cell:
+                    last_seen[i] = cell
+                    filled_row.append(cell)
+                else:
+                    filled_row.append(last_seen[i])
+            filled_rows.append(filled_row)
+
+        if filled_rows:
+            cleaned.append([header] + filled_rows)
 
     return cleaned
 

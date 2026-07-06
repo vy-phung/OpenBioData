@@ -1,5 +1,6 @@
 import re
 import json
+import csv
 import os
 import asyncio
 from collections import defaultdict
@@ -936,12 +937,59 @@ def clean_llm_output(llm_response_text, output_format_str):
 
 def parse_multi_sample_llm_output(raw_response: str, output_format_str):
     """
-    Parse LLM output with possibly multiple metadata lines + per-field explanations.
+    Parse LLM output for one sample's fields.
 
-    Supports two explanation layouts the LLM might produce:
-      A. One explanation line per field in order (newline-separated)
-      B. All explanations on one block with **field_name:** markers
+    Primary format (what multi_prompts() now asks for): one block per field,
+    reasoning written BEFORE the terse answer, so the model can't commit a
+    value before it has reasoned about it --
+
+        FIELD: <field_name>
+        REASONING: <narrative> [Sources: ...] [Conflict: ...] [ID-match: true|false]
+        ANSWER: <value>
+
+    Falls back to the older "Line 1 pipe-separated summary + per-field
+    explanation lines" layout (kept verbatim below) if the model doesn't
+    fully comply with the block format -- robustness net, not the norm.
     """
+    output_formats = output_format_str.split(", ") if output_format_str else []
+
+    # ── Primary: FIELD: / REASONING: / ANSWER: blocks ──────────────────────────
+    block_pattern = re.compile(
+        r'FIELD:\s*(.+?)\s*\n'
+        r'REASONING:\s*(.+?)\s*\n'
+        r'ANSWER:\s*(.+?)\s*(?=\n\s*FIELD:|\Z)',
+        re.DOTALL,
+    )
+    blocks = block_pattern.findall(raw_response)
+
+    if blocks:
+        field_map = {}
+        for field_name, reasoning, answer in blocks:
+            field_map[field_name.strip().lower()] = (reasoning.strip(), answer.strip())
+
+        metadata_list = {}
+        for output in output_formats:
+            metadata_list[output] = {"answer": "", output + "_explanation": ""}
+            match = field_map.get(output.lower())
+            if match is None:
+                metadata_list[output]["answer"] = "unknown"
+                metadata_list[output][output + "_explanation"] = "unknown"
+                continue
+            reasoning, answer = match
+            # Tolerate the model echoing "field_name: value" inside ANSWER despite instructions
+            if ": " in answer and answer.split(": ", 1)[0].strip().lower() == output.lower():
+                answer = answer.split(": ", 1)[1].strip()
+            if not answer or "unknown" in answer.lower():
+                metadata_list[output]["answer"] = "unknown"
+                metadata_list[output][output + "_explanation"] = "unknown"
+            else:
+                metadata_list[output]["answer"] = answer
+                metadata_list[output][output + "_explanation"] = reasoning
+
+        print("parsed metadata_list keys (block format):", list(metadata_list.keys()))
+        return metadata_list
+
+    # ── Fallback: older "Line 1 summary + explanation lines" layout ────────────
     metadata_list = {}
     raw_lines = raw_response.strip().split("\n")
     first_line = raw_lines[0].strip() if raw_lines else ""
@@ -952,7 +1000,6 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
         output_answers = [x.strip() for x in first_line.split(' | ')]
     else:
         output_answers = re.split(r",\s*", first_line)
-    output_formats = output_format_str.split(", ") if output_format_str else []
 
     # ── Build per-field explanation map ───────────────────────────────────────
     # Strategy A: try **field_name:** markers anywhere in the explanation block
@@ -1009,7 +1056,7 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
         else:
             metadata_list[output][output + "_explanation"] = "unknown"
 
-    print("parsed metadata_list keys:", list(metadata_list.keys()))
+    print("parsed metadata_list keys (fallback format):", list(metadata_list.keys()))
     return metadata_list
 
 def merge_metadata_outputs(metadata_list):
@@ -1093,57 +1140,245 @@ def outputs_from_multiPrompts(raw_response: str, output_format_str, acc_prompts)
       outputs[accession] = metadata_list    
   return outputs   
 
-def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_template="default",
-                  standardization_schema=None):
-  """Build per-accession prompts.
 
-  standardization_schema: dict {field_name: description} from a schema CSV
-  (e.g. cMD data dictionary + codebook).  When provided:
-    - Each requested field is annotated with its schema definition AND allowed
-      values so the LLM constrains its output to the canonical vocabulary.
-    - Output column names must exactly match the schema field names.
-  """
-  prompts = {}
-  if niche_cases:
-    fields_list = ", ".join(niche_cases)
-    if standardization_schema:
-      # Build rich, per-field instructions: definition + allowed values
-      schema_lines = []
-      for f in niche_cases:
-        entry = standardization_schema.get(f, {})
-        if isinstance(entry, dict):
-          desc    = entry.get("description", "")
-          allowed = entry.get("allowed_values", [])
+# ── Built-in default standardization schema ────────────────────────────────────
+# Used by multi_prompts() whenever the caller doesn't supply its own
+# standardization_schema dict (e.g. no schema URL was given for this run) --
+# gives every run a sensible, general baseline of field definitions/allowed
+# values instead of no schema guidance at all. Sourced from curatedMetagenomicData's
+# own data dictionary (github.com/waldronlab/curatedMetagenomicDataCuration).
+_DEFAULT_SCHEMA_CSV_TEXT = r""""col.name","col.class","unique","required","multiplevalues","description","allowedvalues","static.enum","dynamic.enum","dynamic.enum.property","delimiter","separator","corpus.type","display.order","display.group"
+"study_name","character","non-unique","required",FALSE,"Canonical study identifier (for example EinsteinA_YYYY).","[a-zA-Z-]+_[0-9]{4}|[a-zA-Z-]+_[0-9]{4}[a-zA-Z-]+|[a-zA-Z-]+_[0-9]{4}_[a-zA-Z-]+|[a-zA-Z-]+_[0-9]{4}_[a-zA-Z0-9]+",NA,NA,NA,NA,NA,"regexp",1,"00 Identifiers"
+"subject_id","character","non-unique","required",FALSE,"Unique identifier for a participant within a study. Values may be non-unique e.g. when there are repeated measures for a participant.","[0-9a-zA-Z]\S+",NA,NA,NA,NA,NA,"regexp",2,"00 Identifiers"
+"sample_id","character","unique","required",FALSE,"Unique identifier for a biospecimen/sample.","[0-9a-zA-Z]\S+",NA,NA,NA,NA,NA,"regexp",3,"00 Identifiers"
+"curator","character","non-unique","optional",TRUE,"Name(s) of curator(s) responsible for this entry.",NA,NA,NA,NA,";",NA,"any",4,"00 Identifiers"
+"pmid","integer","non-unique","optional",FALSE,"PubMed identifier of the primary publication for the study.","[0-9]{8}",NA,NA,NA,NA,NA,"integer",5,"00 Identifiers"
+"subcohort","character","non-unique","optional",FALSE,"Identifier for a subset of the study cohort.","[0-9a-zA-Z]\S+",NA,NA,NA,NA,NA,"regexp",6,"00 Identifiers"
+"target_condition","character","non-unique","required",TRUE,"Primary phenotype(s) or condition(s) investigated in the study. Lookup seed ontology IDs: NCIT:C7057; MONDO:0000001. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,"NCIT:C115935","NCIT:C7057;MONDO:0000001","descendant",";",NA,"dynamic_enum;static_enum",1,"01 Sampling / Study"
+"control","character","non-unique","required",FALSE,"Case-control role of the sample in the study. Static ontology IDs: NCIT:C142703; NCIT:C49152; NCIT:C69062. Type: static.","Study Control|Case|Not Used","NCIT:C142703|NCIT:C49152|NCIT:C69062",NA,NA,NA,NA,"static_enum",2,"01 Sampling / Study"
+"country","character","non-unique","optional",FALSE,"Country where the participant resides and/or the sample was collected. Lookup seed ontology IDs: NCIT:C25464. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"NCIT:C25464","descendant",NA,NA,"dynamic_enum",3,"01 Sampling / Study"
+"body_site","character","non-unique","required",FALSE,"Anatomical body site from which the sample was collected. Static ontology IDs: UBERON:0001988; UBERON:0000167; UBERON:0001003; UBERON:0000996; UBERON:0001707; UBERON:0001913. Type: static.","feces|oral cavity|skin epidermis|vagina|nasal cavity|milk","UBERON:0001988|UBERON:0000167|UBERON:0001003|UBERON:0000996|UBERON:0001707|UBERON:0001913",NA,NA,NA,NA,"static_enum",4,"01 Sampling / Study"
+"body_site_details","character","non-unique","optional",TRUE,"More specific anatomical subsite for sample collection than body_site. Lookup seed ontology IDs: UBERON:0001062. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"UBERON:0001062",NA,";",NA,"dynamic_enum",5,"01 Sampling / Study"
+"days_from_first_collection","integer","non-unique","optional",FALSE,"Days elapsed since the first collection time point in longitudinal studies.","[0-9]+",NA,NA,NA,NA,NA,"integer",6,"01 Sampling / Study"
+"lifestyle","character","non-unique","optional",FALSE,"Lifestyle category (primarily used for traditional or non-westernized populations).","Hunter-gatherer|Agriculturalist|Agropastoralist|Pastoralist|Fisher",NA,NA,NA,NA,NA,"custom_enum",7,"01 Sampling / Study"
+"location","character","non-unique","optional",FALSE,"Free-text additional location detail (for example city or region).",".+",NA,NA,NA,NA,NA,"any",8,"01 Sampling / Study"
+"probing_pocket_depth","character","non-unique","optional",TRUE,"Tooth surface/region where periodontal pocket depth was measured. Static ontology IDs: FMA:64849; FMA:55649; FMA:55647; FMA:55650. Type: static.","Buccal surface|Distal surface of tooth|Lingual surface of tooth|Mesial surface of tooth","FMA:64849|FMA:55649|FMA:55647|FMA:55650",NA,NA,"<;>",NA,"static_enum",9,"01 Sampling / Study"
+"westernized","character","non-unique","optional",FALSE,"Whether the participant is classified as westernized.","Yes|No",NA,NA,NA,NA,NA,"binary",10,"01 Sampling / Study"
+"antibiotics_exclusion_period","double","non-unique","optional",FALSE,"Minimum washout period from antibiotic use required by study criteria.","[0-9]+\.?[0-9]*",NA,NA,NA,NA,NA,"regexp",11,"01 Sampling / Study"
+"antibiotics_exclusion_period_unit","character","non-unique","optional",FALSE,"Unit used for `antibiotics_exclusion_period`. Static ontology IDs: NCIT:C25301; NCIT:C29844; NCIT:C29846. Type: static.","Day|Week|Month","NCIT:C25301|NCIT:C29844|NCIT:C29846",NA,NA,NA,NA,"static_enum",12,"01 Sampling / Study"
+"probing_pocket_depth_value","character","non-unique","optional",TRUE,"Numeric probing depth measurement corresponding to `probing_pocket_depth`.","^\d+(\.\d+)?$",NA,NA,NA,"<;>",NA,"character",13,"01 Sampling / Study"
+"dna_extraction_kit","character","non-unique","optional",FALSE,"Name of the DNA extraction kit or protocol used.","Qiagen|Gnome|MoBio|MPBio|NorgenBiotek|Illuminakit|Maxwell_LEV|PSP_Spin_Stool|Tiangen|PowerSoil|Chemagen|other|PowerSoilPro|ZR_Fecal_DNA_MiniPrep|KAMA_Hyper_Prep|thermo_fisher|QIAamp",NA,NA,NA,NA,NA,"custom_enum",1,"02 Sequencing / QC"
+"ncbi_accession","character","non-unique","optional",FALSE,"NCBI SRA/ENA accession(s) associated with the sample or run.","[ES]R[SR][0-9]+",NA,NA,NA,NA,NA,"regexp",4,"02 Sequencing / QC"
+"sequencing_platform","character","non-unique","required",FALSE,"Sequencing platform/instrument used to generate the data.","IlluminaHiSeq|IlluminaMiSeq|IlluminaNextSeq|IlluminaNovaSeq|IonProton|BGISeq",NA,NA,NA,NA,NA,"custom_enum",7,"02 Sequencing / QC"
+"age","integer","non-unique","optional",FALSE,"Participant age in the unit specified by `age_unit`.","[0-9]+",NA,NA,NA,NA,NA,"integer",1,"03 Subject / Demographics"
+"age_group","character","non-unique","optional",FALSE,"Age group classification: Newborn (< 1 month/28 days), Infant (>= 1 month & < 2 yrs), Child (>= 2 yrs & < 11 yrs), Adolescent (>= 11 yrs & < 18 yrs), Adult (>= 18 yrs & < 65 yrs), Elderly (>= 65 yrs) Static ontology IDs: NCIT:C16731; NCIT:C27956; NCIT:C16423; NCIT:C27954; NCIT:C17600; NCIT:C16268. Type: static.","Newborn|Infant|Child|Adolescent|Adult|Elderly","NCIT:C16731|NCIT:C27956|NCIT:C16423|NCIT:C27954|NCIT:C17600|NCIT:C16268",NA,NA,NA,NA,"static_enum",2,"03 Subject / Demographics"
+"age_unit","character","non-unique","optional",FALSE,"Unit used to report `age`. Static ontology IDs: NCIT:C25301; NCIT:C29844; NCIT:C29846; NCIT:C29848. Type: static.","Day|Week|Month|Year","NCIT:C25301|NCIT:C29844|NCIT:C29846|NCIT:C29848",NA,NA,NA,NA,"static_enum",3,"03 Subject / Demographics"
+"ancestry","character","non-unique","optional",FALSE,"Broad ancestry category (children of HANCESTRO:0004). Lookup seed ontology IDs: HANCESTRO:0004. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"HANCESTRO:0004","children",NA,NA,"dynamic_enum",4,"03 Subject / Demographics"
+"ancestry_details","character","non-unique","optional",TRUE,"More specific ancestry term(s) typically refer to descendants of the selected ancestry category. Lookup seed ontology IDs: HANCESTRO:0004. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"HANCESTRO:0004","descendant",";",NA,"dynamic_enum",5,"03 Subject / Demographics"
+"family","character","non-unique","optional",FALSE,"Family identifier when multiple related participants are included.",".+",NA,NA,NA,NA,NA,"any",6,"03 Subject / Demographics"
+"family_role","character","non-unique","optional",FALSE,"Participant role within the family (for family-based sampling).","child|mother|father",NA,NA,NA,NA,NA,"custom_enum",7,"03 Subject / Demographics"
+"sex","character","non-unique","optional",FALSE,"Biological sex of the subject Static ontology IDs: NCIT:C16576; NCIT:C20197. Type: static.","Female|Male","NCIT:C16576|NCIT:C20197",NA,NA,NA,NA,"static_enum",8,"03 Subject / Demographics"
+"zigosity","character","non-unique","optional",FALSE,"Twin zygosity status.","monozygotic|dizygotic",NA,NA,NA,NA,NA,"custom_enum",9,"03 Subject / Demographics"
+"age_min","double","non-unique","optional",FALSE,"Minimum possible age. For samples only with 'age_group' information, this represents the definition of a given age group. For specific age information, 'age_min' and 'age_max' are identical.","[0-9]+\.?[0-9]*",NA,NA,NA,NA,NA,"regexp",10,"03 Subject / Demographics"
+"age_max","double","non-unique","optional",FALSE,"Maximum possible age. For samples only with 'age_group' information, this represents the definition of a given age group. For specific age information, 'age_min' and 'age_max' are identical.","[0-9]+\.?[0-9]*",NA,NA,NA,NA,NA,"regexp",11,"03 Subject / Demographics"
+"age_years","double","non-unique","optional",FALSE,"Age in years","[0-9]+\.?[0-9]*",NA,NA,NA,NA,NA,"regexp",12,"03 Subject / Demographics"
+"antibiotics_current_use","character","non-unique","optional",FALSE,"Whether the participant is currently using antibiotics.","Yes|No",NA,NA,NA,NA,NA,"binary",13,"04 Clinical / Intervention"
+"bmi","double","non-unique","optional",FALSE,"Body mass index (BMI; EFO:0004340) calculated as weight (kg) divided by height squared (m²).","[0-9]+\.?[0-9]*",NA,NA,NA,NA,NA,"regexp",14,"04 Clinical / Intervention"
+"dietary_restriction","character","non-unique","optional",TRUE,"Dietary regime (partial match to SNOMED:182922004 or SNOMED:162536008)","omnivore|low_gluten|high_gluten|gluten_free|vegetarian|vegan|pescatarian|high_fiber|low_fiber|paleo|equal_protein_fat_carbs|high_complex_carbs|lactose_intolerance|others",NA,NA,NA,";",NA,"custom_enum",15,"04 Clinical / Intervention"
+"disease","character","non-unique","optional",TRUE,"Reported disease or condition term(s) for the participant; use Healthy when no target condition is detected. Lookup seed ontology IDs: NCIT:C7057; MONDO:0000001. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,"NCIT:C115935","NCIT:C7057;MONDO:0000001","descendant",";",NA,"dynamic_enum;static_enum",16,"04 Clinical / Intervention"
+"disease_details","character","non-unique","optional",TRUE,"More specific disease or condition term(s) for the participant; use Healthy when appropriate. Lookup seed ontology IDs: NCIT:C7057; MONDO:0000001. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,"NCIT:C115935","NCIT:C7057;MONDO:0000001","descendant",";",NA,"dynamic_enum;static_enum",17,"04 Clinical / Intervention"
+"disease_response_orr","character","non-unique","optional",FALSE,"Overall response rate (ORR; NCIT:C96613) indicator for treatment response.","Yes|No",NA,NA,NA,NA,NA,"binary",18,"04 Clinical / Intervention"
+"disease_response_pfs","character","non-unique","optional",FALSE,"Progression Free Survival (PFS, EFO:0004920): Progression free survival is a measurement from a defined time point e.g. diagnosis and indicates that the disease did not progress i.e. tumours did not increase in size and new incidences did not occur. PFS is usually used in analyzing results of treatment for advanced disease.","Yes|No",NA,NA,NA,NA,NA,"binary",19,"04 Clinical / Intervention"
+"disease_response_pfs_month","integer","non-unique","optional",FALSE,"Progression-free survival follow-up time in months.","[0-9]+",NA,NA,NA,NA,NA,"integer",20,"04 Clinical / Intervention"
+"disease_response_recist","character","non-unique","optional",FALSE,"Response Evaluation Criteria in Solid Tumors (RECIST, DICOM:112022): Standard parameters to be used when documenting response of solid tumors to treatment; a set of published rules that define when cancer patients improve (`respond`), stay the same (`stable`), or worsen (`progression`) during treatments. (from www.recist.com) Static ontology IDs: NCIT:C159715; NCIT:C159547; NCIT:C159716; NCIT:C159546. Type: static.","RECIST Complete Response|RECIST Partial Response|RECIST Progressive Disease|RECIST Stable Disease","NCIT:C159715|NCIT:C159547|NCIT:C159716|NCIT:C159546",NA,NA,NA,NA,"static_enum",21,"04 Clinical / Intervention"
+"feces_phenotype","character","non-unique","optional",TRUE,"Stool-related phenotype or clinical measurement type. Static ontology IDs: SNOMED:443172007; NCIT:C82005; NCIT:C191036. Type: static.","Bristol stool form score (observable entity)|Calprotectin Measurement|Harvey-Bradshaw Index Clinical Classification","SNOMED:443172007|NCIT:C82005|NCIT:C191036",NA,NA,"<;>",NA,"static_enum",22,"04 Clinical / Intervention"
+"fmt_id","character","non-unique","optional",TRUE,"Study-specific identifier assigned to FMT participants.",".+",NA,NA,NA,";",NA,"any",23,"04 Clinical / Intervention"
+"fmt_role","character","non-unique","optional",FALSE,"Role in fecal microbiota transplantation (donor or recipient before/after procedure).","Recipient (after procedure)|Recipient (before procedure)|Donor",NA,NA,NA,NA,NA,"custom_enum",24,"04 Clinical / Intervention"
+"hla","character","non-unique","optional",TRUE,"Human leukocyte antigen (HLA) typing information. Lookup seed ontology IDs: MRO:0001676. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"MRO:0001676","descendant",";",NA,"dynamic_enum",25,"04 Clinical / Intervention"
+"neonatal_birth_weight","numeric","non-unique","optional",FALSE,"Birth weight (EFO:0004344) recorded in grams.","^[1-9]\d*(\.\d+)?$",NA,NA,NA,NA,NA,"numeric",26,"04 Clinical / Intervention"
+"neonatal_delivery_procedure","character","non-unique","optional",FALSE,"Delivery method at birth (NCIT:C81179). Static ontology IDs: NCIT:C114141; NCIT:C92772; NCIT:C46088; NCIT:C81303. Type: static.","Elective Cesarean Delivery|Emergency Cesarean Delivery|Cesarean Section|Vaginal Delivery","NCIT:C114141|NCIT:C92772|NCIT:C46088|NCIT:C81303",NA,NA,NA,NA,"static_enum",27,"04 Clinical / Intervention"
+"neonatal_feeding_method","character","non-unique","optional",TRUE,"Infant feeding method(s) during early life.","Mixed Feeding|Exclusively Breastfeeding|Exclusively Formula Feeding|No Breastfeeding",NA,NA,NA,";",NA,"custom_enum",28,"04 Clinical / Intervention"
+"neonatal_gestational_age","numeric","non-unique","optional",FALSE,"Gestational age at birth (EFO:0005112) in weeks.","^[1-9]\d*(\.\d+)?$",NA,NA,NA,NA,NA,"numeric",29,"04 Clinical / Intervention"
+"neonatal_preterm_birth","character","non-unique","optional",FALSE,"Birth when a fetus is less than 37 weeks and 0 days gestational age (NCIT:C92861). Static ontology IDs: NCIT:C92861; NCIT:C114093. Type: static.","Preterm Birth|Term Birth","NCIT:C92861|NCIT:C114093",NA,NA,NA,NA,"static_enum",30,"04 Clinical / Intervention"
+"obgyn_birth_control","character","non-unique","optional",FALSE,"Whether oral contraceptive birth control is currently used.","Yes|No",NA,NA,NA,NA,NA,"binary",31,"04 Clinical / Intervention"
+"obgyn_lactating","character","non-unique","optional",FALSE,"An indication that the subject is currently producing milk. (NCIT:C82463)","Yes|No",NA,NA,NA,NA,NA,"binary",32,"04 Clinical / Intervention"
+"obgyn_menopause","character","non-unique","optional",FALSE,"Menopausal status of the participant. Lookup seed ontology IDs: NCIT:C106541. Type: looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,NA,"NCIT:C106541","descendant",NA,NA,"dynamic_enum",33,"04 Clinical / Intervention"
+"obgyn_pregnancy","character","non-unique","optional",FALSE,"Current pregnancy status of the participant. Static ontology IDs: NCIT:C124295; NCIT:C82475. Type: static.","Pregnant|Not Pregnant","NCIT:C124295|NCIT:C82475",NA,NA,NA,NA,"static_enum",34,"04 Clinical / Intervention"
+"smoker","character","non-unique","optional",TRUE,"Tobacco smoking status/history; use `Non-smoker (finding)` only when past smoking history is unavailable. Static ontology IDs: SNOMED:77176002; SNOMED:8392000; SNOMED:8517006; SNOMED:266919005. Type: static.","Smoker (finding)|Non-smoker (finding)|Ex-smoker (finding)|Never smoked tobacco (finding)","SNOMED:77176002|SNOMED:8392000|SNOMED:8517006|SNOMED:266919005",NA,NA,";",NA,"static_enum",35,"04 Clinical / Intervention"
+"treatment","character","non-unique","optional",TRUE,"Treatment(s) or medication(s) administered to the participant. Static ontology IDs: NCIT:C41132. Lookup seed ontology IDs: NCIT:C1908. Type: static + looked_up. Looked up: Yes. Includes child terms: Yes. Existing-dataset-only values now: Conditional (Yes only when lookup falls back to curated existing dataset values)",NA,"NCIT:C41132","NCIT:C1908","descendant",";",NA,"dynamic_enum;static_enum",36,"04 Clinical / Intervention"
+"tumor_staging_ajcc","character","non-unique","optional",FALSE,"American Joint Committee on Cancer (tumor staging) (SNOMED:258236004). A system to describe the amount and spread of cancer in a patient's body","0|I|II|III|IV|I/II|III/IV|IIIA|IIIB",NA,NA,NA,NA,NA,"static_enum",37,"04 Clinical / Intervention"
+"tumor_staging_tnm","character","non-unique","optional",FALSE,"Tumor-node-metastasis (TNM) tumor staging system (tumor staging) (SNOMED:254293002).A system to describe the amount and spread of cancer in a patient's body","T[X1-4]N[X0-3]M[X0-1]|pTis|Tis",NA,NA,NA,NA,NA,"regexp",38,"04 Clinical / Intervention"
+"biomarker_name","character","non-unique","optional",TRUE,"A measurable and quantifiable characteristic or substance that serves as an indicator of a biological state, condition, or process within an organism.",NA,NA,NA,NA,";",NA,"dynamic_enum",39,"04 Clinical / Intervention"
+"biomarker_unit","character","non-unique","optional",TRUE,"Unit for biomarker",NA,NA,NA,NA,";",NA,"any",40,"04 Clinical / Intervention"
+"biomarker_value","numeric","non-unique","optional",TRUE,"Value for biomarker","[0-9]+\.?[0-9]*",NA,NA,NA,";",NA,"regexp",41,"04 Clinical / Intervention"
+"disease_response_os","numeric","non-unique","optional",FALSE,"Overall survival duration (time to death from any cause; NCIT:C125201).","^[1-9]\d*(\.\d+)?$",NA,NA,NA,NA,NA,"numeric",42,"04 Clinical / Intervention"
+"disease_response_os_unit","character","non-unique","optional",FALSE,"Unit used to report `disease_response_os`. Static ontology IDs: NCIT:C25301; NCIT:C29844; NCIT:C29846; NCIT:C29848. Type: static.","Day|Week|Month|Year","NCIT:C25301|NCIT:C29844|NCIT:C29846|NCIT:C29848",NA,NA,NA,NA,"static_enum",43,"04 Clinical / Intervention"
+"ecog_performance_status","character","non-unique","optional",FALSE,"A performance status scale designed to assess disease progression and its affect on the daily living abilities of the patient. (NCIT:C105721) Static ontology IDs: NCIT:C105722; NCIT:C105723; NCIT:C105724; NCIT:C105725; NCIT:C105726; NCIT:C105727; NCIT:C105728. Type: static.","ECOG Performance Status 0|ECOG Performance Status 1|ECOG Performance Status 2|ECOG Performance Status 2 or Higher|ECOG Performance Status 3|ECOG Performance Status 4|ECOG Performance Status 5","NCIT:C105722|NCIT:C105723|NCIT:C105724|NCIT:C105725|NCIT:C105726|NCIT:C105727|NCIT:C105728",NA,NA,NA,NA,"static_enum",44,"04 Clinical / Intervention"
+"feces_phenotype_value","character","non-unique","optional",TRUE,"Value(s) corresponding to `feces_phenotype` measurements.","^\d+(\.\d+)?$",NA,NA,NA,"<;>",NA,"character",45,"04 Clinical / Intervention"
+"tumor_size_measurement","numeric","non-unique","optional",FALSE,"Tumor size measurement from clinical assessment or resected specimen (NCIT:C106303).","^[1-9]\d*(\.\d+)?$",NA,NA,NA,NA,NA,"numeric",46,"04 Clinical / Intervention"
+"tumor_size_residual_measurement","character","non-unique","optional",FALSE,"Residual tumor size measurement after treatment/procedure (NCIT:C198194).","^[1-9]\d*(\.\d+)?$",NA,NA,NA,NA,NA,"numeric",47,"04 Clinical / Intervention"
+"uncurated_metadata","character","non-unique","optional",TRUE,"Additional free-text metadata not represented by existing fields.",".+",NA,NA,NA,"<;>",NA,"any",1,"05 Other"
+"host_species","character","non-unique","required",FALSE,"Host species of the participant.",NA,NA,"NCBITaxon:1","descendant",NA,NA,"dynamic_enum",14,"01 Sampling / Study"
+"""
+
+_default_schema_cache = None
+
+
+def _parse_schema_csv_text(csv_text: str) -> dict:
+    """Parse a data-dictionary/codebook CSV's text into the same schema-dict shape
+    additional_pipeline.fetch_standardization_schema() builds from a live CSV URL:
+    {field_name: {"description": str, "allowed_values": list, "required": bool}}.
+    Column-detection logic mirrors that function (kept in sync manually since
+    model.py must not import additional_pipeline -- see circular-import note at
+    additional_pipeline.py's own `model = _try_import("model")`).
+    """
+    schema: dict = {}
+    lines = csv_text.splitlines()
+    reader = csv.DictReader(lines)
+    headers = reader.fieldnames or []
+    if not headers:
+        return schema
+
+    name_col = next(
+        (h for h in headers if any(k in h.lower() for k in ("name", "field", "variable", "column"))),
+        headers[0]
+    )
+    desc_col = next(
+        (h for h in headers if any(k in h.lower() for k in ("description", "definition", "label", "detail"))),
+        headers[1] if len(headers) > 1 else None
+    )
+    # Prefer a header explicitly saying "allowed" (e.g. "allowedvalues") over the
+    # broader value/code/category/option keywords -- avoids matching a
+    # "multiplevalues" boolean-flag column (whether the field permits multiple
+    # values) ahead of the actual allowed-values column.
+    val_col = next((h for h in headers if "allowed" in h.lower()), None)
+    if not val_col:
+        val_col = next(
+            (h for h in headers
+             if any(k in h.lower() for k in ("value", "code", "category", "option"))
+             and "multiplevalue" not in h.lower().replace("_", "").replace(" ", "")),
+            None
+        )
+    required_col = next((h for h in headers if "required" in h.lower()), None)
+    is_codebook = val_col is not None
+
+    for row in reader:
+        field = (row.get(name_col) or "").strip()
+        if not field:
+            continue
+        desc = (row.get(desc_col) or "").strip() if desc_col else ""
+        val = (row.get(val_col) or "").strip() if val_col else ""
+        req_raw = (row.get(required_col) or "").strip().lower() if required_col else ""
+        is_required = req_raw in ("required", "true", "yes", "1")
+
+        if field not in schema:
+            schema[field] = {"description": desc, "allowed_values": [], "required": is_required}
         else:
-          desc    = str(entry)
-          allowed = []
+            if desc and not schema[field]["description"]:
+                schema[field]["description"] = desc
+            if is_required:
+                schema[field]["required"] = True
+
+        if is_codebook and val and val.upper() not in ("NA", "N/A"):
+            for v in val.split("|"):
+                v = v.strip()
+                if v and v not in schema[field]["allowed_values"]:
+                    schema[field]["allowed_values"].append(v)
+
+    return schema
+
+
+def _get_default_schema() -> dict:
+    """Memoized parse of the built-in default schema (parsed once, reused)."""
+    global _default_schema_cache
+    if _default_schema_cache is None:
+        _default_schema_cache = _parse_schema_csv_text(_DEFAULT_SCHEMA_CSV_TEXT)
+    return _default_schema_cache
+
+
+def _build_schema_hint(fields, schema: dict) -> str:
+    """Build the STANDARDIZATION RULES prompt block for the given fields from a
+    schema dict {field: {"description": str, "allowed_values": list}}. Shared by
+    Pass 1 (multi_prompts) and Pass 2 (_extract_additional_fields) so both use
+    identical field-definition/allowed-value/CONTROL-boolean phrasing. General --
+    works with any schema dict (a user-supplied CSV or the built-in default),
+    not tied to any particular set of field names.
+    """
+    if not fields or not schema:
+        return ""
+    schema_lines = []
+    for f in fields:
+        entry = schema.get(f, {})
+        if isinstance(entry, dict):
+            desc = entry.get("description", "")
+            allowed = entry.get("allowed_values", [])
+        else:
+            desc = str(entry)
+            allowed = []
+        if not desc and not allowed:
+            continue  # field not in this schema -- nothing to annotate
         line = f"  - {f}"
         if desc:
-          line += f": {desc}"
+            line += f": {desc}"
+        # Any field whose name is/contains "control" gets an explicit definition,
+        # regardless of whether its allowed values look boolean or enum-shaped --
+        # different schemas encode case/control differently (TRUE/FALSE, or
+        # "Study Control"/"Case"/..., or free text), but the underlying concept
+        # and the risk of the model guessing "case" by default is the same.
+        _is_control_field = bool(re.search(r'\bcontrol\b', f.lower()))
+        _control_def = (
+            "CONTROL means the sample belongs to the group with NONE of the "
+            "study's conditions/exposures present -- the fully unaffected/"
+            "reference group -- not merely 'not the primary condition being "
+            "studied' (a sample with a different or secondary condition is NOT "
+            "a control). If you cannot confidently determine full-unaffected "
+            "status for this specific sample, output 'unknown' rather than "
+            "defaulting to a case/disease label."
+        ) if _is_control_field else ""
         if allowed:
-          # Boolean fields need special handling so LLM doesn't confuse "FALSE" with "absent"
-          bool_vals = {v.strip().lower() for v in allowed}
-          if bool_vals <= {"true", "false", "0", "1", "yes", "no"}:
-            line += (
-              f" [BOOLEAN — output TRUE if sample IS a control/reference, "
-              f"FALSE if sample is a case/disease/treatment group. "
-              f"Allowed: {', '.join(str(v) for v in allowed[:10])}. "
-              f"Do NOT output 'unknown' when you can determine whether it is a case or control from the text.]"
-            )
-          else:
-            line += f" [allowed values: {', '.join(str(v) for v in allowed[:20])}]"
+            bool_vals = {v.strip().lower() for v in allowed}
+            if bool_vals <= {"true", "false", "0", "1", "yes", "no"}:
+                line += (
+                    f" [BOOLEAN — output TRUE if sample IS a control/reference, "
+                    f"FALSE if sample is a case/disease/treatment group. {_control_def} "
+                    f"Allowed: {', '.join(str(v) for v in allowed[:10])}. "
+                    f"Do NOT output 'unknown' when you can confidently classify case vs. control.]"
+                )
+            else:
+                line += f" [allowed values: {', '.join(str(v) for v in allowed[:20])}. {_control_def}]"
+        elif _is_control_field:
+            line += f" [{_control_def}]"
         schema_lines.append(line)
 
-      schema_hint = (
+    if not schema_lines:
+        return ""
+    return (
         "STANDARDIZATION RULES — use these exact field definitions and "
-        "allowed values from the user-provided schema:\n"
+        "allowed values from the schema:\n"
         + "\n".join(schema_lines)
         + "\n\nIMPORTANT: Use ONLY the allowed values listed above. "
         "Choose the closest match when exact wording differs. "
         "Write 'unknown' ONLY when the information is genuinely absent from ALL source texts.\n"
-      )
-    else:
-      schema_hint = ""
+    )
+
+
+def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_template="default",
+                  standardization_schema=None):
+  """Build per-accession prompts.
+
+  standardization_schema: dict {field_name: {"description": str, "allowed_values": list}}
+  from a schema CSV (e.g. cMD data dictionary + codebook). When omitted/empty, falls
+  back to the built-in default schema (_get_default_schema()) so every run gets some
+  standardization guidance even without a user-supplied schema URL. When a real dict
+  is supplied (e.g. fetched from a user's own standardization_url), it's used instead.
+  Each requested field is annotated with its schema definition AND allowed values so
+  the LLM constrains its output to the canonical vocabulary.
+  """
+  prompts = {}
+  if niche_cases:
+    fields_list = ", ".join(niche_cases)
+    _schema = standardization_schema if standardization_schema else _get_default_schema()
+    schema_hint = _build_schema_hint(niche_cases, _schema)
 
     # Build per-sample-table hint if disease/control fields are requested
     _field_lower = [f.lower() for f in niche_cases]
@@ -1152,20 +1387,59 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
         for kw in ("disease", "control", "phenotype", "condition", "health", "group", "status", "diagnosis")
     )
     _disease_hint = (
-        "IMPORTANT — per-subject assignment: many studies have multiple participant groups "
-        "(e.g. healthy control, T2D, periodontitis, T2D+periodontitis). "
-        "Search for a table or supplementary file that maps individual sample IDs / subject IDs / "
-        "NCBI BioSample accessions to their specific group. "
-        "The accession being analysed is shown in 'Prompt N:' above — find its row in that table and "
-        "extract the group/disease for THAT SPECIFIC SAMPLE, not the study as a whole. "
-        "Check NCBI BioSample attributes (e.g. 'disease', 'health_state', 'clinical_diagnosis', "
-        "'group', 'treatment', 'subject_group') and also paper tables / supplementary metadata tables. "
-        "Do NOT report the full list of study groups — report only the group for this individual sample.\n"
+        "CONTROL DEFINITION: a 'control' sample belongs to the group with NONE of the study's conditions/exposures present (the fully unaffected/reference group) -- "
+        "not merely 'not the primary condition being studied.' If you cannot confidently determine full-unaffected status for this sample, output 'unknown' rather than "
+        "defaulting to a case/disease label.\n"
+        "Target condition definition: Primary phenotype(s), condition(s), or disease status THAT THIS SPECIFIC SAMPLE ACTUALLY HAS in the study, "
+        "as determined by this sample's group assignment or individual clinical status. NOT the study's overall research topic.\n"
+        "CROSS-FIELD CONSISTENCY: several requested fields may describe the same underlying case/control assignment from different angles "
+        "(e.g. a case/control-group field alongside a condition/phenotype/diagnosis/health-status field). Whatever you conclude for one such "
+        "field, every other such field MUST agree for THIS SAME sample -- never let one field say this sample is a control/unaffected while "
+        "another field names a condition as if this sample has it, or vice versa. If this sample is the control/unaffected group, every "
+        "condition/phenotype/diagnosis-type field must explicitly reflect that absence (e.g. 'none', 'not applicable', 'unaffected', "
+        "'no <condition>') rather than restating whatever condition(s) the study investigates overall. If this sample IS affected/exposed, "
+        "name only the specific condition(s)/phenotype(s) assigned to THIS sample individually, never the full list of conditions the study "
+        "investigates as a whole."
     ) if _needs_disease_hint else ""
+
+    # Build a hint for study/dataset-identifier fields so the model doesn't
+    # accept an accession number as the answer (an accession is not a study name).
+    _needs_study_name_hint = any(
+        kw in " ".join(_field_lower)
+        for kw in ("study_name", "study name", "studyname", "dataset_name")
+    )
+    _study_name_hint = (
+        "IMPORTANT — for study/dataset-identifier fields: use the paper's own identifying "
+        "convention (e.g. first-author surname + publication year, such as 'SmithJ_2021'), or "
+        "the actual publication title if no such convention is stated. Do NOT output an "
+        "NCBI/ENA accession number (BioProject, BioSample, SRA/ENA study ID, run accession, "
+        "etc.) as the answer -- an accession-shaped string is never a valid study/dataset name.\n"
+    ) if _needs_study_name_hint else ""
+
+    _caveat = (
+    "IMPORTANT — per-subject assignment: many studies have multiple participant groups "
+    "(e.g. a reference/control group and one or more affected/exposed groups). "
+    "Search for a table or supplementary file that maps individual sample identifiers (sample IDs / subject IDs / NCBI BioSample, isolate name, etc. in the NCBI records) "
+    "accessions to their specific group. The accession being analysed is shown in 'Prompt N:' above — find its row in that table and extract the group/condition for "
+    "THAT SPECIFIC SAMPLE, not the study as a whole. "
+    "PRIORITY RULE: a table/section that maps individual sample identifiers to their specific category is stronger evidence than general prose describing the study's groups or conditions as a whole; "
+    "when such a table/section exist, cite its matching row, not the prose. "
+    "COMPLETENESS: do not stop at the first candidate table/section you find. First check what identifying attribute(s) actually exist on this sample's own record, "
+    "whatever they are called (id, subject_id, isolate_name, strain, specimen_code, patient number, or anything else) -- "
+    "then check EVERY table/section in the source text that uses a matching or clearly related identifying scheme, "
+    "not just the first or most prominent one. Check NCBI BioSample attributes and also paper tables / supplementary metadata tables. "
+    "Do NOT report the full list of study groups — report only the group for this individual sample. "
+    ) if _needs_disease_hint else ""
+
     niche_prompt = (
       f"Extract the following metadata fields: {fields_list}.\n"
+      f"For EACH FIELD: Extract the SAMPLE'S ACTUAL STATUS or INDIVIDUAL VALUE (what applies to THIS sample), "
+      f"never the study's general description or objectives. Even for fields defined in terms of 'the study,' prioritize this sample's specific measured/assigned value. "
+      f"Only use study-level information as fallback when this sample has no individual value recorded.\n"
       f"{schema_hint}"
       f"{_disease_hint}"
+      f"{_study_name_hint}"
+      f"{_caveat}"
       f"For each field: find the most specific value stated anywhere in the sources.\n"
       f"Infer from context when not explicit. Write 'unknown' ONLY when truly absent from all sources.\n"
       f"If different sources give DIFFERENT values for the same field, keep the most specific/reliable\n"
@@ -1201,23 +1475,34 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
       f"{_type_hint}"
       f"{niche_prompt}"
       f"\nOUTPUT FORMAT (follow exactly — no markdown, no extra headers):\n"
-      f"Line 1: exactly {field_count} values for: {output_format_str}, separated by ' | ' (space-pipe-space).\n"
-      f"  IMPORTANT: use ' | ' ONLY as the field separator. Within a single field value, use commas freely.\n"
-      f"  For conflicting values within one field write: <best_value> ##CONFLICT: source_A=<val_A>, source_B=<val_B>\n"
-      f"Lines 2–{field_count+1}: one line per field in the SAME ORDER. Each line must have:\n"
-      f"  (a) A narrative sentence citing exactly WHERE — name the specific table/section/figure\n"
-      f"      and include a verbatim excerpt (≤15 words) that confirms the value.\n"
-      f"  (b) [Sources: <key1> (<location>, '<verbatim excerpt>'); <key2> (<location>, '<verbatim excerpt>')]\n"
-      f"      List EVERY source that mentions this field.\n"
-      f"      key = exact header from 'The source - <key>:' blocks in the text (e.g. NCBI_biosample, a URL, user_uploaded_file)\n"
-      f"      location = table/section name (e.g. 'Table 3', 'Abstract', 'species description', 'Supplementary Table S1')\n"
-      f"      verbatim excerpt = ≤15-word exact quote confirming the value\n"
-      f"  (c) [Conflict: <describe any disagreement between sources, or 'none'>]\n"
-      f"Example for 3 fields (country, modern/ancient, disease):\n"
-      f"  Italy | modern | type 2 diabetes ##CONFLICT: study_groups=mixed (T2D+P+, T2D+P-, T2D-P+, T2D-P-), periodontitis\n"
-      f"  The geo_loc_name attribute is 'Italy: Ferrara' and subjects were recruited in northern Italy. [Sources: NCBI_biosample (geo_loc_name attribute, 'Italy: Ferrara'); https://doi.org/10.1234/x (Methods section, 'recruited in northern Italy')] [Conflict: none]\n"
-      f"  Subjects were described as living patients enrolled in 2018 per the Methods section. [Sources: https://doi.org/10.1234/x (Methods section, 'living patients enrolled in 2018')] [Conflict: none]\n"
-      f"  Table 3 row 5 lists the subject group as T2D+P+ and Methods confirms diagnosis as type 2 diabetes. [Sources: https://doi.org/10.1234/x (Table 3 row 5, 'T2D+P+ group'); https://doi.org/10.1234/x (Methods, 'type 2 diabetes diagnosis criteria')] [Conflict: none]\n"
+      f"Write ONE block per field below, in EXACTLY this order ({field_count} fields): {output_format_str}\n"
+      f"Each block MUST have this exact 3-line structure:\n"
+      f"FIELD: <field_name>\n"
+      f"REASONING: <one narrative sentence citing exactly WHERE — name the specific table/section/figure "
+      f"and include a verbatim excerpt (≤15 words) that confirms the value> "
+      f"[Sources: <key1> (<location>, '<verbatim excerpt>'); <key2> (<location>, '<verbatim excerpt>')] "
+      f"[Conflict: <describe any disagreement between sources, or 'none'>] "
+      f"[ID-match: true|false]\n"
+      f"ANSWER: <the value for this field>\n"
+      f"  - key in [Sources: ...] = exact header from 'The source - <key>:' blocks in the text "
+      f"(e.g. NCBI_biosample, a URL, user_uploaded_file); list EVERY source that mentions this field.\n"
+      f"  - [ID-match: true] ONLY if this value was confirmed by finding this sample's own numeric ID/identifier "
+      f"as a row in a numbered table (per the PRIORITY RULE above, when applicable); false if the value instead "
+      f"came from general prose or a topical description not tied to this sample's specific ID. For fields read "
+      f"directly from this sample's own BioSample/SRA record (no table lookup needed), output true.\n"
+      f"  - CRITICAL: write REASONING first, decide ANSWER only AFTER, based on that reasoning — never write "
+      f"ANSWER before you have worked out the REASONING for that same field. ANSWER must agree with its own "
+      f"REASONING and with every other field's ANSWER for this sample (see CROSS-FIELD CONSISTENCY above).\n"
+      f"  - For conflicting values across sources, in ANSWER write: <best_value> ##CONFLICT: source_A=<val_A>, source_B=<val_B>\n"
+      f"  - Separate each field's block from the next with a blank line. No markdown, no extra headers, no summary line.\n"
+      f"Example for 2 fields (country_name, modern/ancient) — placeholder values only:\n"
+      f"FIELD: country_name\n"
+      f"REASONING: The geo_loc_name attribute is 'Spain: Region' and subjects were recruited locally. [Sources: NCBI_biosample (geo_loc_name attribute, 'Spain: Region'); https://doi.org/10.9999/example (Methods section, 'recruited in Region')] [Conflict: none] [ID-match: true]\n"
+      f"ANSWER: Spain\n"
+      f"\n"
+      f"FIELD: modern/ancient\n"
+      f"REASONING: Subjects were described as living participants enrolled in 2020 per the Methods section. [Sources: https://doi.org/10.9999/example (Methods section, 'living participants enrolled in 2020')] [Conflict: none] [ID-match: false]\n"
+      f"ANSWER: modern\n"
       f"\nText Snippets:\n{context_for_llm}")
       if acc_cleaned.lower() in context_for_llm.lower():
         accession_found_in_text = True
@@ -1533,7 +1818,67 @@ async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases
         context_for_llm = context_for_llm[:limit_context]
   return context_for_llm, linksWithTexts, links
 
-def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
+_NEGATION_CUE_PATTERN = re.compile(
+    r'\b(?:does not have|does not|did not have|did not|no history of|no evidence of|'
+    r'no evidence for|no longer has|absence of|free of|negative for|without|not|no)\s+'
+    r'([a-z0-9][a-z0-9 \-]{2,60}?)'
+    r'(?=[.,;:)\]]|\band\b|\bor\b|\bbut\b|\bwhile\b|\bwhereas\b|$)',
+    re.IGNORECASE,
+)
+
+_NEGATION_LEADIN_PATTERN = re.compile(
+    r'\b(?:does not have|does not|did not have|did not|no history of|no evidence of|'
+    r'no evidence for|no longer has|absence of|free of|negative for|without|not|no)\s*$',
+    re.IGNORECASE,
+)
+
+_NEGATION_FILLER_WORDS = {
+    'a', 'an', 'the', 'any', 'other', 'further', 'additional', 'specific',
+    'clear', 'direct', 'obvious', 'known', 'reported', 'documented',
+    'available', 'data', 'information', 'details', 'evidence', 'signs',
+    'sign', 'this', 'that', 'these', 'those',
+}
+
+
+def _find_negation_contradiction(value: str, explanation: str):
+    """Deterministic keyword/negation heuristic (not a semantic re-analysis):
+    flags cases where `explanation` clearly negates a condition-phrase
+    ("not X", "without X", "no history of X", "does not have X", ...) while
+    `value` asserts that same phrase affirmatively elsewhere. Only catches
+    direct, literal contradictions -- returns the matched phrase, or None.
+    """
+    if not value or not explanation:
+        return None
+
+    negated_phrases = set()
+    for match in _NEGATION_CUE_PATTERN.finditer(explanation):
+        phrase = re.sub(r'\s+', ' ', match.group(1).strip(' -'))
+        words = [w for w in phrase.split(' ') if w]
+        while words and words[0].lower() in _NEGATION_FILLER_WORDS:
+            words.pop(0)
+        while words and words[-1].lower() in _NEGATION_FILLER_WORDS:
+            words.pop()
+        phrase = ' '.join(words)
+        if len(phrase) >= 4 and len(words) <= 6:
+            negated_phrases.add(phrase.lower())
+
+    if not negated_phrases:
+        return None
+
+    value_lower = value.lower()
+    for phrase in negated_phrases:
+        idx = value_lower.find(phrase)
+        if idx == -1:
+            continue
+        preceding = value_lower[max(0, idx - 25):idx]
+        if _NEGATION_LEADIN_PATTERN.search(preceding):
+            continue
+        return phrase
+
+    return None
+
+
+def _extract_additional_fields(context_text: str, niche_cases: list, standardization_schema: dict = None) -> dict:
     """
     Pass 2 — Generalized metadata extraction across ALL source texts.
 
@@ -1542,6 +1887,10 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
       a) extract every available attribute, and
       b) detect conflicts when two sources report different values for the
          same field (marked with '##CONFLICT:' in the value string).
+
+    standardization_schema: optional dict {field: {"description", "allowed_values"}}
+    -- same shape/source as Pass 1's, falls back to the built-in default schema
+    when not supplied, via the same _build_schema_hint() helper Pass 1 uses.
 
     Returns {field_name: {"value": str, "explanation": str}} — explanation
     contains a one-sentence narrative + a trailing [Sources: ...] tag in the
@@ -1565,6 +1914,42 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
     MAX_CHARS = 800000
     context_snippet = context_text if len(context_text) <= MAX_CHARS else context_text[:MAX_CHARS]
 
+    _study_name_hint = (
+        "IMPORTANT — for study/dataset-identifier fields: use the paper's own identifying "
+        "convention (e.g. first-author surname + publication year, such as 'SmithJ_2021'), or "
+        "the actual publication title if no such convention is stated. Do NOT output an "
+        "NCBI/ENA accession number (BioProject, BioSample, SRA/ENA study ID, run accession, "
+        "etc.) as the answer -- an accession-shaped string is never a valid study/dataset name.\n"
+    )
+
+    _disease_hint = (
+        "CONTROL DEFINITION: a 'control' sample belongs to the group with NONE of the study's conditions/exposures present (the fully unaffected/reference group) -- "
+        "not merely 'not the primary condition being studied.' If you cannot confidently determine full-unaffected status for this sample, output 'unknown' rather than "
+        "defaulting to a case/disease label. "
+        "Target condition definition: Primary phenotype(s), condition(s), or disease status THAT THIS SPECIFIC SAMPLE ACTUALLY HAS in the study, "
+        "as determined by this sample's group assignment or individual clinical status. NOT the study's overall research topic. "
+        "CROSS-FIELD CONSISTENCY: several extracted fields may describe the same underlying case/control assignment from different angles -- "
+        "whatever you conclude for one such field, every other such field must agree for THIS SAME sample; never report one field as "
+        "control/unaffected while another names a condition as if this sample has it, or vice versa."
+    )
+
+    _caveat = ("IMPORTANT — per-subject assignment: many studies have multiple participant groups "
+        "(e.g. a reference/control group and one or more affected/exposed groups). "
+        "Search for a table or supplementary file that maps individual sample identifiers (sample IDs / subject IDs / NCBI BioSample, isolate name, etc. in the NCBI records) "
+        "accessions to their specific group. The accession being analysed is shown in 'Prompt N:' above — find its row in that table and extract the group/condition for "
+        "THAT SPECIFIC SAMPLE, not the study as a whole. "
+        "PRIORITY RULE: a table/section that maps individual sample identifiers to their specific category is stronger evidence than general prose describing the study's groups or conditions as a whole; "
+        "when such a table/section exist, cite its matching row, not the prose. "
+        "COMPLETENESS: do not stop at the first candidate table/section you find. First check what identifying attribute(s) actually exist on this sample's own record, "
+        "whatever they are called (id, subject_id, isolate_name, strain, specimen_code, patient number, or anything else) -- "
+        "then check EVERY table/section in the source text that uses a matching or clearly related identifying scheme, "
+        "not just the first or most prominent one. Check NCBI BioSample attributes and also paper tables / supplementary metadata tables. "
+        "Do NOT report the full list of study groups — report only the group for this individual sample. "
+        )
+
+    _schema = standardization_schema if standardization_schema else _get_default_schema()
+    schema_hint = _build_schema_hint(niche_cases, _schema)
+
     generalized_prompt = (
         "You are a scientific metadata extractor specialising in NCBI genomic database records.\n\n"
         "The source text below contains ALL available texts for this sample, separated by "
@@ -1575,6 +1960,13 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         "  • Published paper abstract / full text\n"
         "  • User-uploaded supplementary files\n\n"
         "Your task: extract EVERY metadata attribute that describes the biological sample.\n"
+        f"For EACH FIELD: Extract the SAMPLE'S ACTUAL STATUS or INDIVIDUAL VALUE (what applies to THIS sample), "
+        f"never the study's general description or objectives. Even for fields defined in terms of 'the study,' prioritize this sample's specific measured/assigned value. "
+        f"Only use study-level information as fallback when this sample has no individual value recorded.\n"
+        f"{schema_hint}"
+        f"{_disease_hint}\n"
+        f"{_study_name_hint}"
+        f"{_caveat}\n"
         "Scan ALL sources. For EACH field:\n"
         "  - If every source agrees on the same value → output that value.\n"
         "  - If two or more sources report DIFFERENT values → output the most specific value "
@@ -1586,14 +1978,19 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         "  lat_lon, env_biome, env_feature, env_material, depth, altitude, temperature, pH,\n"
         "  SRA_accession, BioSample_accession, and any other custom sample attributes.\n\n"
         f"Do NOT include these already-extracted fields: {exclude_str}\n\n"
-        "Return ONLY a JSON object mapping each field to an object with TWO keys, value and explanation:\n"
-        '  {"field_name": {"value": "<extracted value>", "explanation": "<one sentence citing WHERE this came '
+        "Return ONLY a JSON object mapping each field to an object with TWO keys, explanation and value --\n"
+        "write explanation FIRST, decide value only AFTER, based on that reasoning (never decide value before "
+        "you've worked out the explanation for that same field):\n"
+        '  {"field_name": {"explanation": "<one sentence citing WHERE this came '
         "from, naming the specific source/section/attribute, followed by a "
-        "[Sources: <key> (<location>, '<verbatim excerpt <=15 words>')] tag>\"}}\n"
+        "[Sources: <key> (<location>, '<verbatim excerpt <=15 words>')] tag, and for any categorical/group-type "
+        "field (disease, condition, status, diagnosis, group, phenotype, health) also ending with an "
+        "[ID-match: true|false] tag>\", \"value\": \"<the extracted/best value, decided from the explanation above>\"}}\n"
         "  - Keys  : lowercase field names, underscores for spaces (e.g. 'collection_date')\n"
-        "  - value : the extracted/best value as a non-empty string\n"
-        "  - explanation : MANDATORY, never blank; must include the [Sources: ...] tag using the exact header "
-        "from 'The source - <key>:' blocks in the text\n"
+        "  - explanation : MANDATORY, never blank, written BEFORE value; must include the [Sources: ...] tag using "
+        "the exact header from 'The source - <key>:' blocks in the text\n"
+        "  - value : the extracted/best value as a non-empty string, consistent with its own explanation above "
+        "and with every other field's value for this sample (see CROSS-FIELD CONSISTENCY above)\n"
         "  - Omit fields whose value is null, empty, 'not applicable', 'missing', or 'unknown'\n"
         "  - Preserve the original attribute name from NCBI XML when possible\n\n"
         "Source text:\n"
@@ -1601,10 +1998,10 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
         f"{context_snippet}\n"
         "---\n\n"
         "Return ONLY valid JSON. No markdown fences.\n"
-        'Example: {"geo_loc_name": {"value": "USA: California", "explanation": '
+        'Example: {"geo_loc_name": {"explanation": '
         "\"BioSample attribute geo_loc_name is 'USA: California'. [Sources: NCBI_biosample (geo_loc_name "
-        "attribute, 'USA: California')]\"}, \"sex\": {\"value\": \"male\", \"explanation\": \"Methods section "
-        "states male donor. [Sources: https://doi.org/10.1234/x (Methods, 'male donor')]\"}}"
+        "attribute, 'USA: California')]\", \"value\": \"USA: California\"}, \"sex\": {\"explanation\": \"Methods section "
+        "states male donor. [Sources: https://doi.org/10.1234/x (Methods, 'male donor')]\", \"value\": \"male\"}}"
     )
 
     try:
@@ -1640,13 +2037,18 @@ def _extract_additional_fields(context_text: str, niche_cases: list) -> dict:
                 v_str = str(v).strip() if v is not None else ''
                 expl = ''
             if v_str and v_str.lower() not in skip_vals:
+                contradiction_phrase = _find_negation_contradiction(v_str, expl)
+                if contradiction_phrase:
+                    v_str = (
+                        f"{v_str} ##SELF-CONTRADICTION: value/explanation disagree "
+                        f"(explanation negates '{contradiction_phrase}')"
+                    )
                 cleaned[k_str] = {'value': v_str, 'explanation': expl}
         return cleaned
 
     except Exception as e:
         print(f'[_extract_additional_fields] WARNING: generalized extraction failed: {e}')
         return {}
-
 
 async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, prompts,
                               standardization_schema=None):
@@ -1796,7 +2198,8 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
           # Fall back to context_for_llm (smart-search result) only if no
           # original context is available.
           pass2_context = prompts.get(acc, "") or context_for_llm or ""
-          all_additional = _extract_additional_fields(pass2_context, niche_cases or [])
+          all_additional = _extract_additional_fields(
+              pass2_context, niche_cases or [], standardization_schema=standardization_schema)
           additional_only = {
               k: v for k, v in all_additional.items()
               if k not in predefined_keys

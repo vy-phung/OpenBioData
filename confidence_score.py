@@ -63,6 +63,7 @@ def set_rules() -> Dict[str, Any]:
         "risk_penalties": {
             "missing_key_fields": -10,
             "known_failure_pattern": -20,
+            "lacked_id_linkage": -15,
         },
         "tiers": {
             "high_min": 70,
@@ -212,6 +213,8 @@ def compute_confidence_score_and_tier(
         num_publications:        int
         missing_key_fields:      bool
         known_failure_pattern:   bool
+        any_key_field_lacked_id_linkage: bool  # a categorical/group field's value
+            wasn't confirmed via a direct per-sample ID-table match; caps tier below "high"
 
     Returns:
         score (0-100), tier ('high'/'medium'/'low'), explanations list
@@ -309,6 +312,11 @@ def compute_confidence_score_and_tier(
         score += risk_cfg["known_failure_pattern"]
         explanations.append("Accession matches a known risky/failure pattern.")
 
+    _lacked_id_linkage = bool(signals.get("any_key_field_lacked_id_linkage"))
+    if _lacked_id_linkage:
+        score += risk_cfg["lacked_id_linkage"]
+        explanations.append("A key categorical field's value was not confirmed via a direct per-sample ID match.")
+
     score = max(0, min(100, score))
 
     tiers = rules["tiers"]
@@ -319,6 +327,16 @@ def compute_confidence_score_and_tier(
     else:
         tier = "low"
 
-    explanations = explanations[:3]
+    # Hard cap: an unlinked categorical field is a real trust gap regardless of
+    # how the rest of the score landed -- never call it "high" confidence.
+    if _lacked_id_linkage and tier == "high":
+        tier = "medium"
+        explanations.append("Capped below High: a key field lacked direct ID-linkage.")
+
+    if len(explanations) > 3:
+        # Keep a trailing risk/cap explanation visible even when earlier
+        # positive signals would otherwise crowd it out of the truncation.
+        explanations = explanations[:2] + explanations[-1:]
+
     log.debug("compute_confidence: field='%s' score=%d tier=%s", field_name, score, tier)
     return score, tier, explanations

@@ -22,6 +22,7 @@ from io import StringIO
 import hashlib
 import threading
 import confidence_score
+import metadata_merge
 
 # @lru_cache(maxsize=3600)
 # def classify_sample_location_cached(accession):
@@ -518,6 +519,17 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
         for k in extra_keys:
             s2[k] = str(af.get(k, "") or "").strip()
         sheet2_rows.append(s2)
+
+    # ── Cross-sample normalization pass ──────────────────────────────────────
+    # merge_metadata_into_table() (used upstream, per-sample) can't see other
+    # samples' column choices; run once here, across every row/column now that
+    # the whole table is assembled, immediately before writing -- merges
+    # differently-named columns for the same concept and duplicate-valued
+    # columns that crept in across independently-processed samples.
+    try:
+        sheet2_rows = metadata_merge.normalize_output_table(sheet2_rows)
+    except Exception as _norm_err:
+        print(f"⚠️ normalize_output_table failed (non-critical, using unnormalized table): {_norm_err}")
 
     df_sheet1 = _coerce_df(pd.DataFrame(sheet1_rows))
     df_sheet2 = _coerce_df(pd.DataFrame(sheet2_rows))

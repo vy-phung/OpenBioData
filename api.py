@@ -331,8 +331,11 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
 
         # ── Per-field values + collect explanation parts ──────────────────────
         import re as _re
-        _source_tag_re   = _re.compile(r'\[Sources?:\s*([^\]]+)\]', _re.IGNORECASE)
-        _conflict_tag_re = _re.compile(r'\[Conflict:\s*([^\]]+)\]', _re.IGNORECASE)
+        _source_tag_re     = _re.compile(r'\[Sources?:\s*([^\]]+)\]', _re.IGNORECASE)
+        _conflict_tag_re   = _re.compile(r'\[Conflict:\s*([^\]]+)\]', _re.IGNORECASE)
+        _idmatch_tag_re    = _re.compile(r'\[ID-match:\s*([^\]]+)\]', _re.IGNORECASE)
+        _candidates_tag_re = _re.compile(r'\[Candidates:\s*([^\]]+)\]', _re.IGNORECASE)
+        _chosen_tag_re     = _re.compile(r'\[Chosen:\s*([^\]]+)\]', _re.IGNORECASE)
 
         explanation_parts: list = []
         conflict_parts:    list = []
@@ -363,8 +366,11 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                 clean_method = clean_method.split("-", 1)[-1].strip()
 
             if clean_method:
-                _src_match  = _source_tag_re.search(clean_method)
-                _conf_match = _conflict_tag_re.search(clean_method)
+                _src_match     = _source_tag_re.search(clean_method)
+                _conf_match    = _conflict_tag_re.search(clean_method)
+                _idmatch_match = _idmatch_tag_re.search(clean_method)
+                _cand_match    = _candidates_tag_re.search(clean_method)
+                _chosen_match  = _chosen_tag_re.search(clean_method)
                 if _src_match:
                     extra[f"{field}_source_location"] = _src_match.group(1).strip()
                 if _conf_match:
@@ -372,9 +378,18 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                     if conflict_text.lower() not in ("none", "no conflict", "n/a"):
                         extra[f"{field}_conflict"] = conflict_text
                         conflict_parts.append(f"• {field}: {conflict_text}")
+                if _idmatch_match:
+                    extra[f"{field}_id_match"] = _idmatch_match.group(1).strip().lower()
+                if _cand_match:
+                    extra[f"{field}_candidates"] = _cand_match.group(1).strip()
+                if _chosen_match:
+                    extra[f"{field}_chosen"] = _chosen_match.group(1).strip()
 
                 narrative = _source_tag_re.sub("", clean_method)
-                narrative = _conflict_tag_re.sub("", narrative).strip()
+                narrative = _conflict_tag_re.sub("", narrative)
+                narrative = _idmatch_tag_re.sub("", narrative)
+                narrative = _candidates_tag_re.sub("", narrative)
+                narrative = _chosen_tag_re.sub("", narrative).strip()
             else:
                 narrative = ""
 
@@ -422,6 +437,10 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             for f in niche_list
         )
         known_fail  = signals.get("known_failure_pattern", False)
+        # Row-level bool set by additional_pipeline.py from the model's per-field
+        # [ID-match] tag -- unaffected by merge_metadata_into_table's per-field
+        # source-list shape, since this is computed upstream, not from field_sources.
+        lacked_id_linkage = signals.get("any_key_field_lacked_id_linkage", False)
 
         try:
             from confidence_score import compute_confidence_score_and_tier
@@ -432,6 +451,7 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
                 "num_publications":        num_pubs,
                 "missing_key_fields":      missing_kf,
                 "known_failure_pattern":   known_fail,
+                "any_key_field_lacked_id_linkage": lacked_id_linkage,
             }
             conf_score, conf_tier, conf_reasons = compute_confidence_score_and_tier(conf_signals)
         except Exception:
@@ -488,6 +508,12 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             pass2_table: dict = {}
             metadata_merge.merge_metadata_into_table(
                 pass2_table, pass2_fields, source_label="Pass 2 (LLM)", is_llm=True,
+                identifier_values={
+                    "biosample_accession": biosample_acc,
+                    "bioproject":          bioproject_val,
+                    "sra_accession":       sra_accession,
+                    "genbank_accession":   genbank_acc,
+                },
             )
             for merged_key, entry in pass2_table.items():
                 row[merged_key] = _emit_field(merged_key, entry["value"], entry["explanation"])
@@ -677,23 +703,14 @@ def _extract_text_from_upload(file_bytes: bytes, filename: str) -> str:
             except Exception as exc:
                 return f"[PDF text extraction failed: {exc}]"
 
-        # Plain page text loses which table cell belongs to which row/column
-        # (the same issue fixed for fetched papers in data_preprocess.py) --
-        # append structured table rows so an uploaded closed-access PDF gets
-        # the same treatment as one fetched live.
-        try:
-            from NER.PDF import pdf as _pdf_mod
-            from data_preprocess import clean_tables_format, _serialize_tables_as_text
-            import tempfile as _tempfile, pathlib as _pathlib
-            tmp_pdf = _pathlib.Path(_tempfile.mktemp(suffix=".pdf"))
-            tmp_pdf.write_bytes(file_bytes)
-            tables = clean_tables_format(_pdf_mod.PDF(str(tmp_pdf), str(tmp_pdf.parent)).extractTable())
-            tables_text = _serialize_tables_as_text(tables)
-            if tables_text:
-                text += "\n" + tables_text
-            tmp_pdf.unlink(missing_ok=True)
-        except Exception as exc:
-            print(f"[upload-context] PDF table extraction failed for {filename}: {exc}")
+        # NOTE: this used to also run a Tabula-based table-extraction pass
+        # (NER.PDF.pdf.PDF.extractTable() -> data_preprocess._serialize_tables_as_text())
+        # and append its "## Table N / Row: col=val" output here. Tabula's grid
+        # detector reliably misreads multi-column academic-paper body text
+        # (references, discussion sections) as tables, producing fabricated
+        # "## Table N" blocks with nonsense header/cell pairings that don't
+        # exist in the source PDF -- see contextLLM_SAMN35361964.txt for an
+        # example. Removed so uploaded-file text is exactly what's in the PDF.
         return text
 
     if ext == ".zip":

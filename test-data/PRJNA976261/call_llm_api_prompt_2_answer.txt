@@ -1,0 +1,52 @@
+```json
+{
+  "isolation_source": {
+    "explanation": "NCBI BioSample attribute isolation_source is 'subgingival oral plaque', confirmed across all sources. [Sources: NCBI_biosample (isolation_source attribute, 'subgingival oral plaque'), NCBI_experiment (SAMPLE_ATTRIBUTE TAG isolation_source VALUE 'subgingival oral plaque')]",
+    "value": "subgingival oral plaque"
+  },
+  "collection_date": {
+    "explanation": "NCBI BioSample attribute collection_date is '2018'. [Sources: NCBI_biosample (collection_date attribute, '2018'), NCBI_experiment (SAMPLE_ATTRIBUTE TAG collection_date VALUE '2018')]",
+    "value": "2018"
+  },
+  "geo_loc_name": {
+    "explanation": "NCBI BioSample attribute geo_loc_name is 'Italy: Ferrara', indicating geographic location of collection. [Sources: NCBI_biosample (geo_loc_name attribute, 'Italy: Ferrara'), NCBI_experiment (SAMPLE_ATTRIBUTE TAG geo_loc_name VALUE 'Italy: Ferrara')]",
+    "value": "Italy: Ferrara"
+  },
+  "lat_lon": {
+    "explanation": "NCBI BioSample attribute lat_lon provides precise geographic coordinates. [Sources: NCBI_biosample (lat_lon attribute, '44.7667642 N 11.827939 E'), NCBI_experiment (SAMPLE_ATTRIBUTE TAG lat_lon VALUE '44.7667642 N 11.827939 E')]",
+    "value": "44.7667642 N 11.827939 E"
+  },
+  "host": {
+    "explanation": "NCBI BioSample attribute host is 'Homo sapiens'. [Sources: NCBI_biosample (host attribute, 'Homo sapiens'), NCBI_experiment (SAMPLE_ATTRIBUTE TAG host VALUE 'Homo sapiens')]",
+    "value": "Homo sapiens"
+  },
+  "library_strategy": {
+    "explanation": "NCBI experiment XML shows LIBRARY_STRATEGY is 'WGS' (whole genome shotgun). [Sources: NCBI_experiment (LIBRARY_STRATEGY tag, 'WGS')]",
+    "value": "WGS"
+  },
+  "library_source": {
+    "explanation": "NCBI experiment XML shows LIBRARY_SOURCE is 'METAGENOMIC'. [Sources: NCBI_experiment (LIBRARY_SOURCE tag, 'METAGENOMIC')]",
+    "value": "METAGENOMIC"
+  },
+  "library_selection": {
+    "explanation": "NCBI experiment XML shows LIBRARY_SELECTION is 'size fractionation'. [Sources: NCBI_experiment (LIBRARY_SELECTION tag, 'size fractionation')]",
+    "value": "size fractionation"
+  },
+  "instrument_model": {
+    "explanation": "NCBI experiment XML specifies INSTRUMENT_MODEL is 'NextSeq 500'. [Sources: NCBI_experiment (INSTRUMENT_MODEL tag, 'NextSeq 500')]",
+    "value": "NextSeq 500"
+  },
+  "library_name": {
+    "explanation": "NCBI experiment XML specifies LIBRARY_NAME is 'placca-10_S6'. [Sources: NCBI_experiment (LIBRARY_NAME tag, 'placca-10_S6')]",
+    "value": "placca-10_S6"
+  },
+  "organism": {
+    "explanation": "NCBI BioSample shows organism taxonomy_id 447426 with name 'human oral metagenome'. [Sources: NCBI_biosample (Organism taxonomy_name, 'human oral metagenome')]",
+    "value": "human oral metagenome"
+  },
+  "sample_type": {
+    "explanation": "NCBI BioSample Package type is 'Metagenome.environmental.1.0' indicating a metagenomic environmental sample. [Sources: NCBI_biosample (Package display_name, 'Metagenome or environmental; version 1.0')]",
+    "value": "metagenomic environmental sample"
+  }
+}
+```

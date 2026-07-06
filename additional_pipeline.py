@@ -63,6 +63,29 @@ _ONTOLOGY_URL_MARKERS = [
 _COMPUTED_FIELD_PREFIXES = ('n_', 'pct_', 'num_')
 _COMPUTED_FIELD_KEYWORDS = ('reads', 'species', 'genus', 'megan', 'mapped')
 
+# Categorical/group-type fields (matches model.py's multi_prompts() _needs_disease_hint
+# keyword set) -- these are the fields where a per-sample numeric-ID table match matters
+# most, so this is what the "any_key_field_lacked_id_linkage" confidence signal checks.
+_CATEGORICAL_FIELD_KEYWORDS = ("disease", "control", "phenotype", "condition", "health", "group", "status", "diagnosis")
+_ID_MATCH_TAG_RE = re.compile(r'\[ID-match:\s*(true|false)\s*\]', re.IGNORECASE)
+
+
+def _is_categorical_field(field_name: str) -> bool:
+    name_l = (field_name or "").lower()
+    return any(kw in name_l for kw in _CATEGORICAL_FIELD_KEYWORDS)
+
+
+def _lacks_confirmed_id_linkage(explanations) -> bool:
+    """True if none of the given explanation strings carry a confirmed
+    '[ID-match: true]' tag (per model.py's multi_prompts() output contract) --
+    covers both "tag absent" and "tag present but false".
+    """
+    for text in explanations:
+        match = _ID_MATCH_TAG_RE.search(text or "")
+        if match and match.group(1).lower() == "true":
+            return False
+    return True
+
 
 def _is_ontology_url(url: str) -> bool:
     return any(m in url for m in _ONTOLOGY_URL_MARKERS)
@@ -193,9 +216,24 @@ def fetch_standardization_schema(urls) -> dict:
                 (h for h in headers if any(k in h.lower() for k in ("description", "definition", "label", "detail"))),
                 headers[1] if len(headers) > 1 else None
             )
-            # Detect allowed-value column (codebook pattern)
-            val_col = next(
-                (h for h in headers if any(k in h.lower() for k in ("value", "allowed", "code", "category", "option"))),
+            # Detect allowed-value column (codebook pattern). Prefer a header that
+            # explicitly says "allowed" (e.g. "allowedvalues") over the broader
+            # value/code/category/option keywords -- some data dictionaries (e.g.
+            # cMD's) also have a "multiplevalues" boolean flag column (whether the
+            # field permits multiple values) that contains "value" too and would
+            # otherwise be matched first by column order, silently pulling TRUE/
+            # FALSE flags in as if they were the field's allowed categorical values.
+            val_col = next((h for h in headers if "allowed" in h.lower()), None)
+            if not val_col:
+                val_col = next(
+                    (h for h in headers
+                     if any(k in h.lower() for k in ("value", "code", "category", "option"))
+                     and "multiplevalue" not in h.lower().replace("_", "").replace(" ", "")),
+                    None
+                )
+            # Detect a "required"/"optional" flag column (e.g. cMD-style data dictionaries)
+            required_col = next(
+                (h for h in headers if "required" in h.lower()),
                 None
             )
 
@@ -210,14 +248,28 @@ def fetch_standardization_schema(urls) -> dict:
                     continue
                 desc  = (row.get(desc_col) or "").strip() if desc_col else ""
                 val   = (row.get(val_col)  or "").strip() if val_col  else ""
+                req_raw = (row.get(required_col) or "").strip().lower() if required_col else ""
+                is_required = req_raw in ("required", "true", "yes", "1")
 
                 if field not in schema:
-                    schema[field] = {"description": desc, "allowed_values": []}
-                elif desc and not schema[field]["description"]:
-                    schema[field]["description"] = desc
+                    schema[field] = {"description": desc, "allowed_values": [], "required": is_required}
+                else:
+                    if desc and not schema[field]["description"]:
+                        schema[field]["description"] = desc
+                    if is_required:
+                        schema[field]["required"] = True
+                    else:
+                        schema[field].setdefault("required", False)
 
-                if is_codebook and val and val not in schema[field]["allowed_values"]:
-                    schema[field]["allowed_values"].append(val)
+                if is_codebook and val and val.upper() not in ("NA", "N/A"):
+                    # Some data dictionaries give one row per allowed value (val is
+                    # already a single value); others pack every allowed value into
+                    # one cell separated by '|' (e.g. "Study Control|Case|Not Used").
+                    # Splitting handles both without double-processing the former.
+                    for v in val.split("|"):
+                        v = v.strip()
+                        if v and v not in schema[field]["allowed_values"]:
+                            schema[field]["allowed_values"].append(v)
                 rows_read += 1
 
             # Store raw schema text so standardization prompts can reference it directly.
@@ -295,18 +347,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             and not any(kw in k for kw in _COMPUTED_FIELD_KEYWORDS)
         ]
         if _schema_fields:
-            # Sort: put well-known bio-metadata fields first
-            _priority = {
-                'disease', 'control', 'body_site', 'organism', 'host', 'country',
-                'age', 'gender', 'sex', 'tissue', 'ancestry', 'smoking_status',
-                'sequencing_type', 'sequencing_platform', 'collection_date',
-                'collection_location', 'specific_location', 'geographic_location',
-                'latitude_longitude', 'sequencing_layout', 'dna_extraction_kit',
-                'library_prep_kit', 'disease_t2d', 'disease_periodontitis',
-                'study_name', 'PMID', 'hypoglycemic_medication', 'metabolic_control',
-            }
-            prioritized = [f for f in _schema_fields if f in _priority]
-            others = [f for f in _schema_fields if f not in _priority]
+            # Sort: put fields the schema itself marks "required" first (e.g.
+            # cMD-style data dictionaries have a required/optional column --
+            # see fetch_standardization_schema's required_col parsing above).
+            # Falls back to schema order when the schema has no required flag.
+            prioritized = [f for f in _schema_fields if standardization_schema.get(f, {}).get("required")]
+            others = [f for f in _schema_fields if f not in prioritized]
             niche_cases = (prioritized + others)[:30]
             print(f"[auto-niche] Using {len(niche_cases)} schema fields as niche_cases: {niche_cases}")
 
@@ -359,7 +405,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                               "predicted_output": None,
                                "consistent_outputs":None,
                               "num_publications": 0,
-                              "missing_key_fields": False,},
+                              "missing_key_fields": False,
+                              "any_key_field_lacked_id_linkage": False,},
                               #"known_failure_pattern": False,},
                   }
 
@@ -1188,6 +1235,18 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               answer = predicted_outputs[pred_out]["answer"]
               answer_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
               if answer_explanation: answer_explanation = "-" + answer_explanation
+              # Value-level duplicate check (Bug 3): niche-case answers are accepted
+              # directly here and never pass through merge_metadata_into_table, so
+              # apply the same identifier-duplicate guard standalone.
+              if answer.lower() != "unknown" and metadata_merge.is_duplicate_identifier_value(
+                  pred_out, answer, {
+                      "biosample_accession": accessions[acc].get("biosample"),
+                      "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
+                      "sra_accession":       accessions[acc].get("experiment"),
+                      "genbank_accession":   accessions[acc].get("accession"),
+                  }):
+                print(f"[niche-dup-check] Rejected {pred_out}={answer!r} for {acc}: duplicates an identifier value")
+                answer = "unknown"
               if answer.lower() != "unknown":
                 acc_score["signals"]["predicted_output"] = True
                 if answer.lower() in acc_score[pred_out]:
@@ -1239,6 +1298,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               metadata_merge.merge_metadata_into_table(
                   acc_score["_additional_fields"], aligned_batch,
                   source_label="Schema alignment (Pass 2)", is_llm=True,
+                  identifier_values={
+                      "biosample_accession": accessions[acc].get("biosample"),
+                      "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
+                      "sra_accession":       accessions[acc].get("experiment"),
+                      "genbank_accession":   accessions[acc].get("accession"),
+                  },
               )
             if aligned:
               print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
@@ -1270,6 +1335,29 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
           except Exception as _ont_err:
             print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
+
+        # ── ID-linkage confidence signal ──────────────────────────────────────
+        # Flag (row-level, not per-field) if any categorical/group-type field's
+        # answer wasn't confirmed via a direct per-sample numeric-ID table match
+        # -- see model.py's multi_prompts() PRIORITY RULE and its [ID-match] tag.
+        # Fields with no answer at all are skipped here (that's what
+        # "missing_key_fields" already covers); this only judges fields that DID
+        # get an answer but couldn't tie it to this sample's own ID.
+        _lacked_id_linkage = False
+        for _field_name in (niche_cases or []):
+          if not _is_categorical_field(_field_name):
+            continue
+          _field_data = acc_score.get(_field_name)
+          if isinstance(_field_data, dict) and _field_data:
+            _all_explanations = [e for _exps in _field_data.values() for e in (_exps or [])]
+            if _all_explanations and _lacks_confirmed_id_linkage(_all_explanations):
+              _lacked_id_linkage = True
+        for _field_name, _entry in (acc_score.get("_additional_fields") or {}).items():
+          if _is_categorical_field(_field_name):
+            _expl = _entry.get('explanation', '') if isinstance(_entry, dict) else ''
+            if _expl and _lacks_confirmed_id_linkage([_expl]):
+              _lacked_id_linkage = True
+        acc_score["signals"]["any_key_field_lacked_id_linkage"] = _lacked_id_linkage
 
         print(f"end of this acc {acc}")
       end = time.time()

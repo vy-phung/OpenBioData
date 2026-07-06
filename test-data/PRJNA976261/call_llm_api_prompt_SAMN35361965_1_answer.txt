@@ -1,0 +1,47 @@
+FIELD: country_name
+REASONING: The geo_loc_name attribute in the NCBI BioSample record for SAMN35361965 explicitly states 'Italy: Ferrara', and the user-uploaded paper confirms recruitment was conducted "at the Research Centre for the Study of Periodontal and Peri-Implant Diseases, University of Ferrara, Italy" with subjects being "current and permanent residents in the metropolitan area of Ferrara." [Sources: NCBI_biosample (Attributes section, 'geo_loc_name: Italy: Ferrara'); user_uploaded_file (Materials & methods section, 'Research Centre for the Study of Periodontal and Peri-Implant Diseases, University of Ferrara, Italy')] [Conflict: none] [ID-match: true]
+ANSWER: Italy
+
+FIELD: modern/ancient
+REASONING: The study population consisted of adult participants (≥40 years) recruited in 2018 for living sample collection, as indicated by the collection_date attribute '2018' in the BioSample record and the enrollment of current/permanent residents in the metropolitan area of Ferrara. The sample represents a living individual at the time of collection, not an archaeological or prehistoric specimen. [Sources: NCBI_biosample (Attributes section, 'collection_date: 2018'); user_uploaded_file (Materials & methods section, 'Twelve adult (≥40 years) Caucasian individuals were recruited')] [Conflict: none] [ID-match: true]
+ANSWER: modern
+
+FIELD: study_name
+REASONING: The canonical study identifier is derived from the first author surname and publication year of the primary 2019 publication. The BioProject title and the archived paper at https://doi.org/10.1016/j.archoralbio.2019.05.025 identify the study as authored by Farina et al. in 2019, establishing the study convention as 'Farina_2019'. This is the foundational taxonomic study upon which the functional analysis (Favale et al., 2023) is based. [Sources: NCBI_bioproject (publications, 'Whole metagenomic shotgun sequencing of the subgingival microbiome...', pubmed 31153098); user_uploaded_file (Introduction, 'Farina et al. (2019) used high-resolution whole metagenomic shotgun sequencing')] [Conflict: none] [ID-match: false]
+ANSWER: Farina_2019
+
+FIELD: subject_id
+REASONING: The BioSample record for SAMN35361965 contains an Ids element with a db_label='Sample name' showing value 'ind11', and the custom attribute 'id' is also '11'. This sample-level identifier maps to individual subject 11 in the study. The user-uploaded paper Table 1 lists subjects as #1, #2, #3 within each group, and this sample (ind11) corresponds to subject #1 within the T2D−P+ group based on the metagenomic sequencing results shown in Table 3 of the paper, where sample ID '11' is assigned to the T2D −P+ group. [Sources: NCBI_biosample (Ids element, 'Sample name: ind11'; Attributes, 'id: 11'); user_uploaded_file (Table 3, 'ID 11, Type T2D −P+'); NCBI_experiment (SAMPLE IDENTIFIERS, 'SUBMITTER_ID: ind11')] [Conflict: none] [ID-match: true]
+ANSWER: ind11
+
+FIELD: sample_id
+REASONING: The BioSample record primary accession identifier is SAMN35361965, and the sample name (db_label) is 'ind11'. The filename attributes show 'ind11.r1' and 'ind11.r2', indicating the sample identifier used in sequencing files is 'ind11'. This is the unique identifier for this specific biospecimen. [Sources: NCBI_biosample (Ids element, accession: SAMN35361965; db_label: ind11); NCBI_experiment (SUBMITTER_ID: ind11.r1.fastq.gz, LIBRARY_NAME: placca-11_S6)] [Conflict: none] [ID-match: true]
+ANSWER: SAMN35361965
+
+FIELD: target_condition
+REASONING: This sample belongs to the T2D−P+ study group (no type 2 diabetes, with periodontitis), as explicitly documented in Table 3 of the user-uploaded paper showing sample ID '11' assigned to 'T2D −P+'. The target condition for this sample is periodontitis; the sample was collected from a patient diagnosed with moderate to severe periodontitis but without type 2 diabetes, based on the inclusion criteria requiring 'at least 30% of sites with clinical attachment loss ≥3 mm' and 'at least 4 sites with probing depth ≥5 mm' for the P+ group, with exclusion of any T2D diagnosis. Periodontitis is the primary phenotype/condition present in this sample per MONDO:0005948 or NCIT:C34705. [Sources: user_uploaded_file (Table 3, 'ID 11, Type T2D −P+'; Materials & methods, inclusion criteria for T2D−P+ group: 'diagnosis of moderate to severe periodontitis'); NCBI_bioproject (description, 'presence/absence of poorly controlled type 2 Diabetes Mellitus and moderate-severe periodontitis')] [Conflict: none] [ID-match: true]
+ANSWER: Periodontitis
+
+FIELD: control
+REASONING: This sample comes from a T2D−P+ patient (no type 2 diabetes, with periodontitis). The sample is NOT from the fully unaffected control group. The control group in this study is T2D−P− (neither type 2 diabetes nor periodontitis). This sample belongs to an affected group (affected by periodontitis), so it cannot be classified as 'Study Control' per the definition requiring 'NONE of the study's conditions/exposures present.' The sample is a Case, as it has periodontitis (one of the primary conditions investigated in the study). [Sources: user_uploaded_file (Table 3, 'ID 11, Type T2D −P+'; inclusion criteria distinguishing T2D−P+ from T2D−P−); NCBI_bioproject (description, 'four study groups based on presence/absence of...type 2 Diabetes Mellitus and moderate-severe periodontitis')] [Conflict: none] [ID-match: true]
+ANSWER: Case
+
+FIELD: body_site
+REASONING: The BioSample isolation_source attribute explicitly states 'subgingival oral plaque', and the user-uploaded paper Materials & methods confirms 'subgingival plaque samples were collected at 4 sites, all representative of the periodontal condition of the individual' using 'a curette' to collect material from subgingival locations. Subgingival plaque is sampled from the subgingival environment (below the gingival margin), which falls under the standardized body_site 'oral cavity' per UBERON:0000167. [Sources: NCBI_biosample (Attributes, 'isolation_source: subgingival oral plaque'); user_uploaded_file (Materials & methods, 'subgingival plaque samples were collected'; 'Subgingival plaque was collected with a curette')] [Conflict: none] [ID-match: true]
+ANSWER: oral cavity
+
+FIELD: sequencing_platform
+REASONING: The NCBI_experiment record for this sample states 'INSTRUMENT_MODEL: NextSeq 500', and the user-uploaded paper Methods section confirms 'Samples were sequenced with an Illumina NextSeq 500 sequencer with 2 × 150-bp read, using NextSeq 500/550 Mid Output Kit v2.' The NextSeq 500 is an Illumina sequencing platform, which maps to the allowed value 'IlluminaNextSeq'. [Sources: NCBI_experiment (PLATFORM section, 'ILLUMINA: INSTRUMENT_MODEL: NextSeq 500'); user_uploaded_file (Materials & methods section, 'Illumina NextSeq 500 sequencer')] [Conflict: none] [ID-match: true]
+ANSWER: IlluminaNextSeq
+
+FIELD: host_species
+REASONING: The BioSample record explicitly states in the Attributes section 'host: Homo sapiens', and the study recruited human adult participants (≥40 years) with specified clinical and laboratory criteria. The Description section identifies the organism as 'human oral metagenome' with taxonomy_id 447426, referencing the human host. [Sources: NCBI_biosample (Attributes, 'host: Homo sapiens'); user_uploaded_file (Materials & methods, 'Twelve adult (≥40 years) Caucasian individuals were recruited')] [Conflict: none] [ID-match: true]
+ANSWER: Homo sapiens
+
+FIELD: age
+REASONING: The user-uploaded paper Table 1 shows clinical characteristics of the study population organized by group. Sample ind11 belongs to the T2D−P+ group; Table 1 lists three T2D−P+ patients (#1, #2, #3) with ages 62, 45, and 51 years respectively. Mapping sample ID '11' (which corresponds to the third enrolled individual in the T2D−P+ group per Table 3) to Table 1's T2D−P+ #3 shows age 51 years. [Sources: user_uploaded_file (Table 1, 'T2D-P+ group, Patient #3, Age (years): 51'; Table 3, 'ID 11, Type T2D −P+')] [Conflict: none] [ID-match: true]
+ANSWER: 51
+
+FIELD: gender
+REASONING: The user-uploaded paper Table 1 lists clinical characteristics for each patient, with gender specified in a dedicated column. For the T2D−P+ group, the three patients are listed with genders: #1 Female, #2 Female, #3 Female. Sample ID '11' corresponds to patient #3 in the T2D−P+ group (as shown in Table 3 and the methods noting consecutive enrollment), indicating gender Female. [Sources: user_uploaded_file (Table 1, 'T2D-P+ group, Patient #3, Gender: Female'); Table 3 confirmation of patient assignment] [Conflict: none] [ID-match: true]
+ANSWER: Female
