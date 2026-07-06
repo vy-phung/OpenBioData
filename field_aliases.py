@@ -7,6 +7,8 @@ Seeded with common cMD / NCBI BioSample / SRA synonyms. Extend as new
 duplicate pairs are observed in practice.
 """
 
+import asyncio
+
 FIELD_ALIASES: dict[str, list[str]] = {
     "geographic_location_country_and_or_sea": [
         "geo_loc_name", "country", "geographic_location", "location", "geo_location",
@@ -90,13 +92,19 @@ def _canonical_of(name: str) -> str:
 _LLM_MATCH_CACHE: dict = {}  # {(a_lower, b_lower) sorted pair: bool} -- avoid repeat LLM calls for the same pair
 
 
-def _llm_field_name_match(existing_field_name: str, new_field_name: str) -> bool:
+async def _llm_field_name_match(existing_field_name: str, new_field_name: str) -> bool:
     """Ask the LLM whether two field names refer to the same underlying
     metadata concept. Modeled on model.align_to_schema()'s prompt style:
     confidently match, or explicitly abstain (-> False) if unsure. Safe:
     always returns a bool, defaulting to False on any parse/call failure --
     a false "different" verdict is safe (worst case: two separate columns),
     a false "same" verdict risks silently merging unrelated data.
+
+    The actual `call_llm_api` request is a blocking network call, offloaded
+    via `asyncio.to_thread` so a caller on the main request-handling event
+    loop (api.py's SSE stream) doesn't freeze mid-response -- this call can
+    take 10s of seconds and previously blocked the whole server for the
+    duration (see fixing UI report.md's 2026-07-06 follow-up).
     """
     cache_key = tuple(sorted((existing_field_name.strip().lower(), new_field_name.strip().lower())))
     if cache_key in _LLM_MATCH_CACHE:
@@ -138,7 +146,7 @@ def _llm_field_name_match(existing_field_name: str, new_field_name: str) -> bool
             'Return ONLY a JSON object: {"same_field": true|false}\n'
             "No markdown fences, no explanation.\n"
         )
-        response_text, _ = call_llm_api(prompt)
+        response_text, _ = await asyncio.to_thread(call_llm_api, prompt)
         raw = response_text.strip()
         if raw.startswith('```'):
             parts = raw.split('```')
@@ -159,7 +167,7 @@ def _llm_field_name_match(existing_field_name: str, new_field_name: str) -> bool
     return result
 
 
-def field_name_matches(existing_field_name: str, new_field_name: str) -> bool:
+async def field_name_matches(existing_field_name: str, new_field_name: str) -> bool:
     """Decide whether `existing_field_name` and `new_field_name` refer to the
     same underlying metadata concept, so a caller (e.g.
     metadata_merge.merge_metadata_into_table) can merge a new value into an
@@ -183,4 +191,4 @@ def field_name_matches(existing_field_name: str, new_field_name: str) -> bool:
     if _is_known_field(existing_field_name) and _is_known_field(new_field_name):
         return _canonical_of(existing_field_name).strip().lower() == _canonical_of(new_field_name).strip().lower()
 
-    return _llm_field_name_match(existing_field_name, new_field_name)
+    return await _llm_field_name_match(existing_field_name, new_field_name)

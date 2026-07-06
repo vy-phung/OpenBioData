@@ -92,8 +92,31 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
         return np.zeros(768, dtype='float32')
 
 
+_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+_SONNET_MODEL = "claude-sonnet-5"
+_ANTHROPIC_MAX_TOKENS = 4096  # unchanged output budget; also used as the "expected output" reserve below
+
+# Route to Haiku (200K hard context limit) while comfortably clear of it, to
+# Sonnet 5 (1M context) once Haiku's margin is used up, and only fall through
+# to Gemini if the context is too large even for Sonnet or the Anthropic call
+# itself errors -- see call_llm_api()'s model-selection block below.
+_HAIKU_SAFE_INPUT_BUDGET = 170_000    # real margin below Haiku's 200K hard limit
+_SONNET_CONTEXT_LIMIT = 1_000_000     # Sonnet 5's context window
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate for routing only (not billing): chars / 4."""
+    return len(text or "") // 4
+
+
+from dev_llm_cache import dev_cache_wrap
+
+
+@dev_cache_wrap
 def call_llm_api(prompt, model_name=None):
-    """Call LLM — tries Anthropic first, then each Gemini key in order.
+    """Call LLM — tries Anthropic first (routing between Haiku and Sonnet 5
+    by estimated context size; see model-selection block below), then each
+    Gemini key in order as a true last resort.
     Set env var SKIP_LLM_API=true to skip all LLM calls (returns 'unknown' placeholders
     for testing NCBI resolution without consuming API credits).
     """
@@ -106,21 +129,50 @@ def call_llm_api(prompt, model_name=None):
     # --- 1. Anthropic (ANTHROPIC_API_KEY) ---
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
-        try:
-            import anthropic as _anthropic
-            client = _anthropic.Anthropic(api_key=anthropic_key)
-            msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return msg.content[0].text, None
-        except Exception as e:
-            last_error = e
-            err_str = str(e).lower()
-            if "429" in str(e) or "rate_limit" in err_str or "overloaded" in err_str:
-                raise  # let safe_call_llm retry
-            print(f"Anthropic API error: {e} — trying Gemini keys.")
+        estimated_input_tokens = _estimate_tokens(prompt)
+        # Sonnet 5 has adaptive thinking on by default and rejects a manual
+        # budget_tokens thinking config (400) and any non-default temperature/
+        # top_p/top_k (400) -- deliberately NOT setting any of those here.
+        if estimated_input_tokens + _ANTHROPIC_MAX_TOKENS <= _HAIKU_SAFE_INPUT_BUDGET:
+            chosen_model = _HAIKU_MODEL
+        elif estimated_input_tokens + _ANTHROPIC_MAX_TOKENS <= _SONNET_CONTEXT_LIMIT:
+            chosen_model = _SONNET_MODEL
+        else:
+            chosen_model = None  # too large even for Sonnet 5 -- skip Anthropic, try Gemini
+
+        if chosen_model:
+            print(f"[call_llm_api] routing: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
+            try:
+                import anthropic as _anthropic
+                client = _anthropic.Anthropic(api_key=anthropic_key)
+                msg = client.messages.create(
+                    model=chosen_model,
+                    max_tokens=_ANTHROPIC_MAX_TOKENS,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                # Sonnet 5's adaptive thinking (on by default) can put a
+                # ThinkingBlock at content[0] with no .text attribute -- the
+                # actual answer is the first "text"-type block, not
+                # necessarily content[0]. Haiku (no default thinking)
+                # typically returns text at content[0] too, so this is a
+                # strict generalization, not a behavior change for Haiku.
+                text_block = next((b for b in msg.content if getattr(b, "type", None) == "text"), None)
+                if text_block is None:
+                    raise RuntimeError(
+                        f"Anthropic response for {chosen_model} had no text content block "
+                        f"(block types: {[getattr(b, 'type', None) for b in msg.content]})"
+                    )
+                print(f"[call_llm_api] used: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
+                return text_block.text, None
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if "429" in str(e) or "rate_limit" in err_str or "overloaded" in err_str:
+                    raise  # let safe_call_llm retry
+                print(f"Anthropic API error ({chosen_model}): {e} — trying Gemini keys.")
+        else:
+            print(f"[call_llm_api] routing: estimated_input_tokens={estimated_input_tokens} exceeds "
+                  f"Sonnet 5's context window — skipping Anthropic, trying Gemini.")
 
     # --- 2. Gemini — try each key in order ---
     gemini_model = model_name or "gemini-2.5-flash-lite"

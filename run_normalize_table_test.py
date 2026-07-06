@@ -105,7 +105,7 @@ async def main():
         save_df=None,
     )
 
-    rows = _rows_from_new_pipeline(accs_output, NICHE_CASES)
+    rows = await _rows_from_new_pipeline(accs_output, NICHE_CASES)
     print(f"\nBuilt {len(rows)} row(s) via api._rows_from_new_pipeline()")
 
     full_table_before = _build_full_table(rows)

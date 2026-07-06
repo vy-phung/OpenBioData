@@ -1,0 +1,77 @@
+{
+  "raw_accession": "KF006361",
+  "resolved_keys": [
+    "KF006361"
+  ],
+  "fields": {
+    "country": {
+      "answer": "philippines",
+      "explanations": [
+        "rag_llm-The NCBI accession metadata explicitly states 'origin_locality:Philippines: Bohol' in the note field, establishing Philippines as the country of origin and sample collection. [Sources: NCBI_accession (all_features note, 'origin_locality:Philippines: Bohol')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "KF006361"
+    },
+    "ethnicity": {
+      "answer": "filipino",
+      "explanations": [
+        "rag_llm-The NCBI accession record explicitly documents 'ethnicity:Filipino' in the all_features note field for sample KF006361. [Sources: NCBI_accession (all_features note, 'ethnicity:Filipino')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "KF006361"
+    },
+    "province/city": {
+      "answer": "bohol",
+      "explanations": [
+        "rag_llm-The NCBI accession metadata specifies 'origin_locality:Philippines: Bohol' in the note field, identifying Bohol as the specific province of origin within the Philippines. [Sources: NCBI_accession (all_features note, 'origin_locality:Philippines: Bohol')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "KF006361"
+    }
+  },
+  "additional_fields": {
+    "organism": {
+      "value": "Homo sapiens",
+      "explanation": "NCBI accession record lists organism as 'Homo sapiens' in the all_features field. [Sources: NCBI_accession (all_features, 'organism: Homo sapiens')]"
+    },
+    "isolate": {
+      "value": "FTDNA 254214",
+      "explanation": "NCBI accession record specifies isolate identifier as 'FTDNA 254214'. [Sources: NCBI_accession (isolate field, 'FTDNA 254214')]"
+    },
+    "collection_date": {
+      "value": "25-MAY-2013",
+      "explanation": "NCBI accession metadata records collection date as '25-MAY-2013'. [Sources: NCBI_accession (collection_date, '25-MAY-2013')]"
+    },
+    "geo_loc_name": {
+      "value": "Philippines: Bohol",
+      "explanation": "NCBI accession note field specifies 'origin_locality:Philippines: Bohol'. [Sources: NCBI_accession (all_features note, 'origin_locality:Philippines: Bohol')]"
+    },
+    "haplogroup": {
+      "value": "E1a1a1",
+      "explanation": "NCBI accession all_features field specifies haplogroup as 'E1a1a1'. [Sources: NCBI_accession (all_features, 'haplogroup: E1a1a1')]"
+    },
+    "tissue": {
+      "value": "mitochondrion",
+      "explanation": "NCBI accession indicates organelle source as 'mitochondrion' in all_features. [Sources: NCBI_accession (all_features, 'organelle: mitochondrion')]"
+    },
+    "mol_type": {
+      "value": "genomic DNA",
+      "explanation": "NCBI accession all_features field specifies mol_type as 'genomic DNA'. [Sources: NCBI_accession (all_features, 'mol_type: genomic DNA')]"
+    }
+  },
+  "signals": {
+    "KF006361": {
+      "in_NCBI": true,
+      "has_pubmed": false,
+      "accession_found_in_text": true,
+      "predicted_output": false,
+      "consistent_outputs": null,
+      "num_publications": 2,
+      "missing_key_fields": false,
+      "any_key_field_lacked_id_linkage": true
+    }
+  },
+  "resolved_entry": {
+    "bioproject": "",
+    "biosample": "",
+    "accession": "KF006361",
+    "experiment": ""
+  }
+}

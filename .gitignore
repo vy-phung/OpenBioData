@@ -74,3 +74,6 @@ temp/
 /test_accessions_refined.xlsx
 /test_output*.md
 /test_context_swap*.py
+
+# ── Dev-only LLM call cache (local scratch, never committed) ──────────────────
+.dev_llm_cache/

@@ -1,0 +1,34 @@
+{
+  "accession": "KF006361",
+  "benchmark_type": "ground_truth_edge_case",
+  "benchmark_file": "test-data/oucru_output/dr_duc_edge_case_output.xlsx",
+  "known_issue": "None",
+  "field_results": {
+    "country": {
+      "extracted": "philippines",
+      "ground_truth": "Philippines",
+      "verdict": "match",
+      "note": "exact match"
+    },
+    "sample_type(modern/ancient)": {
+      "extracted": "",
+      "ground_truth": "unknown",
+      "verdict": "match",
+      "note": "both unknown/not stated"
+    },
+    "ethnicity": {
+      "extracted": "filipino",
+      "ground_truth": "Filipino (or Tagalog)",
+      "verdict": "match",
+      "note": "substring match"
+    },
+    "province/city": {
+      "extracted": "bohol",
+      "ground_truth": "Philippines Bohol",
+      "verdict": "match",
+      "note": "substring match"
+    }
+  },
+  "accuracy_pct": 100.0,
+  "special_checks": []
+}

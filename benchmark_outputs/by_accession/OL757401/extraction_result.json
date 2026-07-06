@@ -1,0 +1,80 @@
+{
+  "raw_accession": "OL757401",
+  "resolved_keys": [
+    "OL757401"
+  ],
+  "fields": {
+    "taxonomic name": {
+      "answer": "janus sp.",
+      "explanations": [
+        "rag_llm-The organism field in the NCBI record explicitly states 'Janus sp.' and the web search result confirms 'Janus sp. mitochondrion, complete genome'. [Sources: NCBI_accession (all_features attribute, 'organism: Janus sp.'); web_search_https://www.ncbi.nlm.nih.gov/nuccore/OL757401/ (page title, 'Janus sp. mitochondrion, complete genome')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757401"
+    },
+    "country": {
+      "answer": "china",
+      "explanations": [
+        "rag_llm-The geo_loc_name attribute in the NCBI record states 'China', and the country field in the structured data confirms 'china'. [Sources: NCBI_accession (all_features attribute, 'geo_loc_name: China'; country field, 'china')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757401"
+    },
+    "collection_date": {
+      "answer": "apr-2021",
+      "explanations": [
+        "rag_llm-The collection_date attribute in the NCBI all_features section explicitly states 'Apr-2021'. [Sources: NCBI_accession (all_features attribute, 'collection_date: Apr-2021')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757401"
+    },
+    "elevation": {
+      "answer": "569 m",
+      "explanations": [
+        "rag_llm-The altitude attribute in the NCBI all_features section explicitly states 'altitude: 569 m'. [Sources: NCBI_accession (all_features attribute, 'altitude: 569 m')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757401"
+    }
+  },
+  "additional_fields": {
+    "organism": {
+      "value": "Janus sp.",
+      "explanation": "NCBI accession record specifies 'organism: Janus sp.' as the taxonomic identification of the sequenced specimen. [Sources: NCBI_accession (all_features, 'organism: Janus sp.')]"
+    },
+    "altitude": {
+      "value": "569 m",
+      "explanation": "NCBI accession record specifies 'altitude: 569 m' for the collection site elevation. [Sources: NCBI_accession (all_features, 'altitude: 569 m')]"
+    },
+    "sample_type": {
+      "value": "mitochondrion",
+      "explanation": "NCBI accession record indicates 'organelle: mitochondrion' and 'mol_type: genomic DNA', indicating this is a mitochondrial genome sequence sample. [Sources: NCBI_accession (all_features, 'organelle: mitochondrion' and 'mol_type: genomic DNA')]"
+    },
+    "collected_by": {
+      "value": "Yalan Cheng & Duo Wu",
+      "explanation": "NCBI accession record names 'collected_by: Yalan Cheng & Duo Wu' as the collectors of the specimen. [Sources: NCBI_accession (all_features, 'collected_by: Yalan Cheng & Duo Wu')]"
+    },
+    "identified_by": {
+      "value": "Wei Meicai",
+      "explanation": "NCBI accession record names 'identified_by: Wei Meicai' as the person who taxonomically identified the specimen. [Sources: NCBI_accession (all_features, 'identified_by: Wei Meicai')]"
+    },
+    "ncbi_accession": {
+      "value": "OL757401.1",
+      "explanation": "GenBank accession number for the mitochondrial genome sequence is OL757401.1. [Sources: NCBI_accession (accession identifier, 'OL757401') and web_search (title, 'GenBank: OL757401.1')]"
+    }
+  },
+  "signals": {
+    "OL757401": {
+      "in_NCBI": true,
+      "has_pubmed": false,
+      "accession_found_in_text": true,
+      "predicted_output": false,
+      "consistent_outputs": null,
+      "num_publications": 2,
+      "missing_key_fields": false,
+      "any_key_field_lacked_id_linkage": false
+    }
+  },
+  "resolved_entry": {
+    "bioproject": "",
+    "biosample": "",
+    "accession": "OL757401",
+    "experiment": ""
+  }
+}

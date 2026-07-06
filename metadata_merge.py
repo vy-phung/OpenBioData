@@ -8,6 +8,7 @@ and does the wrong thing here (string-joins differing values with " or ",
 no source-list tracking). This module is the replacement.
 """
 
+import asyncio
 import re
 
 from field_aliases import field_name_matches, _is_known_field, _canonical_of
@@ -86,8 +87,8 @@ def _extend_conflict_marker(existing_value: str, existing_label: str, new_label:
     return f"{existing_value} ##CONFLICT: {existing_label}={existing_value}, {new_label}={new_value}"
 
 
-def merge_metadata_into_table(table: dict, new_fields: dict, source_label: str, is_llm: bool = False,
-                               identifier_values: dict = None) -> dict:
+async def merge_metadata_into_table(table: dict, new_fields: dict, source_label: str, is_llm: bool = False,
+                                     identifier_values: dict = None) -> dict:
     """Merge `new_fields` into `table`, corroborating matches instead of
     dropping or overwriting them. Safe to call repeatedly, across many
     sources over time, accumulating into the same table -- each call only
@@ -130,8 +131,13 @@ def merge_metadata_into_table(table: dict, new_fields: dict, source_label: str, 
             continue
 
         existing_key = None
+        # Sequential and short-circuiting on purpose: takes the FIRST matching
+        # key in table-iteration order, so running these concurrently (e.g.
+        # asyncio.gather over every candidate_key) would fire extra LLM calls
+        # past the first match on every row -- wasted latency/cost for no
+        # behavior change, since only the first match is ever kept anyway.
         for candidate_key in table.keys():
-            if field_name_matches(candidate_key, new_key):
+            if await field_name_matches(candidate_key, new_key):
                 existing_key = candidate_key
                 break
 
@@ -361,6 +367,56 @@ def _merge_companions(full_table: list, canonical_map: dict, companions_by_base:
                 })
 
 
+_NUMERIC_RE = re.compile(r'^-?\d+(\.\d+)?$')
+
+
+def _looks_numeric(value: str) -> bool:
+    v = value.strip().replace(",", "")
+    if not v:
+        return False
+    return bool(_NUMERIC_RE.match(v))
+
+
+def _column_value_shape(full_table: list, col: str) -> str:
+    """Classify a column's own non-blank values as "numeric" (at least one
+    value parses as a plain number, and none don't), "text" (at least one
+    value doesn't parse as a plain number, and none do), "mixed" (some of
+    each -- inconclusive), or "unknown" (no non-blank values to judge from).
+    """
+    seen_numeric = False
+    seen_text = False
+    for row in full_table:
+        if not _row_has_value(row, col):
+            continue
+        val = str(row.get(col, "") or "")
+        if _looks_numeric(val):
+            seen_numeric = True
+        else:
+            seen_text = True
+    if seen_numeric and seen_text:
+        return "mixed"
+    if seen_numeric:
+        return "numeric"
+    if seen_text:
+        return "text"
+    return "unknown"
+
+
+def _type_shape_conflict(full_table: list, col_a: str, col_b: str) -> bool:
+    """True only when the two columns' value shapes are confidently
+    opposite (one strictly numeric-only, the other strictly text/
+    categorical-only) -- a structural signal that they hold different
+    kinds of facts (e.g. a raw measurement vs. a categorical label) even
+    when field_name_matches() or value-overlap judged them the same
+    concept. Deliberately doesn't fire on "mixed"/"unknown" shapes, to
+    avoid over-blocking legitimate merges just because a column happens to
+    have few or ambiguous values.
+    """
+    shape_a = _column_value_shape(full_table, col_a)
+    shape_b = _column_value_shape(full_table, col_b)
+    return {shape_a, shape_b} == {"numeric", "text"}
+
+
 def _normalize_output_table_impl(full_table: list):
     if not full_table:
         return full_table, []
@@ -392,8 +448,42 @@ def _normalize_output_table_impl(full_table: list):
     merge_log: list = []
     canonical_map: dict = {c: c for c in base_columns}  # original base col -> current canonical
 
+    # ── Structural safety net: never merge two columns whose value shapes
+    # confidently conflict (one numeric-only, the other text-only), even if
+    # the underlying matcher (name-synonym or value-overlap) said "same".
+    # Flags the pair for manual review instead of silently merging or
+    # dropping it. Applies to both Step 1 and Step 2's matchers below.
+    flagged_pairs: set = set()
+
+    def _guarded_matcher(base_matcher):
+        def matcher(a, b):
+            if not base_matcher(a, b):
+                return False
+            if _type_shape_conflict(full_table, a, b):
+                pair_key = frozenset((a, b))
+                if pair_key not in flagged_pairs:
+                    flagged_pairs.add(pair_key)
+                    merge_log.append({
+                        "canonical": None, "merged_from": [a, b],
+                        "reason": "FLAGGED FOR MANUAL REVIEW -- matcher judged these the same "
+                                  "concept, but one column's values are numeric-only and the "
+                                  "other's are text/categorical-only; not merged automatically",
+                        "conflicts": 0,
+                    })
+                return False
+            return True
+        return matcher
+
     # ── Step 1: column-name synonym merge (reuses field_name_matches) ──────
-    name_clusters = _union_find_clusters(base_columns, field_name_matches)
+    # field_name_matches is async (its LLM fallback is offloaded via
+    # asyncio.to_thread so it doesn't block api.py's request-handling event
+    # loop -- see merge_metadata_into_table above). This function itself runs
+    # synchronously on its own worker thread (via asyncio.to_thread(save_to_excel,
+    # ...), with no event loop of its own), so bridge with asyncio.run() per call.
+    def _sync_field_name_matches(a, b):
+        return asyncio.run(field_name_matches(a, b))
+
+    name_clusters = _union_find_clusters(base_columns, _guarded_matcher(_sync_field_name_matches))
     for cluster in name_clusters:
         if len(cluster) <= 1:
             continue
@@ -421,7 +511,7 @@ def _normalize_output_table_impl(full_table: list):
             return False
         return (agree / both_present) >= _VALUE_DUP_THRESHOLD
 
-    value_clusters = _union_find_clusters(remaining_columns, _values_mostly_equal)
+    value_clusters = _union_find_clusters(remaining_columns, _guarded_matcher(_values_mostly_equal))
     for cluster in value_clusters:
         if len(cluster) <= 1:
             continue

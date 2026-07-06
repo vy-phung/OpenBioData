@@ -1,0 +1,52 @@
+{
+  "accession": "OL757400",
+  "benchmark_type": "peer_extraction_not_official_ground_truth",
+  "benchmark_file": "test-data/marko_output/Marko_outputs.xlsx",
+  "known_issue": "None",
+  "field_results": {
+    "taxonomic name": {
+      "extracted": "janus sp. 1 gyn-2022e",
+      "ground_truth": "janus sp. 2 gyn-2021a",
+      "verdict": "partial",
+      "note": "partial token overlap ({'janus', 'sp'})"
+    },
+    "country": {
+      "extracted": "china",
+      "ground_truth": "china",
+      "verdict": "match",
+      "note": "exact match"
+    },
+    "province": {
+      "extracted": "",
+      "ground_truth": "zhejiang province",
+      "verdict": "missing",
+      "note": "ground truth='zhejiang province'; extraction produced nothing"
+    },
+    "collection_date": {
+      "extracted": "apr-2021",
+      "ground_truth": "2021-04-12",
+      "verdict": "partial",
+      "note": "partial token overlap ({'2021'})"
+    },
+    "sex": {
+      "extracted": "",
+      "ground_truth": "female",
+      "verdict": "missing",
+      "note": "ground truth='female'; extraction produced nothing"
+    },
+    "elevation": {
+      "extracted": "820 m",
+      "ground_truth": "820m",
+      "verdict": "match",
+      "note": "exact match"
+    },
+    "associated taxa": {
+      "extracted": "",
+      "ground_truth": "severe acute respiratory syndrome coronavirus 2",
+      "verdict": "missing",
+      "note": "ground truth='severe acute respiratory syndrome coronavirus 2'; extraction produced nothing"
+    }
+  },
+  "accuracy_pct": 42.9,
+  "special_checks": []
+}

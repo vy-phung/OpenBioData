@@ -1,0 +1,88 @@
+{
+  "raw_accession": "OL757400",
+  "resolved_keys": [
+    "OL757400"
+  ],
+  "fields": {
+    "taxonomic name": {
+      "answer": "janus sp. 1 gyn-2022e",
+      "explanations": [
+        "rag_llm-The organism name is explicitly stated in the NCBI_accession source as 'Janus sp. 1 GYN-2022e' within the all_features field, and confirmed by the web source title 'Janus sp. 1 GYN-2022e mitochondrion, complete genome'. [Sources: NCBI_accession (all_features, 'organism: Janus sp. 1 GYN-2022e'); web_search_https://www.ncbi.nlm.nih.gov/nuccore/OL757400/ (title, 'Janus sp. 1 GYN-2022e mitochondrion')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757400"
+    },
+    "country": {
+      "answer": "china",
+      "explanations": [
+        "rag_llm-The geo_loc_name attribute in the NCBI_accession source explicitly states 'China', and the country field in the same source confirms 'china'. This matches the allowed ontology value for NCIT:C25464. [Sources: NCBI_accession (geo_loc_name attribute, 'China'; country field, 'china')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757400"
+    },
+    "collection_date": {
+      "answer": "apr-2021",
+      "explanations": [
+        "rag_llm-The collection_date attribute in NCBI_accession explicitly states 'Apr-2021', representing April 2021. This is the specific temporal value recorded for this sample. [Sources: NCBI_accession (collection_date attribute, 'Apr-2021')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757400"
+    },
+    "elevation": {
+      "answer": "820 m",
+      "explanations": [
+        "rag_llm-The altitude attribute in the NCBI_accession all_features field explicitly states 'altitude: 820 m', representing the elevation at which this sample was collected. [Sources: NCBI_accession (all_features, 'altitude: 820 m')] [Conflict: none] [ID-match: true]"
+      ],
+      "resolved_key": "OL757400"
+    }
+  },
+  "additional_fields": {
+    "geo_loc_name": {
+      "value": "China",
+      "explanation": "NCBI accession record lists geo_loc_name as 'China'. [Sources: NCBI_accession (all_features field, 'geo_loc_name: China')]"
+    },
+    "organism": {
+      "value": "Janus sp. 1 GYN-2022e",
+      "explanation": "NCBI accession record identifies organism as 'Janus sp. 1 GYN-2022e'. [Sources: NCBI_accession (all_features field, 'organism: Janus sp. 1 GYN-2022e')]"
+    },
+    "organelle": {
+      "value": "mitochondrion",
+      "explanation": "NCBI accession record specifies organelle as 'mitochondrion'. [Sources: NCBI_accession (all_features field, 'organelle: mitochondrion')]"
+    },
+    "mol_type": {
+      "value": "genomic DNA",
+      "explanation": "NCBI accession record indicates mol_type as 'genomic DNA'. [Sources: NCBI_accession (all_features field, 'mol_type: genomic DNA')]"
+    },
+    "altitude": {
+      "value": "820 m",
+      "explanation": "NCBI accession record provides altitude as '820 m'. [Sources: NCBI_accession (all_features field, 'altitude: 820 m')]"
+    },
+    "collected_by": {
+      "value": "Li Dongbin",
+      "explanation": "NCBI accession record names collector as 'Li Dongbin'. [Sources: NCBI_accession (all_features field, 'collected_by: Li Dongbin')]"
+    },
+    "identified_by": {
+      "value": "Wei Meicai",
+      "explanation": "NCBI accession record names identifier as 'Wei Meicai'. [Sources: NCBI_accession (all_features field, 'identified_by: Wei Meicai')]"
+    },
+    "tax_id": {
+      "value": "3003421",
+      "explanation": "NCBI accession record provides taxon ID as '3003421'. [Sources: NCBI_accession (all_features field, 'db_xref: taxon:3003421')]"
+    }
+  },
+  "signals": {
+    "OL757400": {
+      "in_NCBI": true,
+      "has_pubmed": false,
+      "accession_found_in_text": true,
+      "predicted_output": false,
+      "consistent_outputs": null,
+      "num_publications": 2,
+      "missing_key_fields": false,
+      "any_key_field_lacked_id_linkage": false
+    }
+  },
+  "resolved_entry": {
+    "bioproject": "",
+    "biosample": "",
+    "accession": "OL757400",
+    "experiment": ""
+  }
+}

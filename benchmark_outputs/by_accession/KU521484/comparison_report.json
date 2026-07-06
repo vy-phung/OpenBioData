@@ -1,0 +1,34 @@
+{
+  "accession": "KU521484",
+  "benchmark_type": "ground_truth",
+  "benchmark_file": "test-data/oucru_output/updated_4934_samples_output.xlsx",
+  "known_issue": "None",
+  "field_results": {
+    "country": {
+      "extracted": "brunei",
+      "ground_truth": "Brunei",
+      "verdict": "match",
+      "note": "exact match"
+    },
+    "sample_type(modern/ancient)": {
+      "extracted": "modern",
+      "ground_truth": "modern",
+      "verdict": "match",
+      "note": "exact match"
+    },
+    "ethnicity": {
+      "extracted": "",
+      "ground_truth": "Bruneian Malay",
+      "verdict": "missing",
+      "note": "ground truth='Bruneian Malay'; extraction produced nothing"
+    },
+    "province/city": {
+      "extracted": "",
+      "ground_truth": "Brunei (Borneo)",
+      "verdict": "missing",
+      "note": "ground truth='Brunei (Borneo)'; extraction produced nothing"
+    }
+  },
+  "accuracy_pct": 50.0,
+  "special_checks": []
+}

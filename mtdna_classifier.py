@@ -13,7 +13,10 @@ except ImportError:
 from NER.PDF import pdf
 from NER.WordDoc import wordDoc
 from NER.html import extractHTML
-from NER.word2Vec import word2vec
+try:
+    from NER.word2Vec import word2vec
+except ImportError:
+    word2vec = None
 from transformers import pipeline
 import urllib.parse, requests
 from pathlib import Path

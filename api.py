@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
+import queue
 import re
 import tempfile
+import time
 import uuid
 
 import metadata_merge
@@ -286,7 +288,7 @@ def _log_analytics(event: str, session_id: str, email: str, properties: dict, us
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bool = True) -> list:
+async def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bool = True) -> list:
     """Convert additional_pipeline.pipeline_with_gemini output to row dicts.
 
     Each row includes:
@@ -506,7 +508,7 @@ def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_names: bo
             # weren't already resolved by additional_pipeline's schema-alignment pass
             # corroborate one column instead of the second silently dropping.
             pass2_table: dict = {}
-            metadata_merge.merge_metadata_into_table(
+            await metadata_merge.merge_metadata_into_table(
                 pass2_table, pass2_fields, source_label="Pass 2 (LLM)", is_llm=True,
                 identifier_values={
                     "biosample_accession": biosample_acc,
@@ -1346,7 +1348,13 @@ async def analyze(req: AnalyzeRequest):
                 for _ca, _ce in list(resolved_dict.items()):
                     _ca_id = (_ce.get("biosample") or _ce.get("accession")
                               or _ce.get("experiment") or _ca)
-                    _ca_bp = _ce.get("bioproject") or (req.accession_id or "")
+                    # Must match the write-side fallback in the partial_result
+                    # handler below (_cbp = _cr.get("bioproject") or "") --
+                    # otherwise a bioproject-less accession (e.g. a bare SRA/
+                    # GenBank entry with no linked BioProject) is saved under
+                    # one key and looked up under a different one, and the
+                    # cache never hits for it.
+                    _ca_bp = _ce.get("bioproject") or ""
                     _hit = await asyncio.to_thread(_cache_get, _ca_id, _ca_bp, list(niche_cases))
                     if _hit is not None:
                         # Build a minimal row from cache
@@ -1407,28 +1415,45 @@ async def analyze(req: AnalyzeRequest):
                             if u.strip()
                         ]
 
-                    # Queue lets the pipeline push progress without blocking
-                    _progress_q: asyncio.Queue = asyncio.Queue()
+                    # Thread-safe queue (NOT asyncio.Queue): the pipeline itself now
+                    # runs on a worker thread (see _run_pipeline_in_thread below) so
+                    # its blocking NCBI/download/tabula calls can't freeze this
+                    # coroutine's event loop and starve the SSE stream of bytes.
+                    # asyncio.Queue is not safe to put()/get() across threads;
+                    # queue.Queue is.
+                    _progress_q: "queue.Queue" = queue.Queue()
                     _samples_done = 0
 
                     async def _pipe_progress(msg: str):
-                        await _progress_q.put(msg)
+                        _progress_q.put(msg)
+
+                    def _run_pipeline_in_thread():
+                        """Run pipeline_with_gemini in its own event loop on a
+                        worker thread. Isolating it here is what lets SSE
+                        heartbeats keep flowing while the pipeline is stuck in a
+                        blocking NCBI/download/tabula-java call — see
+                        _thread_with_heartbeat's docstring for the failure mode
+                        this avoids for the rest of the pipeline.
+                        """
+                        return asyncio.run(
+                            _rich_pipeline(
+                                resolved_dict,
+                                niche_cases=niche_cases,
+                                # Discovery-mode paper links: read each as a source for
+                                # its own discovered samples (schema URLs stay separate).
+                                other_links=_paper_other_links or None,
+                                standardization_urls=std_urls or None,
+                                user_context_text=user_context_text,
+                                user_url_sources=user_url_sources or None,
+                                progress_cb=_pipe_progress,
+                                cancel_event=cancel_event,
+                                user_file_label=req.context_file_name or None,
+                                per_accession_context=per_accession_context or None,
+                            )
+                        )
 
                     pipeline_task = asyncio.ensure_future(
-                        _rich_pipeline(
-                            resolved_dict,
-                            niche_cases=niche_cases,
-                            # Discovery-mode paper links: read each as a source for
-                            # its own discovered samples (schema URLs stay separate).
-                            other_links=_paper_other_links or None,
-                            standardization_urls=std_urls or None,
-                            user_context_text=user_context_text,
-                            user_url_sources=user_url_sources or None,
-                            progress_cb=_pipe_progress,
-                            cancel_event=cancel_event,
-                            user_file_label=req.context_file_name or None,
-                            per_accession_context=per_accession_context or None,
-                        )
+                        asyncio.to_thread(_run_pipeline_in_thread)
                     )
                     _pipeline_task_ref.append(pipeline_task)
 
@@ -1449,7 +1474,7 @@ async def analyze(req: AnalyzeRequest):
                         elif isinstance(msg, dict) and "__links_warning__" in msg:
                             yield _sse("links_warning", msg["__links_warning__"])
                         elif isinstance(msg, dict) and "__partial_acc__" in msg:
-                            partial_rows = _rows_from_new_pipeline(
+                            partial_rows = await _rows_from_new_pipeline(
                                 msg["__partial_data__"], _effective_niche or None
                             )
                             _samples_done += len(partial_rows)
@@ -1459,6 +1484,8 @@ async def analyze(req: AnalyzeRequest):
                                 _cid = (_cr.get("biosample_accession")
                                         or _cr.get("sra_accession")
                                         or _cr.get("genbank_accession") or "")
+                                # Must match the read-side fallback in the cache-lookup
+                                # block above (_ca_bp = _ce.get("bioproject") or "").
                                 _cbp = _cr.get("bioproject") or ""
                                 if _cid and os.environ.get("GCP_CREDS_JSON"):
                                     asyncio.ensure_future(
@@ -1467,11 +1494,21 @@ async def analyze(req: AnalyzeRequest):
                         elif isinstance(msg, str):
                             yield _sse("progress", {"message": msg})
 
-                    # Stream progress while pipeline runs; check cancel each tick
+                    # Stream progress while pipeline runs; check cancel each tick.
+                    # _last_activity tracks the last time real bytes went out on the
+                    # SSE connection. Long pipeline stages (literature search, LLM
+                    # inference, tabula extraction) can run for minutes with no
+                    # progress_cb call at all -- without a heartbeat during those
+                    # gaps, a browser/proxy idle timeout kills the connection (see
+                    # _thread_with_heartbeat's docstring) even though the worker
+                    # thread is still making progress.
+                    _last_activity = time.monotonic()
+                    _HEARTBEAT_INTERVAL = 10.0
                     while not pipeline_task.done():
                         if cancel_event.is_set():
                             pipeline_task.cancel()
                             yield _sse("progress", {"message": "⏹ Stop requested — cancelling…"})
+                            _last_activity = time.monotonic()
                             break
                         if _samples_done >= effective_limit:
                             pipeline_task.cancel()
@@ -1479,13 +1516,24 @@ async def analyze(req: AnalyzeRequest):
                                 "message": f"⚠ Sample limit reached ({effective_limit}). Stopping."
                             })
                             yield _sse("limit_reached", {"limit": effective_limit})
+                            _last_activity = time.monotonic()
                             break
                         try:
-                            msg = await asyncio.wait_for(_progress_q.get(), timeout=0.3)
+                            # Blocking get() with a timeout, offloaded to a worker
+                            # thread so it doesn't block this event loop either.
+                            msg = await asyncio.to_thread(_progress_q.get, True, 0.3)
                             async for evt in _emit_queue_item(msg):
                                 yield evt
+                                _last_activity = time.monotonic()
                             await asyncio.sleep(0)
-                        except asyncio.TimeoutError:
+                        except queue.Empty:
+                            if time.monotonic() - _last_activity >= _HEARTBEAT_INTERVAL:
+                                # SSE comment line: keeps the connection alive without
+                                # looking like a "data: " progress event, so the
+                                # frontend's `line.startsWith('data: ')` filter (and
+                                # anyone reading the log) ignores it silently.
+                                yield ": heartbeat\n\n"
+                                _last_activity = time.monotonic()
                             await asyncio.sleep(0)
 
                     # Drain any remaining messages
@@ -1511,7 +1559,7 @@ async def analyze(req: AnalyzeRequest):
                         # OHE fields from the pipeline (stored under __niche_cases__).
                         _auto_niche = accs_output.pop("__niche_cases__", None) or []
                         _effective_niche = list(niche_cases or _auto_niche)
-                        _pipeline_rows = _rows_from_new_pipeline(accs_output, _effective_niche or None)
+                        _pipeline_rows = await _rows_from_new_pipeline(accs_output, _effective_niche or None)
                         all_rows.extend(_pipeline_rows)   # preserve any cached rows already in all_rows
                         yield _sse("progress", {
                             "message": f"✅ Extracted metadata for {len(all_rows)} sample(s)"

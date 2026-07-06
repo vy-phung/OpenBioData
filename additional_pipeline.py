@@ -1295,7 +1295,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 acc_score["_additional_fields"].pop(raw_key, None)
               aligned_batch[canonical] = {'value': info.get('value', ''), 'explanation': explanation}
             if aligned_batch:
-              metadata_merge.merge_metadata_into_table(
+              await metadata_merge.merge_metadata_into_table(
                   acc_score["_additional_fields"], aligned_batch,
                   source_label="Schema alignment (Pass 2)", is_llm=True,
                   identifier_values={
