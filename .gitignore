@@ -67,3 +67,10 @@ tmp/
 temp/
 *.tmp
 *.bak
+
+# ── Local benchmark/test scratch data (not for public distribution) ──────────
+/benchmark_outputs/
+/test-data/
+/test_accessions_refined.xlsx
+/test_output*.md
+/test_context_swap*.py
