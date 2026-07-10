@@ -105,10 +105,12 @@ def _open_or_create_worksheet(wb, title: str, headers: list):
 # ── Known-sample result cache (Google Sheet "KnownCachedSamples") ─────────────
 _CACHE_SHEET_NAME = "KnownCachedSamples"
 _CACHE_HEADERS    = ["sample_id", "bioproject", "timestamp", "fields_json"]
-_CACHE_TTL_SECS   = 300   # reload from sheet at most every 5 minutes
+_CACHE_TTL_SECS   = 300   # reload from sheet at most every 5 minutes (on success)
+_CACHE_FAILURE_BACKOFF_SECS = 300  # after a failed reload, wait at least this long before retrying
 
 _cache_mem: dict  = {}          # (sample_id, bioproject) → {field: value}
-_cache_load_time: list = [0.0]  # mutable container so we can update in nested fn
+_cache_load_time: list = [0.0]         # mutable container: last successful reload time
+_cache_last_failure_time: list = [0.0]  # last failed reload attempt time (0.0 = never failed)
 
 def _cache_open_sheet():
     """Return the KnownCachedSamples gspread worksheet, creating it if needed."""
@@ -149,12 +151,22 @@ def _cache_reload() -> None:
         _cache_load_time[0] = time.time()
         print(f"[cache] Loaded {len(_cache_mem)} cached samples.")
     except Exception as e:
-        print(f"[cache] Reload failed: {e}")
+        _cache_last_failure_time[0] = time.time()
+        print(f"[cache] Reload failed: {e} -- backing off for {_CACHE_FAILURE_BACKOFF_SECS}s before retrying "
+              f"(was retrying on every sample before this fix).")
 
 
 def _cache_ensure_fresh() -> None:
     import time
-    if time.time() - _cache_load_time[0] > _CACHE_TTL_SECS:
+    now = time.time()
+    # Skip retrying while still within the backoff window since the last
+    # failed attempt -- _cache_load_time only advances on success, so
+    # without this check `now - _cache_load_time[0]` stays huge forever
+    # after a failure and every single sample's read/write would retry the
+    # same doomed network call (see task3_knowncachedsamples_report.md).
+    if now - _cache_last_failure_time[0] < _CACHE_FAILURE_BACKOFF_SECS:
+        return
+    if now - _cache_load_time[0] > _CACHE_TTL_SECS:
         _cache_reload()
 
 
@@ -620,11 +632,6 @@ class AnalyzeRequest(BaseModel):
     run_id: Optional[str] = None                 # client-provided run UUID for cancellation
     email: Optional[str] = ""                    # signed-in user email for usage tracking
     session_id: Optional[str] = ""                # anonymous session id for usage tracking (no email)
-
-
-class ChatMessageRequest(BaseModel):
-    message: str
-    state: Optional[Dict[str, Any]] = None
 
 
 class ReportRequest(BaseModel):
@@ -1343,6 +1350,12 @@ async def analyze(req: AnalyzeRequest):
             all_rows: list = []
 
             # ── Cache lookup: skip pipeline for already-known samples ─────────
+            # Requires niche_cases (unlike the write side below, which doesn't) --
+            # _cache_get() checks `all(f is non-unknown for f in requested_fields)`,
+            # which is vacuously True over an empty field list. Without this gate,
+            # any sample with ANY prior cache entry would count as a "hit" even if
+            # that entry has none of the fields this run actually wants. Intentional
+            # asymmetry, not an oversight -- see task3_knowncachedsamples_report.md.
             if niche_cases and os.environ.get("GCP_CREDS_JSON"):
                 _cached_accs: list = []
                 for _ca, _ce in list(resolved_dict.items()):
@@ -1487,6 +1500,12 @@ async def analyze(req: AnalyzeRequest):
                                 # Must match the read-side fallback in the cache-lookup
                                 # block above (_ca_bp = _ce.get("bioproject") or "").
                                 _cbp = _cr.get("bioproject") or ""
+                                # Deliberately NOT gated on niche_cases (unlike the read
+                                # side above): this row may carry auto-detected/Pass-2
+                                # fields even when niche_cases was empty for this run, and
+                                # saving them regardless means a LATER run that DOES ask
+                                # for one of those fields can still get a cache hit. See
+                                # task3_knowncachedsamples_report.md for the full reasoning.
                                 if _cid and os.environ.get("GCP_CREDS_JSON"):
                                     asyncio.ensure_future(
                                         asyncio.to_thread(_cache_save, _cid, _cbp, dict(_cr))
@@ -1729,20 +1748,6 @@ async def generate_excel_endpoint(req: GenerateExcelRequest):
     if not os.path.isfile(excel_path):
         raise HTTPException(status_code=500, detail="Excel file was not created")
     return {"path": excel_path}
-
-
-@app.post("/chat-message")
-async def chat_message(req: ChatMessageRequest):
-    """Stateless chat turn: accepts a user message + prior state, returns reply + new state."""
-    try:
-        from chat_input_parser import process_chat_message, get_initial_message, fresh_state
-        msg = (req.message or "").strip()
-        if msg == "__init__":
-            return {"reply": get_initial_message(), "state": fresh_state()}
-        reply, new_state = process_chat_message(msg, req.state)
-        return {"reply": reply, "state": new_state}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/report")

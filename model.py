@@ -94,7 +94,7 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
 
 _HAIKU_MODEL = "claude-haiku-4-5-20251001"
 _SONNET_MODEL = "claude-sonnet-5"
-_ANTHROPIC_MAX_TOKENS = 4096  # unchanged output budget; also used as the "expected output" reserve below
+_ANTHROPIC_MAX_TOKENS = 8192  # output budget; also used as the "expected output" reserve below
 
 # Route to Haiku (200K hard context limit) while comfortably clear of it, to
 # Sonnet 5 (1M context) once Haiku's margin is used up, and only fall through
@@ -130,9 +130,9 @@ def call_llm_api(prompt, model_name=None):
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
         estimated_input_tokens = _estimate_tokens(prompt)
-        # Sonnet 5 has adaptive thinking on by default and rejects a manual
-        # budget_tokens thinking config (400) and any non-default temperature/
-        # top_p/top_k (400) -- deliberately NOT setting any of those here.
+        # Sonnet 5 rejects a manual budget_tokens thinking config (400) and any
+        # non-default temperature/top_p/top_k (400) -- deliberately NOT setting
+        # those here. Thinking itself is explicitly disabled below for Sonnet.
         if estimated_input_tokens + _ANTHROPIC_MAX_TOKENS <= _HAIKU_SAFE_INPUT_BUDGET:
             chosen_model = _HAIKU_MODEL
         elif estimated_input_tokens + _ANTHROPIC_MAX_TOKENS <= _SONNET_CONTEXT_LIMIT:
@@ -145,23 +145,44 @@ def call_llm_api(prompt, model_name=None):
             try:
                 import anthropic as _anthropic
                 client = _anthropic.Anthropic(api_key=anthropic_key)
-                msg = client.messages.create(
+                create_kwargs = dict(
                     model=chosen_model,
                     max_tokens=_ANTHROPIC_MAX_TOKENS,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                # Sonnet 5's adaptive thinking (on by default) can put a
-                # ThinkingBlock at content[0] with no .text attribute -- the
-                # actual answer is the first "text"-type block, not
-                # necessarily content[0]. Haiku (no default thinking)
-                # typically returns text at content[0] too, so this is a
-                # strict generalization, not a behavior change for Haiku.
+                # Sonnet 5 runs adaptive thinking by default when `thinking` is
+                # omitted, unlike Haiku. Every call_llm_api call site in this
+                # codebase is structured field extraction from provided text
+                # (never open-ended multi-step reasoning), so thinking buys
+                # little here while eating into max_tokens -- it has caused
+                # Sonnet to spend the whole budget thinking and return a
+                # response with a ThinkingBlock but no text block at all.
+                # Disabling it removes that failure mode outright (Sonnet 5
+                # accepts thinking: disabled; Haiku has no thinking to disable).
+                if chosen_model == _SONNET_MODEL:
+                    create_kwargs["thinking"] = {"type": "disabled"}
+                msg = client.messages.create(**create_kwargs)
                 text_block = next((b for b in msg.content if getattr(b, "type", None) == "text"), None)
                 if text_block is None:
-                    raise RuntimeError(
-                        f"Anthropic response for {chosen_model} had no text content block "
-                        f"(block types: {[getattr(b, 'type', None) for b in msg.content]})"
-                    )
+                    # Belt-and-suspenders: thinking is disabled above, so this
+                    # shouldn't recur, but if Anthropic ever returns a
+                    # text-less response for another reason, retry once on
+                    # Claude itself with double the output budget before
+                    # giving up -- never let this fall through to the Gemini
+                    # branch below, which would silently swap providers for a
+                    # response Anthropic never actually finished producing.
+                    print(f"[call_llm_api] {chosen_model} returned no text block "
+                          f"(block types: {[getattr(b, 'type', None) for b in msg.content]}) "
+                          f"-- retrying on {chosen_model} with max_tokens={_ANTHROPIC_MAX_TOKENS * 2}")
+                    retry_kwargs = dict(create_kwargs, max_tokens=_ANTHROPIC_MAX_TOKENS * 2)
+                    msg = client.messages.create(**retry_kwargs)
+                    text_block = next((b for b in msg.content if getattr(b, "type", None) == "text"), None)
+                    if text_block is None:
+                        raise RuntimeError(
+                            f"Anthropic response for {chosen_model} had no text content block "
+                            f"after retry with doubled max_tokens "
+                            f"(block types: {[getattr(b, 'type', None) for b in msg.content]})"
+                        )
                 print(f"[call_llm_api] used: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
                 return text_block.text, None
             except Exception as e:
@@ -169,6 +190,8 @@ def call_llm_api(prompt, model_name=None):
                 err_str = str(e).lower()
                 if "429" in str(e) or "rate_limit" in err_str or "overloaded" in err_str:
                     raise  # let safe_call_llm retry
+                if "no text content block" in err_str:
+                    raise  # exhausted retries on Claude itself -- do not fall through to Gemini
                 print(f"Anthropic API error ({chosen_model}): {e} — trying Gemini keys.")
         else:
             print(f"[call_llm_api] routing: estimated_input_tokens={estimated_input_tokens} exceeds "

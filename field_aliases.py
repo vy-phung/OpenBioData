@@ -8,6 +8,8 @@ duplicate pairs are observed in practice.
 """
 
 import asyncio
+import json
+import os
 
 FIELD_ALIASES: dict[str, list[str]] = {
     "geographic_location_country_and_or_sea": [
