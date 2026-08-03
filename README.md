@@ -2,7 +2,7 @@
 
 Open-source tool for recovering missing NCBI metadata (BioSample, SRA, GenBank, GEO) by tracing accessions back to their source publications and supplementary tables.
 
-MIT licensed — self-hostable — see [Run it yourself](#run-it-yourself) below.
+MIT licensed — self-hostable — see [Run it yourself](https://app.openbiodata.it.com/) below.
 
 ---
 
@@ -110,6 +110,23 @@ Score 70+ = High (strong multi-source agreement). 40–69 = Medium. Below 40 = L
 - It does not fabricate values — if no evidence is found, the field is marked `unknown`
 - It does not bypass paywalled articles — it uses CrossRef metadata and PubMed abstracts in those cases, which gives less evidence and a lower confidence score
 - It does not guarantee correctness — the confidence score tells you how much evidence was found, not whether the original depositor was right
+
+---
+ 
+## Known limitations
+ 
+Real, current ones — not hedging.
+ 
+- **The four processing stages (trace back, mine literature, cross-check,
+  recover/verify/expand) aren't fully independent yet.** They currently run
+  interleaved inside a few large functions rather than as clean, separately
+  callable phases. If you're building on top of this expecting to call
+  "just cross-check," that's not supported today — see `ARCHITECTURE.md`.
+- **Accession-type detection has three separate implementations** in the
+  codebase with inconsistent coverage. Being consolidated — see open issues.
+None of these block real use — they're documented so you know exactly what
+you're looking at, and so anyone who wants to help knows exactly where.
+See `CONTRIBUTING.md` for open issues, labeled by scope.
 
 ---
 
