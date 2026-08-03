@@ -1134,6 +1134,80 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
     print("parsed metadata_list keys (fallback format):", list(metadata_list.keys()))
     return metadata_list
 
+
+_PROMPT_HEADER_RE = re.compile(
+    r'===\s*ANSWERS FOR PROMPT\s+(\d+)\s*\(accession\s+(.+?)\)\s*===',
+    re.IGNORECASE,
+)
+
+
+def split_batched_llm_response(raw_response: str, accs: list) -> dict:
+    """
+    Split one LLM response covering multiple accessions (multi_prompts()'s
+    '=== ANSWERS FOR PROMPT N (accession X) ===' headers) into per-accession
+    raw-text segments.
+
+    Primary mapping: the header's own captured prompt number N -> accs[N-1]
+    (multi_prompts() builds "Prompt {acc_pos+1}" for accs[acc_pos], so N-1 is
+    that accession's position in the original request). This holds regardless
+    of what order the model answers the prompts in -- unlike matching by
+    header position in the text, which would silently misattribute data if
+    the model ever reordered its answers while still labeling headers
+    correctly.
+
+    Falls back to positional order (i-th header found -> accs[i]) only when a
+    header's number is missing, unparseable, or out of range for this batch --
+    e.g. the model garbles the number but still separates answers in order.
+    A header whose echoed accession text (group 2) disagrees with the
+    resolved index is logged but still used -- the number is the source of
+    truth, the echoed text is only a human-readable label the model might
+    paraphrase.
+
+    Falls back to returning the whole response under accs[0] when no header
+    is found at all -- preserves today's single-accession behavior (and the
+    older pipe-separated fallback format parse_multi_sample_llm_output
+    already handles) for the batch-of-1 case.
+    """
+    matches = list(_PROMPT_HEADER_RE.finditer(raw_response))
+    if not matches:
+        return {accs[0]: raw_response} if accs else {}
+
+    segments = {}
+    for i, m in enumerate(matches):
+        seg_start = m.end()
+        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_response)
+
+        acc = None
+        try:
+            n = int(m.group(1))
+            if 1 <= n <= len(accs):
+                acc = accs[n - 1]
+        except (TypeError, ValueError):
+            pass
+
+        if acc is None:
+            if i < len(accs):
+                acc = accs[i]
+                print(f"[split_batched_llm_response] header #{i+1} has missing/invalid/"
+                      f"out-of-range prompt number ({m.group(1)!r}) -- falling back to "
+                      f"positional match: {acc}")
+            else:
+                print(f"[split_batched_llm_response] header #{i+1} unmatchable "
+                      f"(number {m.group(1)!r} invalid, no positional slot left) -- dropped")
+                continue
+        elif acc != m.group(2).strip() and acc.split('.')[0] != m.group(2).strip().split('.')[0]:
+            print(f"[split_batched_llm_response] header says accession "
+                  f"{m.group(2)!r} but prompt number {m.group(1)} maps to {acc!r} "
+                  f"-- using the number (source of truth)")
+
+        if acc in segments:
+            print(f"[split_batched_llm_response] header #{i+1} resolved to {acc!r}, "
+                  f"which already has a segment from an earlier header -- overwriting "
+                  f"(duplicate/colliding prompt number; last write wins)")
+        segments[acc] = raw_response[seg_start:seg_end]
+    return segments
+
+
 def merge_metadata_outputs(metadata_list):
     """
     Merge a list of metadata dicts into one, combining differing values with 'or'.
@@ -1549,8 +1623,12 @@ def multi_prompts(dictsAccs, output_format_str, niche_cases=None, prompt_templat
       f"{_country_hint}"
       f"{_type_hint}"
       f"{niche_prompt}"
-      f"\nOUTPUT FORMAT (follow exactly — no markdown, no extra headers):\n"
-      f"Write ONE block per field below, in EXACTLY this order ({field_count} fields): {output_format_str}\n"
+      f"\nOUTPUT FORMAT (follow exactly):\n"
+      f"This may be one of SEVERAL numbered prompts in this same request, each analyzing a DIFFERENT "
+      f"accession. Before writing this prompt's field blocks, output exactly this header line on its own, "
+      f"with no other text on it:\n"
+      f"=== ANSWERS FOR PROMPT {acc_pos+1} (accession {acc_cleaned}) ===\n"
+      f"Then write ONE block per field below, in EXACTLY this order ({field_count} fields): {output_format_str}\n"
       f"Each block MUST have this exact 3-line structure:\n"
       f"FIELD: <field_name>\n"
       f"REASONING: <one narrative sentence citing exactly WHERE — name the specific table/section/figure "
@@ -1953,6 +2031,44 @@ def _find_negation_contradiction(value: str, explanation: str):
     return None
 
 
+def _normalize_pass2_json(result: dict, keep_unknown: bool = False) -> dict:
+    """Normalize raw Pass-2 JSON to {field: {'value': str, 'explanation': str}}.
+
+    keep_unknown=False (default, single-sample use): drops null/empty/'unknown'
+    values, matching the long-standing omit-if-unknown behavior of
+    _extract_additional_fields(). keep_unknown=True (batch use): keeps explicit
+    'unknown' entries -- required for _extract_additional_fields_batch()'s
+    uniform-key-set-per-sample guarantee to survive normalization instead of
+    silently collapsing back into per-sample omission.
+
+    Tolerates the model falling back to a flat {field: value} despite
+    instructions to use {field: {value, explanation}}.
+    """
+    cleaned: dict = {}
+    skip_vals = {'none', 'null', 'n/a', 'na', 'missing', 'not applicable', ''} | (
+        set() if keep_unknown else {'unknown'}
+    )
+    for k, v in result.items():
+        k_str = str(k).strip().lower().replace(' ', '_')
+        if not k_str:
+            continue
+        if isinstance(v, dict):
+            v_str = str(v.get('value', '')).strip()
+            expl = str(v.get('explanation', '')).strip()
+        else:
+            v_str = str(v).strip() if v is not None else ''
+            expl = ''
+        if v_str and v_str.lower() not in skip_vals:
+            contradiction_phrase = _find_negation_contradiction(v_str, expl)
+            if contradiction_phrase:
+                v_str = (
+                    f"{v_str} ##SELF-CONTRADICTION: value/explanation disagree "
+                    f"(explanation negates '{contradiction_phrase}')"
+                )
+            cleaned[k_str] = {'value': v_str, 'explanation': expl}
+    return cleaned
+
+
 def _extract_additional_fields(context_text: str, niche_cases: list, standardization_schema: dict = None) -> dict:
     """
     Pass 2 — Generalized metadata extraction across ALL source texts.
@@ -2097,33 +2213,265 @@ def _extract_additional_fields(context_text: str, niche_cases: list, standardiza
             raw = raw[brace_start:brace_end + 1]
 
         result = json.loads(raw.strip())
-        # Normalize to {field: {"value": str, "explanation": str}}; tolerate the
-        # model falling back to a flat {field: value} despite instructions.
-        cleaned: dict = {}
-        skip_vals = {'none', 'null', 'n/a', 'na', 'missing', 'not applicable', 'unknown', ''}
-        for k, v in result.items():
-            k_str = str(k).strip().lower().replace(' ', '_')
-            if not k_str:
-                continue
-            if isinstance(v, dict):
-                v_str = str(v.get('value', '')).strip()
-                expl = str(v.get('explanation', '')).strip()
-            else:
-                v_str = str(v).strip() if v is not None else ''
-                expl = ''
-            if v_str and v_str.lower() not in skip_vals:
-                contradiction_phrase = _find_negation_contradiction(v_str, expl)
-                if contradiction_phrase:
-                    v_str = (
-                        f"{v_str} ##SELF-CONTRADICTION: value/explanation disagree "
-                        f"(explanation negates '{contradiction_phrase}')"
-                    )
-                cleaned[k_str] = {'value': v_str, 'explanation': expl}
-        return cleaned
+        return _normalize_pass2_json(result)
 
     except Exception as e:
         print(f'[_extract_additional_fields] WARNING: generalized extraction failed: {e}')
         return {}
+
+
+BATCH_PROMPT_CHAR_LIMIT = 800000  # same ceiling _extract_additional_fields() already
+                                   # trusts for a single sample's context (its own
+                                   # MAX_CHARS above) -- reused here as a simple,
+                                   # already-calibrated number rather than inventing
+                                   # a new one for batches.
+
+
+def _split_oversized_batch(prompts: dict, char_limit: int = BATCH_PROMPT_CHAR_LIMIT) -> list:
+    """
+    Pre-flight size check for a batch about to become one LLM call.
+
+    Hard threshold, not adaptive sizing: estimates size from raw character
+    count (no extra API round-trip). If the combined size of `prompts`'
+    values fits under `char_limit`, returns [prompts] unchanged. Otherwise
+    halves it repeatedly into smaller dicts until each sub-batch fits, or
+    it's down to one accession (sent regardless of its own size -- that's
+    already the finest granularity the pipeline has).
+    """
+    total_chars = sum(len(v) for v in prompts.values())
+    if total_chars <= char_limit or len(prompts) <= 1:
+        return [prompts]
+    accs = list(prompts.keys())
+    mid = len(accs) // 2
+    left  = {a: prompts[a] for a in accs[:mid]}
+    right = {a: prompts[a] for a in accs[mid:]}
+    return _split_oversized_batch(left, char_limit) + _split_oversized_batch(right, char_limit)
+
+
+def _extract_additional_fields_batch(contexts: dict, niche_cases: list,
+                                      standardization_schema: dict = None) -> dict:
+    """
+    Pass 2, batched: one LLM call extracts free-form metadata for every
+    accession in `contexts` ({acc: context_text}) at once, instead of one
+    call per accession.
+
+    Consistency requirement (the reason this isn't just N single-sample
+    calls joined together): the model must first determine the UNION of
+    attributes present anywhere across the batch's source material, then
+    emit that SAME key set for every sample's object -- using an explicit
+    "unknown" value for a sample whose own record doesn't state that
+    attribute, rather than silently omitting the key the way the
+    single-sample _extract_additional_fields() does. Without this, sample A
+    could report an attribute (e.g. dna_extraction_kit) that sample B's
+    identical shared methods section also states, but B's object just
+    omits it -- not because the data differs, but because the model's
+    attention landed differently on that generation.
+
+    Returns {acc: {field: {'value': str, 'explanation': str}}} -- 'unknown'
+    IS a valid value here (unlike the single-sample function), since it's
+    how a uniform key set is expressed for a sample that doesn't have that
+    attribute.
+
+    Retries the LLM call + JSON parse once before falling back to an empty
+    result for every accession in this batch -- a batch failure costs up to
+    BATCH_SIZE accessions' worth of Pass-2 data (vs. 1 for the single-sample
+    function), so a cheap retry is worth it here specifically.
+    """
+    contexts = {a: c for a, c in (contexts or {}).items() if c and c.strip()}
+    if not contexts:
+        return {}
+    accs = list(contexts.keys())
+    if len(accs) == 1:
+        # No batching benefit or consistency risk at n=1 -- reuse the
+        # single-sample function directly instead of a needless JSON
+        # restructure.
+        return {accs[0]: _extract_additional_fields(contexts[accs[0]], niche_cases, standardization_schema)}
+
+    sub_batches = _split_oversized_batch(contexts)
+    if len(sub_batches) > 1:
+        print(f"[_extract_additional_fields_batch] {len(contexts)} accession(s) "
+              f"({sum(len(v) for v in contexts.values())} chars) exceed the "
+              f"{BATCH_PROMPT_CHAR_LIMIT}-char threshold -- splitting into "
+              f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
+        merged: dict = {}
+        for sub in sub_batches:
+            merged.update(_extract_additional_fields_batch(sub, niche_cases, standardization_schema))
+        return merged
+
+    exclude_fields = ['country_name', 'modern/ancient/unknown'] + list(niche_cases or [])
+    exclude_str = ', '.join(exclude_fields) if exclude_fields else 'none'
+
+    _study_name_hint = (
+        "IMPORTANT — for study/dataset-identifier fields: use the paper's own identifying "
+        "convention (e.g. first-author surname + publication year, such as 'SmithJ_2021'), or "
+        "the actual publication title if no such convention is stated. Do NOT output an "
+        "NCBI/ENA accession number (BioProject, BioSample, SRA/ENA study ID, run accession, "
+        "etc.) as the answer -- an accession-shaped string is never a valid study/dataset name.\n"
+    )
+
+    _disease_hint = (
+        "CONTROL DEFINITION: a 'control' sample belongs to the group with NONE of the study's conditions/exposures present (the fully unaffected/reference group) -- "
+        "not merely 'not the primary condition being studied.' If you cannot confidently determine full-unaffected status for this sample, output 'unknown' rather than "
+        "defaulting to a case/disease label. "
+        "Target condition definition: Primary phenotype(s), condition(s), or disease status THAT THIS SPECIFIC SAMPLE ACTUALLY HAS in the study, "
+        "as determined by this sample's group assignment or individual clinical status. NOT the study's overall research topic. "
+        "CROSS-FIELD CONSISTENCY: several extracted fields may describe the same underlying case/control assignment from different angles -- "
+        "whatever you conclude for one such field, every other such field must agree for THIS SAME sample; never report one field as "
+        "control/unaffected while another names a condition as if this sample has it, or vice versa."
+    )
+
+    _caveat = ("IMPORTANT — per-subject assignment: many studies have multiple participant groups "
+        "(e.g. a reference/control group and one or more affected/exposed groups). "
+        "Search for a table or supplementary file that maps individual sample identifiers (sample IDs / subject IDs / NCBI BioSample, isolate name, etc. in the NCBI records) "
+        "accessions to their specific group. Each sample's accession is shown in its own 'SAMPLE N (accession X)' header below -- find its row in that table and extract "
+        "the group/condition for THAT SPECIFIC SAMPLE, not the study as a whole. "
+        "PRIORITY RULE: a table/section that maps individual sample identifiers to their specific category is stronger evidence than general prose describing the study's groups or conditions as a whole; "
+        "when such a table/section exist, cite its matching row, not the prose. "
+        "COMPLETENESS: do not stop at the first candidate table/section you find. First check what identifying attribute(s) actually exist on each sample's own record, "
+        "whatever they are called (id, subject_id, isolate_name, strain, specimen_code, patient number, or anything else) -- "
+        "then check EVERY table/section in the source text that uses a matching or clearly related identifying scheme, "
+        "not just the first or most prominent one. Check NCBI BioSample attributes and also paper tables / supplementary metadata tables. "
+        "Do NOT report the full list of study groups — report only the group for each individual sample. "
+        )
+
+    _schema = standardization_schema if standardization_schema else _get_default_schema()
+    schema_hint = _build_schema_hint(niche_cases, _schema)
+
+    per_sample_blocks = [
+        f"--- SAMPLE {i+1} (accession {acc.split('.')[0] if acc else acc}) SOURCE TEXT ---\n{contexts[acc]}\n"
+        for i, acc in enumerate(accs)
+    ]
+    samples_text = "\n".join(per_sample_blocks)
+
+    generalized_prompt = (
+        "You are a scientific metadata extractor specialising in NCBI genomic database records.\n\n"
+        f"Below are source texts for {len(accs)} DIFFERENT biological samples from the same study/paper, "
+        "each in its own 'SAMPLE N (accession X)' block. Within each sample's block, its texts are "
+        "separated by '-----END OF THIS SOURCE <name> ----' markers. Sources may include:\n"
+        "  • NCBI BioSample XML (most reliable — look for <Attribute attribute_name='FIELD'>VALUE</Attribute>)\n"
+        "  • SRA experiment XML (platform, library strategy, instrument model, etc.)\n"
+        "  • BioProject description\n"
+        "  • Published paper abstract / full text\n"
+        "  • User-uploaded supplementary files\n\n"
+        "Your task: extract EVERY metadata attribute that describes EACH sample.\n"
+        f"For EACH FIELD, for EACH sample: Extract THAT SAMPLE'S ACTUAL STATUS or INDIVIDUAL VALUE (what "
+        f"applies to THAT specific sample), never the study's general description or objectives. Only use "
+        f"study-level information as fallback when a sample has no individual value recorded.\n"
+        f"{schema_hint}"
+        f"{_disease_hint}\n"
+        f"{_study_name_hint}"
+        f"{_caveat}\n"
+        "CONSISTENCY REQUIREMENT — do this in two steps:\n"
+        "  STEP 1: scan ALL samples' source text and determine the UNION of every metadata attribute "
+        "present anywhere in this batch.\n"
+        "  STEP 2: for EVERY sample, output that SAME set of attribute keys -- if a specific sample's own "
+        "source text does not state a given attribute (even though another sample in this batch does), "
+        "output \"value\": \"unknown\" for that key on that sample rather than omitting the key. Do not let "
+        "one sample's object have a different key set than another's.\n"
+        "Scan ALL sources for each sample. For EACH field on EACH sample:\n"
+        "  - If every source (for that sample) agrees on the same value → output that value.\n"
+        "  - If two or more sources report DIFFERENT values for that sample → output the most specific value "
+        "    AND append '##CONFLICT: source_A=<value_A>, source_B=<value_B>' so conflicts are visible.\n\n"
+        "LOOK ESPECIALLY FOR (but extract everything you find):\n"
+        "  geo_loc_name, host, tissue, isolation_source, collection_date, sex, age, disease,\n"
+        "  treatment, organism, strain, sample_type, body_site, library_strategy, library_source,\n"
+        "  library_selection, platform, instrument_model, sequencing_platform, dna_extraction_kit,\n"
+        "  lat_lon, env_biome, env_feature, env_material, depth, altitude, temperature, pH,\n"
+        "  SRA_accession, BioSample_accession, and any other custom sample attributes.\n\n"
+        f"Do NOT include these already-extracted fields: {exclude_str}\n\n"
+        "Return ONLY a JSON object with one top-level key per sample, using the EXACT accession string "
+        "shown in that sample's 'SAMPLE N (accession X)' header as the key, mapping to an object with one "
+        "key per attribute, each an object with TWO keys, explanation and value -- write explanation FIRST, "
+        "decide value only AFTER, based on that reasoning:\n"
+        '  {"<accession>": {"field_name": {"explanation": "<one sentence citing WHERE this came '
+        "from, naming the specific source/section/attribute, followed by a "
+        "[Sources: <key> (<location>, '<verbatim excerpt <=15 words>')] tag, and for any categorical/group-type "
+        "field (disease, condition, status, diagnosis, group, phenotype, health) also ending with an "
+        "[ID-match: true|false] tag; if value is \"unknown\" per the CONSISTENCY REQUIREMENT, explain why "
+        "(e.g. 'not stated in this sample's own record')>\", \"value\": \"<the extracted/best value, or "
+        "\\\"unknown\\\" per the CONSISTENCY REQUIREMENT>\"}, ...}, ...}\n"
+        "  - Keys  : lowercase field names, underscores for spaces (e.g. 'collection_date')\n"
+        "  - explanation : MANDATORY even when value is \"unknown\", never blank, written BEFORE value; "
+        "must include the [Sources: ...] tag using the exact header from 'The source - <key>:' blocks "
+        "in the text when value is not \"unknown\"\n"
+        "  - value : the extracted/best value as a non-empty string, or \"unknown\" per the CONSISTENCY "
+        "REQUIREMENT -- never omit a key the union in STEP 1 identified\n"
+        "  - Preserve the original attribute name from NCBI XML when possible\n\n"
+        "Source text:\n"
+        "---\n"
+        f"{samples_text}\n"
+        "---\n\n"
+        "Return ONLY valid JSON. No markdown fences.\n"
+        'Example for 2 samples: {"SAMN001": {"geo_loc_name": {"explanation": '
+        "\"BioSample attribute geo_loc_name is 'USA: California'. [Sources: NCBI_biosample (geo_loc_name "
+        "attribute, 'USA: California')]\", \"value\": \"USA: California\"}}, \"SAMN002\": {\"geo_loc_name\": "
+        "{\"explanation\": \"Not stated in this sample's own BioSample record or the shared paper text.\", "
+        "\"value\": \"unknown\"}}}"
+    )
+
+    result = None
+    for _attempt in range(2):
+        try:
+            response_text, _ = call_llm_api(generalized_prompt)
+            raw = response_text.strip()
+            if raw.startswith('```'):
+                parts = raw.split('```')
+                raw = parts[1] if len(parts) > 1 else raw
+                if raw.lower().startswith('json'):
+                    raw = raw[4:]
+            brace_start = raw.find('{')
+            brace_end = raw.rfind('}')
+            if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+                raw = raw[brace_start:brace_end + 1]
+            result = json.loads(raw.strip())
+            break
+        except Exception as e:
+            if _attempt == 0:
+                print(f'[_extract_additional_fields_batch] attempt 1 failed ({e}) -- retrying once')
+                continue
+            # Both identical attempts failed. A repeat failure at
+            # (near-)identical output position across both attempts (as seen
+            # live on PRJNA976261: char 24772 then char 24717, both landing
+            # just past the same JSON delimiter) indicates the OUTPUT this
+            # batch demands -- samples x union-of-attributes, inflated
+            # further by the uniform-key-set requirement -- is genuinely too
+            # large for this call's fixed output budget, not transient noise
+            # a third identical retry would fix. Halve the batch and recurse
+            # instead, reusing the same halving strategy
+            # _split_oversized_batch already uses for oversized input.
+            if len(accs) > 1:
+                mid = len(accs) // 2
+                left_accs, right_accs = accs[:mid], accs[mid:]
+                print(f'[_extract_additional_fields_batch] both attempts failed ({e}) -- '
+                      f'output likely too large for {len(accs)} accession(s); splitting into '
+                      f'{len(left_accs)} + {len(right_accs)} and retrying each half')
+                left  = _extract_additional_fields_batch(
+                    {a: contexts[a] for a in left_accs}, niche_cases, standardization_schema)
+                right = _extract_additional_fields_batch(
+                    {a: contexts[a] for a in right_accs}, niche_cases, standardization_schema)
+                return {**left, **right}
+            print(f'[_extract_additional_fields_batch] WARNING: both attempts failed for the '
+                  f'single remaining accession {accs[0]!r}, last error: {e}')
+            return {acc: {} for acc in accs}
+
+    # Tolerant accession matching (model may not echo the key byte-identical --
+    # whitespace/case/a dropped version suffix), same spirit as
+    # split_batched_llm_response's number-primary/position-fallback approach.
+    out: dict = {}
+    for acc in accs:
+        acc_cleaned = acc.split('.')[0] if acc else acc
+        match_key = next(
+            (rk for rk in result if rk == acc or rk.split('.')[0] == acc_cleaned), None
+        )
+        if match_key is None:
+            print(f"[_extract_additional_fields_batch] no result object for {acc!r} in batch "
+                  f"response (model returned keys: {list(result.keys())}) -- treating as empty")
+            out[acc] = {}
+            continue
+        raw_fields = result[match_key] if isinstance(result[match_key], dict) else {}
+        out[acc] = _normalize_pass2_json(raw_fields, keep_unknown=True)
+    return out
+
 
 async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, prompts,
                               standardization_schema=None):
@@ -2133,8 +2481,29 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     2. RAG with semantic search and LLM (general, flexible, cost-optimized).
     """
     print("inside the model.query_doc_info")
+
+    # ── Pre-flight size check ───────────────────────────────────────────────
+    # Hard threshold, not adaptive sizing: batching doesn't currently dedupe
+    # shared paper text across accessions in the same batch (deferred
+    # follow-up), so a batch of up to BATCH_SIZE accessions could still be
+    # oversized for a paper with a large full-text/supplementary load. Split
+    # and recurse rather than sending an oversized request and letting it
+    # fail/degrade unpredictably.
+    sub_batches = _split_oversized_batch(prompts)
+    if len(sub_batches) > 1:
+        print(f"[query_document_info] batch of {len(prompts)} accession(s) "
+              f"({sum(len(v) for v in prompts.values())} chars) exceeds "
+              f"{BATCH_PROMPT_CHAR_LIMIT}-char safety threshold -- splitting into "
+              f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
+        merged_outputs = {}
+        for sub in sub_batches:
+            merged_outputs.update(await query_document_info(
+                niche_cases, saveLinkFolder, llm_api_function, sub,
+                standardization_schema=standardization_schema))
+        return merged_outputs
+
     outputs, links, accession_found_in_text = {}, [], False
-    
+
     genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("NEW_GEMINI_API"))
     # Gemini 2.5 Flash-Lite pricing per 1,000 tokens
     PRICE_PER_1K_INPUT_LLM = 0.00010      # $0.10 per 1M input tokens
@@ -2208,16 +2577,11 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     total_query_cost += current_embedding_cost + llm_cost
     print(f"  DEBUG: Total estimated cost for this RAG query: ${total_query_cost:.6f}")
     
-    metadata_list = parse_multi_sample_llm_output(llm_response_text, output_format_str)
-    multi_metadata_lists = [metadata_list]
-    list_accs = list(prompts.keys())  
-    if acc:
-      acc_cleaned = acc.split(".")[0]
-    else: acc_cleaned = acc
-    for metadata_list_pos in range(len(multi_metadata_lists)):
-      metadata_list = multi_metadata_lists[metadata_list_pos]
+    list_accs = list(prompts.keys())
+    segments = split_batched_llm_response(llm_response_text, list_accs)
+    for acc in list_accs:
+      metadata_list = parse_multi_sample_llm_output(segments.get(acc, ""), output_format_str)
       print(metadata_list)
-      acc = list_accs[metadata_list_pos]
       again_output_format, general_knowledge_prompt = "", ""
       output_acc = {}
       # NOTE: an unknown-field retry used to re-run getMoreInfoForAcc() here,
@@ -2263,30 +2627,34 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       outputs[acc]["predicted_output"] = output_acc
       outputs[acc]["total_query_cost"] = total_query_cost
 
-      # ── PASS 2: generalized extraction of ALL additional metadata ─────────
-      # Uses all source text to extract every metadata attribute mentioned.
-      try:
-          predefined_keys = set(['country_name', 'modern/ancient/unknown']
-                                 + list(niche_cases or []))
-          # Always use the original multi-source text (prompts[acc]) so that
-          # BioSample XML attributes and paper text are both available.
-          # Fall back to context_for_llm (smart-search result) only if no
-          # original context is available.
-          pass2_context = prompts.get(acc, "") or context_for_llm or ""
-          all_additional = _extract_additional_fields(
-              pass2_context, niche_cases or [], standardization_schema=standardization_schema)
-          additional_only = {
-              k: v for k, v in all_additional.items()
-              if k not in predefined_keys
-          }
-          outputs[acc]['_additional_fields'] = additional_only
-          print(f'[Pass 2] {acc}: {len(additional_only)} additional fields -> '
-                f'{list(additional_only.keys())}')
-      except Exception as _pass2_err:
-          print(f'[Pass 2] WARNING: failed for {acc}: {_pass2_err}')
-          outputs[acc]['_additional_fields'] = {}
-      # ── END PASS 2 ────────────────────────────────────────────────────────
-
       print("total cost: ", total_query_cost)
+
+    # ── PASS 2: generalized extraction of ALL additional metadata ───────────
+    # Batched across every accession in this call (one LLM call for the whole
+    # batch, not one per accession) -- moved out of the per-acc loop above.
+    # Uses all source text to extract every metadata attribute mentioned.
+    try:
+        predefined_keys = set(['country_name', 'modern/ancient/unknown']
+                               + list(niche_cases or []))
+        # Always use the original multi-source text (prompts[acc]) so that
+        # BioSample XML attributes and paper text are both available.
+        pass2_contexts = {acc: prompts.get(acc, "") for acc in list_accs}
+        all_additional_by_acc = _extract_additional_fields_batch(
+            pass2_contexts, niche_cases or [], standardization_schema=standardization_schema)
+        for acc in list_accs:
+            additional_only = {
+                k: v for k, v in (all_additional_by_acc.get(acc) or {}).items()
+                if k not in predefined_keys
+            }
+            outputs[acc]['_additional_fields'] = additional_only
+            print(f'[Pass 2] {acc}: {len(additional_only)} additional fields -> '
+                  f'{list(additional_only.keys())}')
+    except Exception as _pass2_err:
+        print(f'[Pass 2] WARNING: batch failed: {_pass2_err}')
+        for acc in list_accs:
+            outputs[acc]['_additional_fields'] = {}
+    # ── END PASS 2 ────────────────────────────────────────────────────────
+
+    for acc in list_accs:
       print(f"total output of {acc}: {outputs[acc]}")
     return outputs

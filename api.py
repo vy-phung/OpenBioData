@@ -356,6 +356,32 @@ async def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_nam
         extra: dict = {}          # per-field explanation detail for Sheet 2
         fields_emitted: list = [] # fields that got a row[] value, in order (niche + promoted Pass 2)
         field_sources: dict = {}  # field -> [source_label, ...] from merge_metadata_into_table, when available
+        field_confidences: dict = {}  # field -> calculate_confidence() score, for every field that got a value
+
+        from confidence_score import calculate_confidence
+
+        def _score_field_confidence(field: str, value: str, id_match: str = "") -> None:
+            """Run calculate_confidence() for one field and record it in extra/field_confidences.
+
+            Reuses the same per-source dict every field in this row was extracted
+            from (source_texts) plus source_texts_origin (record vs search) for
+            evidence-strength scoring. A field whose own [ID-match: false] tag
+            says its value came from general prose rather than a per-sample ID-table
+            row gets the same -15 penalty confidence_score.py's row-level scorer
+            used to apply globally -- now applied to just that field, so a single
+            weakly-linked field can't silently hide behind other well-linked ones
+            once the row score is the minimum across fields.
+            """
+            result = calculate_confidence(
+                field, value,
+                data.get("source_texts", {}) or {},
+                data.get("source_texts_origin", {}) or {},
+            )
+            score = result["score"]
+            if id_match.strip().lower() == "false":
+                score = max(0, score - 15)
+            field_confidences[field] = score
+            extra[f"{field}_confidence"] = f"{score} ({result['label']})"
 
         def _emit_field(field: str, value: str, raw_explanation: str, strip_method_prefix: bool = False) -> str:
             """Parse [Sources:]/[Conflict:] tags out of raw_explanation, append a clean
@@ -418,6 +444,7 @@ async def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_nam
                 explanation_parts.append(f"• {field}: {value}")
 
             fields_emitted.append(field)
+            _score_field_confidence(field, value, extra.get(f"{field}_id_match", ""))
             return value
 
         for field in niche_list:
@@ -439,52 +466,6 @@ async def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_nam
         # ── Source links appended at end of explanation ───────────────────────
         source_list = data.get("source", []) or []
         source_text = "\n".join(source_list) if source_list else "No external links"
-
-        # ── Confidence score: numeric + tier + short reason ───────────────────
-        signals     = data.get("signals", {}) or {}
-        in_ncbi     = signals.get("in_NCBI", False)
-        has_pubmed  = signals.get("has_pubmed", False)
-        num_pubs    = signals.get("num_publications", 0)
-        acc_in_text = signals.get("accession_found_in_text", False)
-        missing_kf  = any(
-            str(row.get(f, "")).lower() in ("unknown", "")
-            for f in niche_list
-        )
-        known_fail  = signals.get("known_failure_pattern", False)
-        # Row-level bool set by additional_pipeline.py from the model's per-field
-        # [ID-match] tag -- unaffected by merge_metadata_into_table's per-field
-        # source-list shape, since this is computed upstream, not from field_sources.
-        lacked_id_linkage = signals.get("any_key_field_lacked_id_linkage", False)
-
-        try:
-            from confidence_score import compute_confidence_score_and_tier
-            conf_signals = {
-                "has_geo_loc_name":        in_ncbi,
-                "has_pubmed":              has_pubmed,
-                "accession_found_in_text": acc_in_text,
-                "num_publications":        num_pubs,
-                "missing_key_fields":      missing_kf,
-                "known_failure_pattern":   known_fail,
-                "any_key_field_lacked_id_linkage": lacked_id_linkage,
-            }
-            conf_score, conf_tier, conf_reasons = compute_confidence_score_and_tier(conf_signals)
-        except Exception:
-            # Fallback: simple rule-based score
-            conf_score = 0
-            if in_ncbi:   conf_score += 20
-            if has_pubmed: conf_score += 30 if acc_in_text else 10
-            if num_pubs >= 2: conf_score += 20
-            elif num_pubs == 1: conf_score += 10
-            if missing_kf:  conf_score -= 10
-            conf_score = max(0, min(100, conf_score))
-            conf_tier = "high" if conf_score >= 70 else ("medium" if conf_score >= 40 else "low")
-            conf_reasons = ["Signal-based score"]
-
-        tier_icon = {"high": "🟢 High", "medium": "🟡 Medium", "low": "🔴 Low"}.get(
-            conf_tier.lower(), conf_tier.capitalize()
-        )
-        reason_str = "; ".join(conf_reasons[:2]) if conf_reasons else ""
-        confidence_display = f"{conf_score} ({tier_icon})" + (f" — {reason_str}" if reason_str else "")
 
         # ── Pass 2 fields (now {field: {"value", "explanation"}}) ──────────────
         pass2_fields = dict(data.get("_additional_fields") or {})
@@ -543,7 +524,39 @@ async def _rows_from_new_pipeline(accs_output: dict, niche_cases, use_direct_nam
                 pass2_flat[k] = value
                 if explanation:
                     pass2_flat[f"{k}_explanation"] = explanation
+                if value and value.strip().lower() not in ("", "unknown"):
+                    _idmatch_match = _idmatch_tag_re.search(explanation or "")
+                    _score_field_confidence(
+                        k, value, _idmatch_match.group(1) if _idmatch_match else ""
+                    )
+                    pass2_flat[f"{k}_confidence"] = extra[f"{k}_confidence"]
             row["_additional_fields"] = {**pass2_flat, **extra}
+
+        # ── Confidence score: minimum across every field that got a value ─────
+        # Replaces the old row-level blended-signals score with an aggregate of
+        # calculate_confidence()'s real per-field scores (set in extra[] by
+        # _score_field_confidence, called from _emit_field and above for Pass 2
+        # fields kept in Sheet 2 only). Fields left "unknown" don't contribute --
+        # that's a missing-data signal, not a confidence one. The weakest scored
+        # field caps the row, so one poorly-sourced field can't hide behind
+        # several strong ones.
+        if field_confidences:
+            conf_score = min(field_confidences.values())
+            _weakest_field = min(field_confidences, key=field_confidences.get)
+            reason_str = f"weakest field: {_weakest_field} ({conf_score})"
+        else:
+            conf_score = 0
+            reason_str = "no fields extracted"
+        from confidence_score import set_rules
+        _tiers = set_rules()["tiers"]
+        if conf_score >= _tiers["high_min"]:
+            conf_tier = "high"
+        elif conf_score >= _tiers["medium_min"]:
+            conf_tier = "medium"
+        else:
+            conf_tier = "low"
+        tier_icon = {"high": "🟢 High", "medium": "🟡 Medium", "low": "🔴 Low"}[conf_tier]
+        confidence_display = f"{conf_score} ({tier_icon}) — {reason_str}"
 
         # ── Final columns ─────────────────────────────────────────────────────
         # Build per-field source column: narrative + indented per-source citations

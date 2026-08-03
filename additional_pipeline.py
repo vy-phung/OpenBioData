@@ -369,6 +369,9 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         await _progress({"__auto_niche_cases__": niche_cases})
 
     acc_prompts = {}
+    acc_group_keys = {}   # acc -> paper/project key, for batching LLM calls by paper (Phase B)
+    acc_start_times = {}  # acc -> Phase A start timestamp, for per-acc time_cost after Phase D
+    BATCH_SIZE = 20       # fixed cap per LLM call chunk; larger projects get multiple chunks
     bioproject_info = {}
     accs_output = {}
     _total_accs = len(accessions)
@@ -1174,211 +1177,209 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       except Exception as _gdrive_err:
         print(f"⚠ Google Drive upload failed (non-critical): {_gdrive_err}")
 
-      acc_prompts = {acc: text}
-      await _progress(f"[{_acc_idx + 1}/{_total_accs}] Running LLM inference for {acc}…")
-      print("start model")
-      try:
-        # Inject schema_text into standardization_schema so standardize_with_llm can use it
-        _schema_for_model = dict(standardization_schema)
-        if _global_schema_text:
-            _schema_for_model['__schema_text__'] = _global_schema_text
-        predicted_output_info = await model.query_document_info(
-          niche_cases=niche_cases,
-          saveLinkFolder=saveLinkFolder,
-          llm_api_function=model.call_llm_api,
-          prompts=acc_prompts,
-          standardization_schema=_schema_for_model)
-      except Exception as _qdi_err:
-        print(f"[LLM] query_document_info failed for {acc}: {_qdi_err}")
-        await _progress(f"[{_acc_idx + 1}/{_total_accs}] ⚠ LLM inference failed for {acc} — saving partial result.")
-        accs_output[acc] = acc_score
-        if progress_cb:
-          await progress_cb({"__partial_acc__": acc, "__partial_data__": {acc: acc_score}})
-        continue
-      for output_acc in predicted_output_info:
-        # update everything from the output of model for each accession
-        # firstly update predicted output of an accession
-        predicted_outputs = predicted_output_info[output_acc]["predicted_output"]
-        method_used = predicted_output_info[output_acc]["method_used"]
-        for pred_out in predicted_outputs:
-          print("the pred out: ", pred_out)
-          # only for country, we have to standardize (match "country" or "country_name")
-          if pred_out.lower() in ("country", "country_name"):
-            # Normalize: always store under whichever key exists in acc_score
-            _country_key = pred_out if pred_out in acc_score else (
-                "country" if "country" in acc_score else pred_out
-            )
-            if _country_key not in acc_score:
-                acc_score[_country_key] = {}
-            country = predicted_outputs[pred_out]["answer"]
-            country_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
-            if country_explanation: country_explanation = "-" + country_explanation
-            if country != "unknown" and len(country)>0:
-              clean_country = model.get_country_from_text(country.lower())
-              stand_country = standardize_location.smart_country_lookup(country.lower())
-              if clean_country == "unknown" and stand_country.lower() == "not found":
-                country = "unknown"
-                # predicted country is unknown
-                acc_score["signals"]["predicted_output"] = False#"unknown"
-                acc_score["signals"]["known_failure_pattern"] = True
-              if country.lower() != "unknown":
-                stand_country = standardize_location.smart_country_lookup(country.lower())
-                if stand_country.lower() != "not found":
-                  if stand_country.lower() in acc_score[_country_key]:
-                    if country_explanation:
-                      acc_score[_country_key][stand_country.lower()].append(method_used + country_explanation)
-                  else:
-                    acc_score[_country_key][stand_country.lower()] = [method_used + country_explanation]
-                  # predicted country is non unknown
-                  acc_score["signals"]["predicted_output"] = True #stand_country.lower()
-                else:
-                  if country.lower() in acc_score[_country_key]:
-                    if country_explanation:
-                      if len(method_used + country_explanation) > 0:
-                        acc_score[_country_key][country.lower()].append(method_used + country_explanation)
-                  else:
-                    if len(method_used + country_explanation) > 0:
-                      acc_score[_country_key][country.lower()] = [method_used + country_explanation]
-                  # predicted country is non unknown
-                  acc_score["signals"]["predicted_output"] = True #country.lower()
-            else:
+      # ── Phase A end: stash this accession's data; LLM inference now runs
+      # batched by paper AFTER every accession's data-gathering is done (see
+      # Phase B/C/D below), not immediately here. ──────────────────────────
+      acc_prompts[acc] = text
+      acc_group_keys[acc] = (
+          accessions[acc].get("bioproject") or bioproject_id
+      ) if not _is_non_ncbi else (
+          accessions[acc].get("_parent_project")
+          or (acc.split(" | ")[0].strip() if " | " in acc else acc)
+      )
+      acc_start_times[acc] = start
+      accs_output[acc] = acc_score
+      await _progress(f"[{_acc_idx + 1}/{_total_accs}] Data gathered for {acc}, queued for batched LLM inference…")
+
+    async def _apply_predicted_output(acc, acc_score, acc_text, predicted_data, start_time):
+      """Fold one accession's model.query_document_info() output into its
+      acc_score, mutating it in place. Exact body of the old per-accession
+      result-processing block (formerly inline in the data-gathering loop
+      above, one LLM call per accession) -- extracted so Phase D below can
+      call it once per accession in a completed batch instead.
+      """
+      # update everything from the output of model for this accession
+      predicted_outputs = predicted_data["predicted_output"]
+      method_used = predicted_data["method_used"]
+      for pred_out in predicted_outputs:
+        print("the pred out: ", pred_out)
+        # only for country, we have to standardize (match "country" or "country_name")
+        if pred_out.lower() in ("country", "country_name"):
+          # Normalize: always store under whichever key exists in acc_score
+          _country_key = pred_out if pred_out in acc_score else (
+              "country" if "country" in acc_score else pred_out
+          )
+          if _country_key not in acc_score:
+              acc_score[_country_key] = {}
+          country = predicted_outputs[pred_out]["answer"]
+          country_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
+          if country_explanation: country_explanation = "-" + country_explanation
+          if country != "unknown" and len(country)>0:
+            clean_country = model.get_country_from_text(country.lower())
+            stand_country = standardize_location.smart_country_lookup(country.lower())
+            if clean_country == "unknown" and stand_country.lower() == "not found":
+              country = "unknown"
               # predicted country is unknown
-              acc_score["signals"]["predicted_output"] = False #"unknown"
+              acc_score["signals"]["predicted_output"] = False#"unknown"
               acc_score["signals"]["known_failure_pattern"] = True
-          # for niche cases
-          else:
-            if pred_out in acc_score:
-              print("pred out again: ", pred_out)
-              answer = predicted_outputs[pred_out]["answer"]
-              answer_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
-              if answer_explanation: answer_explanation = "-" + answer_explanation
-              # Value-level duplicate check (Bug 3): niche-case answers are accepted
-              # directly here and never pass through merge_metadata_into_table, so
-              # apply the same identifier-duplicate guard standalone.
-              if answer.lower() != "unknown" and metadata_merge.is_duplicate_identifier_value(
-                  pred_out, answer, {
-                      "biosample_accession": accessions[acc].get("biosample"),
-                      "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
-                      "sra_accession":       accessions[acc].get("experiment"),
-                      "genbank_accession":   accessions[acc].get("accession"),
-                  }):
-                print(f"[niche-dup-check] Rejected {pred_out}={answer!r} for {acc}: duplicates an identifier value")
-                answer = "unknown"
-              if answer.lower() != "unknown":
-                acc_score["signals"]["predicted_output"] = True
-                if answer.lower() in acc_score[pred_out]:
-                  if len(method_used + answer_explanation) > 0:
-                    acc_score[pred_out][answer.lower()].append(method_used + answer_explanation)
+            if country.lower() != "unknown":
+              stand_country = standardize_location.smart_country_lookup(country.lower())
+              if stand_country.lower() != "not found":
+                if stand_country.lower() in acc_score[_country_key]:
+                  if country_explanation:
+                    acc_score[_country_key][stand_country.lower()].append(method_used + country_explanation)
                 else:
-                  if len(method_used + answer_explanation) > 0:
-                    acc_score[pred_out][answer.lower()] = [method_used + answer_explanation]
-              else: acc_score["signals"]["predicted_output"] = False
+                  acc_score[_country_key][stand_country.lower()] = [method_used + country_explanation]
+                # predicted country is non unknown
+                acc_score["signals"]["predicted_output"] = True #stand_country.lower()
+              else:
+                if country.lower() in acc_score[_country_key]:
+                  if country_explanation:
+                    if len(method_used + country_explanation) > 0:
+                      acc_score[_country_key][country.lower()].append(method_used + country_explanation)
+                else:
+                  if len(method_used + country_explanation) > 0:
+                    acc_score[_country_key][country.lower()] = [method_used + country_explanation]
+                # predicted country is non unknown
+                acc_score["signals"]["predicted_output"] = True #country.lower()
+          else:
+            # predicted country is unknown
+            acc_score["signals"]["predicted_output"] = False #"unknown"
+            acc_score["signals"]["known_failure_pattern"] = True
+        # for niche cases
+        else:
+          if pred_out in acc_score:
+            print("pred out again: ", pred_out)
+            answer = predicted_outputs[pred_out]["answer"]
+            answer_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
+            if answer_explanation: answer_explanation = "-" + answer_explanation
+            # Value-level duplicate check (Bug 3): niche-case answers are accepted
+            # directly here and never pass through merge_metadata_into_table, so
+            # apply the same identifier-duplicate guard standalone.
+            if answer.lower() != "unknown" and metadata_merge.is_duplicate_identifier_value(
+                pred_out, answer, {
+                    "biosample_accession": accessions[acc].get("biosample"),
+                    "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
+                    "sra_accession":       accessions[acc].get("experiment"),
+                    "genbank_accession":   accessions[acc].get("accession"),
+                }):
+              print(f"[niche-dup-check] Rejected {pred_out}={answer!r} for {acc}: duplicates an identifier value")
+              answer = "unknown"
+            if answer.lower() != "unknown":
+              acc_score["signals"]["predicted_output"] = True
+              if answer.lower() in acc_score[pred_out]:
+                if len(method_used + answer_explanation) > 0:
+                  acc_score[pred_out][answer.lower()].append(method_used + answer_explanation)
+              else:
+                if len(method_used + answer_explanation) > 0:
+                  acc_score[pred_out][answer.lower()] = [method_used + answer_explanation]
+            else: acc_score["signals"]["predicted_output"] = False
 
-        # update total query cost
-        acc_score["query_cost"] = predicted_output_info[output_acc]["total_query_cost"]
-        # update more links if have from model
-        more_model_links = predicted_output_info[output_acc]["links"]
-        if more_model_links:
-          acc_score["source"] += more_model_links
-        # update signals
-        acc_score["signals"]["accession_found_in_text"] = predicted_output_info[output_acc]["accession_found_in_text"]
-        # Propagate Pass 2 additional fields from model.query_document_info
-        if "_additional_fields" in predicted_output_info[output_acc]:
-          acc_score["_additional_fields"] = predicted_output_info[output_acc]["_additional_fields"]
+      # update total query cost
+      acc_score["query_cost"] = predicted_data["total_query_cost"]
+      # update more links if have from model
+      more_model_links = predicted_data["links"]
+      if more_model_links:
+        acc_score["source"] += more_model_links
+      # update signals
+      acc_score["signals"]["accession_found_in_text"] = predicted_data["accession_found_in_text"]
+      # Propagate Pass 2 additional fields from model.query_document_info
+      if "_additional_fields" in predicted_data:
+        acc_score["_additional_fields"] = predicted_data["_additional_fields"]
 
-        # ── Schema alignment pass: map all extracted fields to schema vocabulary ──
-        # Also dedupes Pass 2's raw-named fields (e.g. 'geo_loc_name') against the
-        # canonical schema name (e.g. 'geographic_location_country_and_or_sea') so
-        # the same fact never shows up as two separate columns.
-        _schema_keys = {k for k in standardization_schema if not k.startswith('__')}
-        if _schema_keys and not _is_ontology_mode and acc_score.get("_additional_fields"):
-          try:
-            _pass2_values = {
-                k: (v.get('value', '') if isinstance(v, dict) else v)
-                for k, v in acc_score["_additional_fields"].items()
-            }
-            aligned = model.align_to_schema(_pass2_values, standardization_schema, acc)
-            aligned_batch = {}
-            for canonical, info in aligned.items():
-              raw_key = info.get('from_field', '')
-              raw_entry = acc_score["_additional_fields"].get(raw_key, {})
-              explanation = raw_entry.get('explanation', '') if isinstance(raw_entry, dict) else ''
-              if any(canonical.lower() == nc.lower() for nc in (niche_cases or [])):
-                # Sheet 1 already has this field from Pass 1 (with its own citation) -- drop the dup.
-                acc_score["_additional_fields"].pop(canonical, None)
-                acc_score["_additional_fields"].pop(raw_key, None)
-                continue
-              if raw_key and raw_key != canonical:
-                acc_score["_additional_fields"].pop(raw_key, None)
-              aligned_batch[canonical] = {'value': info.get('value', ''), 'explanation': explanation}
-            if aligned_batch:
-              await metadata_merge.merge_metadata_into_table(
-                  acc_score["_additional_fields"], aligned_batch,
-                  source_label="Schema alignment (Pass 2)", is_llm=True,
-                  identifier_values={
-                      "biosample_accession": accessions[acc].get("biosample"),
-                      "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
-                      "sra_accession":       accessions[acc].get("experiment"),
-                      "genbank_accession":   accessions[acc].get("accession"),
-                  },
-              )
-            if aligned:
-              print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
-          except Exception as _sa_err:
-            print(f"[schema-align] WARNING for {acc}: {_sa_err}")
+      # ── Schema alignment pass: map all extracted fields to schema vocabulary ──
+      # Also dedupes Pass 2's raw-named fields (e.g. 'geo_loc_name') against the
+      # canonical schema name (e.g. 'geographic_location_country_and_or_sea') so
+      # the same fact never shows up as two separate columns.
+      _schema_keys = {k for k in standardization_schema if not k.startswith('__')}
+      if _schema_keys and not _is_ontology_mode and acc_score.get("_additional_fields"):
+        try:
+          _pass2_values = {
+              k: (v.get('value', '') if isinstance(v, dict) else v)
+              for k, v in acc_score["_additional_fields"].items()
+          }
+          aligned = model.align_to_schema(_pass2_values, standardization_schema, acc)
+          aligned_batch = {}
+          for canonical, info in aligned.items():
+            raw_key = info.get('from_field', '')
+            raw_entry = acc_score["_additional_fields"].get(raw_key, {})
+            explanation = raw_entry.get('explanation', '') if isinstance(raw_entry, dict) else ''
+            if any(canonical.lower() == nc.lower() for nc in (niche_cases or [])):
+              # Sheet 1 already has this field from Pass 1 (with its own citation) -- drop the dup.
+              acc_score["_additional_fields"].pop(canonical, None)
+              acc_score["_additional_fields"].pop(raw_key, None)
+              continue
+            if raw_key and raw_key != canonical:
+              acc_score["_additional_fields"].pop(raw_key, None)
+            aligned_batch[canonical] = {'value': info.get('value', ''), 'explanation': explanation}
+          if aligned_batch:
+            await metadata_merge.merge_metadata_into_table(
+                acc_score["_additional_fields"], aligned_batch,
+                source_label="Schema alignment (Pass 2)", is_llm=True,
+                identifier_values={
+                    "biosample_accession": accessions[acc].get("biosample"),
+                    "bioproject":          accessions[acc].get("bioproject") or bioproject_id,
+                    "sra_accession":       accessions[acc].get("experiment"),
+                    "genbank_accession":   accessions[acc].get("accession"),
+                },
+            )
+          if aligned:
+            print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
+        except Exception as _sa_err:
+          print(f"[schema-align] WARNING for {acc}: {_sa_err}")
 
-        # ── Ontology annotation pass (only when GO/OBO URLs were provided) ────────
-        if _is_ontology_mode:
-          try:
-            _all_extracted = {}
-            # Collect Pass 1 answers
-            for _k, _v in predicted_output_info[output_acc].get("predicted_output", {}).items():
-              if isinstance(_v, dict) and _v.get("answer", "unknown").lower() != "unknown":
-                _all_extracted[_k] = _v["answer"]
-            # Collect Pass 2 fields (now {field: {"value", "explanation"}})
-            for _k, _v in (acc_score.get("_additional_fields") or {}).items():
-              _all_extracted[_k] = _v.get('value', '') if isinstance(_v, dict) else _v
-            if _all_extracted:
-              ontology_result = model.annotate_with_ontologies(
-                  _all_extracted, text, acc)
-              if ontology_result:
-                acc_score["_ontology_annotations"] = ontology_result
-                # Also add formatted strings to _additional_fields for Sheet 2
-                for cat, items in ontology_result.items():
-                  if items:
-                    _joined = "\n".join(items) if isinstance(items, list) else str(items)
-                    acc_score.setdefault("_additional_fields", {})[f"ontology_{cat}"] = \
-                        {'value': _joined, 'explanation': ''}
-                print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
-          except Exception as _ont_err:
-            print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
+      # ── Ontology annotation pass (only when GO/OBO URLs were provided) ────────
+      if _is_ontology_mode:
+        try:
+          _all_extracted = {}
+          # Collect Pass 1 answers
+          for _k, _v in predicted_data.get("predicted_output", {}).items():
+            if isinstance(_v, dict) and _v.get("answer", "unknown").lower() != "unknown":
+              _all_extracted[_k] = _v["answer"]
+          # Collect Pass 2 fields (now {field: {"value", "explanation"}})
+          for _k, _v in (acc_score.get("_additional_fields") or {}).items():
+            _all_extracted[_k] = _v.get('value', '') if isinstance(_v, dict) else _v
+          if _all_extracted:
+            ontology_result = model.annotate_with_ontologies(
+                _all_extracted, acc_text, acc)
+            if ontology_result:
+              acc_score["_ontology_annotations"] = ontology_result
+              # Also add formatted strings to _additional_fields for Sheet 2
+              for cat, items in ontology_result.items():
+                if items:
+                  _joined = "\n".join(items) if isinstance(items, list) else str(items)
+                  acc_score.setdefault("_additional_fields", {})[f"ontology_{cat}"] = \
+                      {'value': _joined, 'explanation': ''}
+              print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
+        except Exception as _ont_err:
+          print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
 
-        # ── ID-linkage confidence signal ──────────────────────────────────────
-        # Flag (row-level, not per-field) if any categorical/group-type field's
-        # answer wasn't confirmed via a direct per-sample numeric-ID table match
-        # -- see model.py's multi_prompts() PRIORITY RULE and its [ID-match] tag.
-        # Fields with no answer at all are skipped here (that's what
-        # "missing_key_fields" already covers); this only judges fields that DID
-        # get an answer but couldn't tie it to this sample's own ID.
-        _lacked_id_linkage = False
-        for _field_name in (niche_cases or []):
-          if not _is_categorical_field(_field_name):
-            continue
-          _field_data = acc_score.get(_field_name)
-          if isinstance(_field_data, dict) and _field_data:
-            _all_explanations = [e for _exps in _field_data.values() for e in (_exps or [])]
-            if _all_explanations and _lacks_confirmed_id_linkage(_all_explanations):
-              _lacked_id_linkage = True
-        for _field_name, _entry in (acc_score.get("_additional_fields") or {}).items():
-          if _is_categorical_field(_field_name):
-            _expl = _entry.get('explanation', '') if isinstance(_entry, dict) else ''
-            if _expl and _lacks_confirmed_id_linkage([_expl]):
-              _lacked_id_linkage = True
-        acc_score["signals"]["any_key_field_lacked_id_linkage"] = _lacked_id_linkage
+      # ── ID-linkage confidence signal ──────────────────────────────────────
+      # Flag (row-level, not per-field) if any categorical/group-type field's
+      # answer wasn't confirmed via a direct per-sample numeric-ID table match
+      # -- see model.py's multi_prompts() PRIORITY RULE and its [ID-match] tag.
+      # Fields with no answer at all are skipped here (that's what
+      # "missing_key_fields" already covers); this only judges fields that DID
+      # get an answer but couldn't tie it to this sample's own ID.
+      _lacked_id_linkage = False
+      for _field_name in (niche_cases or []):
+        if not _is_categorical_field(_field_name):
+          continue
+        _field_data = acc_score.get(_field_name)
+        if isinstance(_field_data, dict) and _field_data:
+          _all_explanations = [e for _exps in _field_data.values() for e in (_exps or [])]
+          if _all_explanations and _lacks_confirmed_id_linkage(_all_explanations):
+            _lacked_id_linkage = True
+      for _field_name, _entry in (acc_score.get("_additional_fields") or {}).items():
+        if _is_categorical_field(_field_name):
+          _expl = _entry.get('explanation', '') if isinstance(_entry, dict) else ''
+          if _expl and _lacks_confirmed_id_linkage([_expl]):
+            _lacked_id_linkage = True
+      acc_score["signals"]["any_key_field_lacked_id_linkage"] = _lacked_id_linkage
 
-        print(f"end of this acc {acc}")
+      print(f"end of this acc {acc}")
       end = time.time()
-      elapsed = (end - start)
+      elapsed = (end - start_time)
       acc_score["time_cost"] = f"{elapsed:.3f} seconds"
       final_source_links = acc_score["source"]
       # Collect source keys, excluding schema/standardization URLs which are not metadata sources
@@ -1395,10 +1396,63 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       # Store the NCBI accession identifiers so downstream row-builders can
       # include bioproject/biosample/sra_accession columns in the output.
       acc_score["_accession_info"] = accessions[acc]
-      accs_output[acc] = acc_score
-      await _progress(f"[{_acc_idx + 1}/{_total_accs}] ✓ {acc} done ({acc_score.get('time_cost', '')})")
-      # Signal a partial result so api.py can stream the row to the browser immediately
-      await _progress({"__partial_acc__": acc, "__partial_data__": {acc: acc_score}})
+
+    # ── Phase B: group accessions by paper, then chunk into batches ─────────
+    # The unit of an LLM call is the paper/project, not the sample: accessions
+    # sharing a bioproject (or, for non-NCBI, a parent project) get batched
+    # into the same call(s) so the model sees them together instead of
+    # re-interpreting the same shared paper text once per sample.
+    _groups: dict = {}
+    for _acc in acc_prompts:  # preserves Phase A's completion order
+      _groups.setdefault(acc_group_keys[_acc], []).append(_acc)
+
+    _chunks = []
+    for _group_accs in _groups.values():
+      for i in range(0, len(_group_accs), BATCH_SIZE):
+        _chunks.append(_group_accs[i:i + BATCH_SIZE])
+
+    _schema_for_model = dict(standardization_schema)
+    if _global_schema_text:
+        _schema_for_model['__schema_text__'] = _global_schema_text
+
+    _done_count = 0
+    _total_llm_accs = len(acc_prompts)
+    for _chunk_idx, _chunk in enumerate(_chunks):
+      if cancel_event is not None and cancel_event.is_set():
+          await _progress("⏹ Cancelled — stopping before remaining batched LLM inference.")
+          break
+      await _progress(f"Running batched LLM inference for {len(_chunk)} sample(s) "
+                       f"(batch {_chunk_idx + 1}/{len(_chunks)})…")
+      print("start model")
+      try:
+        predicted_output_info = await model.query_document_info(
+          niche_cases=niche_cases,
+          saveLinkFolder=saveLinkFolder,
+          llm_api_function=model.call_llm_api,
+          prompts={_a: acc_prompts[_a] for _a in _chunk},
+          standardization_schema=_schema_for_model)
+      except Exception as _qdi_err:
+        print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
+        await _progress(f"⚠ LLM inference failed for batch {_chunk_idx + 1}/{len(_chunks)} "
+                         f"({len(_chunk)} sample(s)) — saving partial results.")
+        for _acc in _chunk:
+          _done_count += 1
+          if progress_cb:
+            await progress_cb({"__partial_acc__": _acc, "__partial_data__": {_acc: accs_output[_acc]}})
+        continue
+
+      for _acc in _chunk:
+        if _acc not in predicted_output_info:
+          print(f"[LLM] no output for {_acc} in batch {_chunk_idx + 1} response -- saving partial result.")
+        else:
+          await _apply_predicted_output(
+              _acc, accs_output[_acc], acc_prompts[_acc],
+              predicted_output_info[_acc], acc_start_times[_acc])
+        _done_count += 1
+        await _progress(f"[{_done_count}/{_total_llm_accs}] ✓ {_acc} done ({accs_output[_acc].get('time_cost', '')})")
+        # Signal a partial result so api.py can stream the row to the browser immediately
+        await _progress({"__partial_acc__": _acc, "__partial_data__": {_acc: accs_output[_acc]}})
+
     # Store the final auto-detected niche_cases so api.py can pass them to
     # _rows_from_new_pipeline for proper per-field citation display.
     accs_output["__niche_cases__"] = niche_cases or []

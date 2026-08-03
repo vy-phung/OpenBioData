@@ -78,6 +78,7 @@ def calculate_confidence(
     field_name: str,
     predicted_value: str,
     sources: Dict[str, str],
+    source_origin: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Generalized confidence scoring for any metadata field.
@@ -86,14 +87,23 @@ def calculate_confidence(
         field_name:      e.g. 'country', 'disease_status', 'collection_date'
         predicted_value: the value the model predicted
         sources:         {source_name: source_text} dict of queried documents
+        source_origin:   optional {source_name: 'record'|'search'} dict (e.g.
+                         additional_pipeline.py's acc_score['source_texts_origin']).
+                         When available, evidence strength is scored from this --
+                         a 'record' source (the depositing paper / NCBI record
+                         itself, found via trace-back) outweighs a 'search'
+                         source (found via literature mining). When omitted, or
+                         for a source_name not present in it, falls back to a
+                         static name-based heuristic so this stays usable
+                         standalone.
 
     Returns:
         {'score': int (0-100), 'label': str, 'flags': list, 'explanation': str}
 
     Scoring:
         Source count    +10 per source containing predicted value, capped at +40
-        Evidence        +20 peer-reviewed / +10 BioSample-confirmed
-        Accession hit   +10 if 'ncbi_accession' source confirms value
+        Evidence        +20 record-confirmed / +10 search-confirmed
+        Accession hit   +10 if an 'ncbi_accession'-named source confirms value
         Conflict        -20 if '##' marker present in predicted_value
     """
     log.debug("calculate_confidence: field='%s' value='%s' sources=%s",
@@ -126,19 +136,32 @@ def calculate_confidence(
     score = min(score, 40)
 
     # ── Evidence strength bonus ───────────────────────────────────────────────
-    strong_sources = {"ncbi_publication", "supplementary_table", "linked_paper"}
-    medium_sources = {"ncbi_biosample", "ncbi_accession", "ncbi_experiment"}
+    # Prefer source_origin (record vs search) when available -- it reflects
+    # where each source actually came from (e.g. the depositing paper's own
+    # DOI-fetched text is 'record' even though its key is a URL, not
+    # 'NCBI_*'), which a static name list can't express. Sources absent from
+    # source_origin (e.g. _db_hint, user_uploaded_file -- deliberately
+    # unlabeled, see additional_pipeline.py) fall back to the name heuristic.
+    _origin = source_origin or {}
+    _strong_name_hints = {"ncbi_publication", "supplementary_table", "linked_paper"}
+    _medium_name_hints = {"ncbi_biosample", "ncbi_accession", "ncbi_experiment", "ncbi_bioproject"}
+    _unlabeled_hits = [s for s in source_hits if s not in _origin]
 
-    if any(s in source_hits for s in strong_sources):
+    has_record_hit = any(_origin.get(s) == "record" for s in source_hits)
+    has_search_hit = any(_origin.get(s) == "search" for s in source_hits)
+    has_strong_name = any(s.lower() in _strong_name_hints for s in _unlabeled_hits)
+    has_medium_name = any(s.lower() in _medium_name_hints for s in _unlabeled_hits)
+
+    if has_record_hit or has_strong_name:
         score += 20
-        flags.append("publication_confirmed")
-        log.debug("calculate_confidence: %s: publication confirmed (+20)", field_name)
-    elif any(s in source_hits for s in medium_sources):
+        flags.append("record_confirmed")
+        log.debug("calculate_confidence: %s: record confirmed (+20)", field_name)
+    elif has_search_hit or has_medium_name:
         score += 10
-        flags.append("biosample_confirmed")
-        log.debug("calculate_confidence: %s: biosample confirmed (+10)", field_name)
+        flags.append("search_confirmed")
+        log.debug("calculate_confidence: %s: search confirmed (+10)", field_name)
 
-    if "ncbi_accession" in source_hits:
+    if any(s.lower() == "ncbi_accession" for s in source_hits):
         score += 10
         flags.append("accession_keyword_found")
 
