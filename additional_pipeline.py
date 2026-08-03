@@ -397,6 +397,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                    "time_cost":None,
                    "source":links,
                    "source_texts": {},
+                   # Keep in sync with source_texts: every new source_texts[key] = ... assignment needs a matching source_texts_origin[key] = "record"/"search" tag.
                    "source_texts_origin": {},
                    "file_all_output":"",
                    "signals":{ # default values
