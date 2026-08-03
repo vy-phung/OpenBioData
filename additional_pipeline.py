@@ -397,6 +397,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                    "time_cost":None,
                    "source":links,
                    "source_texts": {},
+                   "source_texts_origin": {},
                    "file_all_output":"",
                    "signals":{ # default values
                               "in_NCBI": False,
@@ -461,6 +462,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
               if bioproject_id in (bioproject_info or {}):
                 acc_score["source_texts"]["NCBI_bioproject"] = {bioproject_id: bioproject_info[bioproject_id]}
+                acc_score["source_texts_origin"]["NCBI_bioproject"] = "record"
                 _bp_data_now = bioproject_info[bioproject_id]
                 if not pubmeds:
                   pubmeds = list(_bp_data_now.get("pubmed", []) or [])
@@ -470,6 +472,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     _umbrella_info = NCBI.extract_NCBI_directly(_umbrella_acc)
                     if _umbrella_info:
                       acc_score["source_texts"][f"NCBI_umbrella_{_umbrella_acc}"] = _umbrella_info
+                      acc_score["source_texts_origin"][f"NCBI_umbrella_{_umbrella_acc}"] = "record"
                       print(f"[umbrella] Fetched umbrella project {_umbrella_acc}")
                   except Exception as _ue:
                     print(f"[umbrella] fetch failed for {_umbrella_acc}: {_ue}")
@@ -483,10 +486,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               biosample_id = accessions[acc]["biosample"]
               ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
               acc_score["source_texts"]["NCBI_biosample"] = ncbi_texts
+              acc_score["source_texts_origin"]["NCBI_biosample"] = "record"
             elif ncbi_source == "accession" and accessions[acc].get("accession"):
               accession_id = accessions[acc]["accession"]
               ncbi_texts = NCBI.extract_NCBI_directly(accession_id)
               acc_score["source_texts"]["NCBI_accession"] = ncbi_texts
+              acc_score["source_texts_origin"]["NCBI_accession"] = "record"
               if not pubmeds:
                 _acc_data = (ncbi_texts or {}).get(accession_id, {})
                 if isinstance(_acc_data, dict):
@@ -498,6 +503,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               experiment_id = accessions[acc]["experiment"]
               ncbi_texts = NCBI.extract_NCBI_directly(experiment_id)
               acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
+              acc_score["source_texts_origin"]["NCBI_experiment"] = "record"
           except Exception as _e:
             print(f"[DB fetch] {ncbi_source} fetch failed for {acc}: {_e}")
 
@@ -512,6 +518,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             _ena_bs_text = NCBI.fetch_ena_biosample_text(_biosample_id)
             if _ena_bs_text:
               acc_score["source_texts"][f"ENA_biosample_{_biosample_id}"] = _ena_bs_text
+              acc_score["source_texts_origin"][f"ENA_biosample_{_biosample_id}"] = "record"
               acc_score["signals"]["in_NCBI"] = True
               print(f"[ENA] Fetched biosample text for {_biosample_id} ({len(_ena_bs_text)} chars)")
           except Exception as _e:
@@ -522,6 +529,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             _ena_study_text = NCBI.fetch_ena_study_text(_bp_id)
             if _ena_study_text:
               acc_score["source_texts"][f"ENA_study_{_bp_id}"] = _ena_study_text
+              acc_score["source_texts_origin"][f"ENA_study_{_bp_id}"] = "record"
               acc_score["signals"]["in_NCBI"] = True
               print(f"[ENA] Fetched study text for {_bp_id} ({len(_ena_study_text)} chars)")
           except Exception as _e:
@@ -736,6 +744,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   print(f"[doi_unpaywall_fallback] failed for {link}: {_oa_err}")
               if not _blocked and article_text:
                 acc_score["source_texts"][link] = article_text
+                acc_score["source_texts_origin"][link] = "record"
 
               # Process supplementary/linked files from the DOI page
               if jsonSM:
@@ -752,6 +761,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                             all_output="")
                         if more_all_output:
                           acc_score["source_texts"][l] = more_all_output
+                          acc_score["source_texts_origin"][l] = "record"
                         print(f"len new output of sup_link {l}: {len(more_all_output or '')}")
                       except Exception as _sl_err:
                         print(f"[sup_link] {l} failed: {_sl_err}")
@@ -781,6 +791,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 if more_all_output:
                   _link_label = f"external_{link}" if link in _bioproject_extra_links else link
                   acc_score["source_texts"][_link_label] = more_all_output
+                  acc_score["source_texts_origin"][_link_label] = "record"
                 print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
               except Exception as _el_err:
                 print(f"[extra_link] {link} failed: {_el_err}")
@@ -822,6 +833,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         except Exception as _meta_err:
             print(f"[non_ncbi fetch_dataset_metadata] {_meta_err}")
         acc_score["source_texts"]["_db_hint"] = _db_hint_text
+        acc_score["source_texts_origin"]["_db_hint"] = "search"
       else:
         _search_acc = (all_accs.get("biosample") or all_accs.get("accession")
                        or all_accs.get("bioproject") or acc)
@@ -856,6 +868,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           for _ws_link, _ws_text in more_linksWithTexts.items():
             _label = f"web_search_{_ws_link}"
             acc_score["source_texts"][_label] = _ws_text
+            acc_score["source_texts_origin"][_label] = "search"
         if more_links:
           all_links = list(all_links) + [l for l in more_links if l not in all_links]
         await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "web_search", "user_file": user_file_label}})
@@ -988,6 +1001,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               print(f"[pubmed_follow_unpaywall] failed for PMID {_pmid}: {_oa_pm_err}")
           if not _blocked_pm and _pm_article_text:
               acc_score["source_texts"][_doi_url] = _pm_article_text
+              acc_score["source_texts_origin"][_doi_url] = "search"
               _processed_source_keys.add(_doi_url)
           # Process supplementary files found on the DOI page
           if _pm_jsonSM:
@@ -1009,6 +1023,7 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                         all_output="")
                     if _psl_text:
                       acc_score["source_texts"][_psl] = _psl_text
+                      acc_score["source_texts_origin"][_psl] = "search"
                     print(f"[pubmed_sup] {_psl}: {len(_psl_text or '')} chars")
                   except Exception as _psle:
                     print(f"[pubmed_sup_link] {_psl}: {_psle}")
