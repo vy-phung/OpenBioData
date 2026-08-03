@@ -544,13 +544,14 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     .get("NCBI_bioproject", {})
                     .get(bioproject_id, {}))
         _bp_doi_map = {d["pmid"]: d["doi"] for d in _bp_data.get("pubmed_dois", [])}
-        _seen_doi_urls = set(links)
+        _seen_doi_urls = {pipeline.canonical_paper_key(l) for l in links}
         for pubID in pubmeds:
           pub_doi = _bp_doi_map.get(str(pubID)) or NCBI.get_doi_via_europepmc(str(pubID))
           if pub_doi:
             doi_url = 'https://doi.org/' + pub_doi
-            if doi_url not in _seen_doi_urls:
-              _seen_doi_urls.add(doi_url)
+            doi_key = pipeline.canonical_paper_key(doi_url)
+            if doi_key not in _seen_doi_urls:
+              _seen_doi_urls.add(doi_key)
               links.append(doi_url)
             if not doi:
               doi = pub_doi

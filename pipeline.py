@@ -181,9 +181,34 @@ def time_it(func, *args, **kwargs):
     return result, elapsed
 # --- Define Pricing Constants (for Gemini 1.5 Flash & text-embedding-004) ---    
 
+_DOI_RE = re.compile(r'doi\.org/([^\s?#]+)', re.IGNORECASE)
+_PMID_RE = re.compile(r'(?:pubmed\.ncbi\.nlm\.nih\.gov/|ncbi\.nlm\.nih\.gov/pubmed/)(\d+)', re.IGNORECASE)
+_PMCID_RE = re.compile(r'(?:pmc\.ncbi\.nlm\.nih\.gov/articles/|ncbi\.nlm\.nih\.gov/pmc/articles/)(PMC\d+)', re.IGNORECASE)
+
+def canonical_paper_key(link):
+    """Dedup key for a paper link: doi.org/PMC/pubmed URLs for the same paper collapse to one key."""
+    if not isinstance(link, str):
+        return link
+    m = _DOI_RE.search(link)
+    if m:
+        return 'doi:' + m.group(1).rstrip('/').lower()
+    m = _PMID_RE.search(link)
+    if m:
+        return 'pmid:' + m.group(1)
+    m = _PMCID_RE.search(link)
+    if m:
+        return 'pmcid:' + m.group(1).upper()
+    return link
+
 def unique_preserve_order(seq):
     seen = set()
-    return [x for x in seq if not (x in seen or seen.add(x))]
+    result = []
+    for x in seq:
+        key = canonical_paper_key(x)
+        if key not in seen:
+            seen.add(key)
+            result.append(x)
+    return result
 
 # def sanitize_filename(filename, max_length=100):
 #     # Remove characters that are not letters, numbers, spaces, underscores, or hyphens
