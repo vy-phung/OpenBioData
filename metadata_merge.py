@@ -87,21 +87,19 @@ def _extend_conflict_marker(existing_value: str, existing_label: str, new_label:
     return f"{existing_value} ##CONFLICT: {existing_label}={existing_value}, {new_label}={new_value}"
 
 
-async def merge_metadata_into_table(table: dict, new_fields: dict, source_label: str, is_llm: bool = False,
-                                     identifier_values: dict = None) -> dict:
-    """Merge `new_fields` into `table`, corroborating matches instead of
-    dropping or overwriting them. Safe to call repeatedly, across many
-    sources over time, accumulating into the same table -- each call only
-    ever adds to or corroborates what's already there.
+async def cross_check_fields(table: dict, new_fields: dict, source_label: str, is_llm: bool = False,
+                              identifier_values: dict = None) -> dict:
+    """Read-only w.r.t. `table`. Computes the same per-field decision
+    merge_metadata_into_table() used to make inline, without mutating `table`.
+    Returns {new_key: CrossCheckResult}, one entry per key in `new_fields`,
+    in `new_fields` iteration order.
 
-    table: {field_name: {"value": str, "explanation": str, "sources": [str],
-            "is_llm": bool}}, mutated in place and returned.
-    new_fields: {field_name: value} or {field_name: {"value":..., "explanation":...}}.
-    source_label: identifies this batch's contribution (e.g. a raw Pass-2
-        field name, a document name, an NCBI record type) for the field's
-        source list and "confirmed by" narrative.
-    is_llm: whether this batch's values are LLM-derived; OR'd into each
-        touched field's is_llm flag for future (not-yet-built) confidence work.
+    CrossCheckResult:
+      {"action": "confirm" | "conflict" | "new_field" |
+                 "rejected_duplicate_identifier" | "skipped",
+       "value": str, "explanation": str, "matched_existing_key": str | None,
+       "source_label": str, "is_llm": bool}
+
     identifier_values: optional {"biosample_accession": ..., "bioproject": ...,
         "sra_accession": ..., "genbank_accession": ...} -- already-resolved
         identifier values for this same sample/row. This is a VALUE-level
@@ -113,35 +111,103 @@ async def merge_metadata_into_table(table: dict, new_fields: dict, source_label:
         identifier, not a real study name. A field that legitimately reports
         its own matching identifier (e.g. a 'biosample_accession' field
         correctly repeating the biosample accession) is exempted.
-    """
-    if not new_fields:
-        return table
 
+    Order matters: apply_cross_check() MUST replay these in the same order
+    it receives them (Python dicts preserve insertion order, so passing the
+    dict straight through is enough). A later field in the same batch can be
+    a synonym of an earlier field's brand-new column, exactly as today's
+    single interleaved loop allows -- e.g. new_fields={"geo_loc_name": "Italy",
+    "geographic_location": "Italy"} creates one column, not two, because by
+    the time "geographic_location" is scanned, "geo_loc_name" already exists.
+    To reproduce that without actually mutating `table`, this function keeps
+    a local shadow_values map (new_key -> current comparison value) seeded
+    from `table` and updated after every decision exactly the way
+    apply_cross_check() will update the real table -- so a same-batch
+    synonym's confirm/conflict decision compares against the same value it
+    would if this were still one interleaved pass.
+    """
     identifier_values = identifier_values or {}
+    results: dict = {}
+    if not new_fields:
+        return results
+
+    shadow_values = {k: v.get("value", "") for k, v in table.items()}
 
     for new_key, new_val in new_fields.items():
         value, explanation = _value_and_explanation(new_val)
 
         if is_duplicate_identifier_value(new_key, value, identifier_values):
-            print(f"[merge_metadata_into_table] Rejected {new_key}={value!r} from {source_label}: "
+            print(f"[cross_check_fields] Rejected {new_key}={value!r} from {source_label}: "
                   f"duplicates an identifier value, not a distinct fact")
-            value = "unknown"
+            results[new_key] = {
+                "action": "rejected_duplicate_identifier", "value": "unknown", "explanation": explanation,
+                "matched_existing_key": None, "source_label": source_label, "is_llm": is_llm,
+            }
+            continue
 
         if value.lower() in _SKIP_VALUES:
+            results[new_key] = {
+                "action": "skipped", "value": value, "explanation": explanation,
+                "matched_existing_key": None, "source_label": source_label, "is_llm": is_llm,
+            }
             continue
 
         existing_key = None
         # Sequential and short-circuiting on purpose: takes the FIRST matching
-        # key in table-iteration order, so running these concurrently (e.g.
-        # asyncio.gather over every candidate_key) would fire extra LLM calls
-        # past the first match on every row -- wasted latency/cost for no
+        # key in (shadow) table-iteration order, so running these concurrently
+        # (e.g. asyncio.gather over every candidate_key) would fire extra LLM
+        # calls past the first match on every row -- wasted latency/cost for no
         # behavior change, since only the first match is ever kept anyway.
-        for candidate_key in table.keys():
+        for candidate_key in shadow_values.keys():
             if await field_name_matches(candidate_key, new_key):
                 existing_key = candidate_key
                 break
 
         if existing_key is None:
+            results[new_key] = {
+                "action": "new_field", "value": value, "explanation": explanation,
+                "matched_existing_key": None, "source_label": source_label, "is_llm": is_llm,
+            }
+            shadow_values[new_key] = value
+            continue
+
+        if _normalize_for_compare(value) == _normalize_for_compare(shadow_values.get(existing_key, "")):
+            results[new_key] = {
+                "action": "confirm", "value": value, "explanation": explanation,
+                "matched_existing_key": existing_key, "source_label": source_label, "is_llm": is_llm,
+            }
+            # value unchanged on confirm -- shadow stays as-is
+        else:
+            shadow_values[existing_key] = _extend_conflict_marker(
+                shadow_values.get(existing_key, ""), existing_key, source_label, value)
+            results[new_key] = {
+                "action": "conflict", "value": value, "explanation": explanation,
+                "matched_existing_key": existing_key, "source_label": source_label, "is_llm": is_llm,
+            }
+
+    return results
+
+
+def apply_cross_check(table: dict, cross_check_result: dict) -> dict:
+    """Mutates and returns `table`: applies each field's decision from
+    cross_check_fields(), in the order the dict provides them (must match
+    cross_check_fields()'s own new_fields order -- see its docstring). This
+    is the only place a field becomes confirmed/flagged/new -- steps 5-6 of
+    today's merge_metadata_into_table(), unchanged, just driven by a
+    decision dict instead of recomputed inline.
+    """
+    for new_key, decision in cross_check_result.items():
+        action = decision["action"]
+        if action in ("skipped", "rejected_duplicate_identifier"):
+            continue
+
+        value = decision["value"]
+        explanation = decision["explanation"]
+        source_label = decision["source_label"]
+        is_llm = decision["is_llm"]
+        existing_key = decision["matched_existing_key"]
+
+        if action == "new_field":
             table[new_key] = {
                 "value": value,
                 "explanation": explanation,
@@ -154,10 +220,10 @@ async def merge_metadata_into_table(table: dict, new_fields: dict, source_label:
         entry.setdefault("sources", []).append(source_label)
         entry["is_llm"] = entry.get("is_llm", False) or is_llm
 
-        if _normalize_for_compare(value) == _normalize_for_compare(entry.get("value", "")):
+        if action == "confirm":
             confirm_line = f"Confirmed by {source_label}."
             entry["explanation"] = f"{entry['explanation']}\n{confirm_line}" if entry.get("explanation") else confirm_line
-        else:
+        elif action == "conflict":
             entry["value"] = _extend_conflict_marker(entry.get("value", ""), existing_key, source_label, value)
             conflict_line = f"Conflicting value from {source_label}: '{value}'."
             if explanation:
@@ -165,6 +231,34 @@ async def merge_metadata_into_table(table: dict, new_fields: dict, source_label:
             entry["explanation"] = f"{entry['explanation']}\n{conflict_line}" if entry.get("explanation") else conflict_line
 
     return table
+
+
+async def merge_metadata_into_table(table: dict, new_fields: dict, source_label: str, is_llm: bool = False,
+                                     identifier_values: dict = None) -> dict:
+    """Compatibility wrapper: apply_cross_check(table, cross_check_fields(...)).
+    Existing call sites (additional_pipeline.py:1316, api.py:504) are
+    unchanged by this refactor -- see cross_check_fields()/apply_cross_check()
+    for the actual logic, split out so a caller can inspect the decision
+    before it's applied.
+
+    Safe to call repeatedly, across many sources over time, accumulating into
+    the same table -- each call only ever adds to or corroborates what's
+    already there.
+
+    table: {field_name: {"value": str, "explanation": str, "sources": [str],
+            "is_llm": bool}}, mutated in place and returned.
+    new_fields: {field_name: value} or {field_name: {"value":..., "explanation":...}}.
+    source_label: identifies this batch's contribution (e.g. a raw Pass-2
+        field name, a document name, an NCBI record type) for the field's
+        source list and "confirmed by" narrative.
+    is_llm: whether this batch's values are LLM-derived; OR'd into each
+        touched field's is_llm flag for future (not-yet-built) confidence work.
+    identifier_values: see cross_check_fields()'s docstring.
+    """
+    if not new_fields:
+        return table
+    cross_check_result = await cross_check_fields(table, new_fields, source_label, is_llm, identifier_values)
+    return apply_cross_check(table, cross_check_result)
 
 
 # ── Cross-sample table normalization ────────────────────────────────────────
