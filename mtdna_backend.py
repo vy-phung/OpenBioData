@@ -168,29 +168,41 @@ def load_sheet_once():
     global SHEET_CACHE, SHEET_HEADERS, SHEET_OBJ
 
     if SHEET_CACHE is None:
-        creds_dict = json.loads(os.environ["GCP_CREDS_JSON"])
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
+        try:
+            creds_dict = json.loads(os.environ["GCP_CREDS_JSON"])
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            client = gspread.authorize(creds)
 
-        spreadsheet = client.open("known_samples")
-        sheet = spreadsheet.sheet1
-        SHEET_OBJ = sheet  # keep for writing later
+            spreadsheet = client.open("known_samples")
+            sheet = spreadsheet.sheet1
+            SHEET_OBJ = sheet  # keep for writing later
 
-        data = sheet.get_all_values()
-        SHEET_HEADERS = data[0]
-        SHEET_CACHE = pd.DataFrame(data[1:], columns=SHEET_HEADERS)
+            data = sheet.get_all_values()
+            SHEET_HEADERS = data[0]
+            SHEET_CACHE = pd.DataFrame(data[1:], columns=SHEET_HEADERS)
 
-        print("Loaded known_samples into cache.")
+            print("Loaded known_samples into cache.")
+        except Exception as e:
+            # known_samples is a read cache for the legacy pipeline's cache/log
+            # feature only (see mtdna_backend.summarize_results) -- not required
+            # for the live pipeline's output, so a self-hoster without GCP
+            # credentials should get a warning here, not a crash on import.
+            print(f"⚠️ Could not load 'known_samples' Google Sheet cache ({e}); "
+                  "continuing without it.")
+            SHEET_CACHE = pd.DataFrame()
+            SHEET_HEADERS = []
+            SHEET_OBJ = None
 
     # Always return copies so we don't mutate cache accidentally
     return SHEET_CACHE.copy(), list(SHEET_HEADERS), SHEET_OBJ
 
-save_df, save_headers, SHEET_OBJ = load_sheet_once()  
-print("🔒 Google Sheet cache loaded and ready.")
+save_df, save_headers, SHEET_OBJ = load_sheet_once()
+if SHEET_OBJ is not None:
+    print("🔒 Google Sheet cache loaded and ready.")
 
 async def summarize_results(accession, stop_flag=None, niche_cases=None):
     # Early bail
