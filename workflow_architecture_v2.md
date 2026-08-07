@@ -1,3 +1,5 @@
+⚠️ Aspirational design proposal — not the current implementation. See ARCHITECTURE.md for what's actually built.
+
 # OpenBioData Extraction Workflow — Modular Architecture
 
 ## Purpose of this document

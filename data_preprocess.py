@@ -424,7 +424,7 @@ try:
 except Exception:
     model = None
 try:
-    import pipeline
+    import pipeline_legacy_utils as pipeline
 except Exception:
     pipeline = None
 import tempfile
@@ -1214,7 +1214,7 @@ def merge_texts_skipping_overlap(text1: str, text2: str) -> str:
     return re.sub(r'\s+', ' ', merged_text).strip()
 
 from docx import Document
-from pipeline import upload_file_to_drive    
+from pipeline_legacy_utils import upload_file_to_drive
 # def save_text_to_docx(text_content: str, file_path: str):
 #     """
 #     Saves a given text string into a .docx file.

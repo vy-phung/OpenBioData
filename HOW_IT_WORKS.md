@@ -188,10 +188,10 @@ The LLM is used **only for reading and extracting** — it does not invent infor
 |---|---|
 | Confidence score rules and weights | `confidence_score.py` — `set_rules()` function (line 44) |
 | Score calculation logic | `confidence_score.py` — `compute_confidence_score_and_tier()` (line 192) |
-| NCBI metadata fetch | `mtdna_classifier.py` — `fetch_ncbi_metadata()` (line 37) |
+| NCBI metadata fetch | `NCBI.py` — `extract_NCBI_directly()` (line 736); `mtdna_classifier.fetch_ncbi_metadata()` is called as one of its branches, not the entry point itself |
 | LLM prompt construction | `model.py` — `multi_prompts()` (line 1083) |
 | LLM API call with fallback | `model.py` — `call_llm_api()` (line 94) |
-| Source text gathering | `pipeline.py` — `extractSources()` (line 295) |
+| Source text gathering | `pipeline_legacy_utils.py` — `extractSources()` (line 295) |
 | Non-NCBI database support | `non_ncbi_resolver.py` |
 | Output row construction | `api.py` — `_rows_from_new_pipeline()` (line 151) |
 

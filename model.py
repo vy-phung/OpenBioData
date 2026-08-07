@@ -32,7 +32,7 @@ try:
 except ImportError:
     smart_fallback = None
 try:
-    import pipeline
+    import pipeline_legacy_utils as pipeline
 except ImportError:
     pipeline = None
 # --- IMPORTANT: UNCOMMENT AND CONFIGURE YOUR REAL API KEY ---

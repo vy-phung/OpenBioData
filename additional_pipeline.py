@@ -7,7 +7,7 @@ def _try_import(name):
 
 NCBI              = _try_import("NCBI")
 model             = _try_import("model")
-pipeline          = _try_import("pipeline")
+pipeline          = _try_import("pipeline_legacy_utils")
 mtdna_classifier  = _try_import("mtdna_classifier")
 smart_fallback    = _try_import("smart_fallback")
 standardize_location = _try_import("standardize_location")

@@ -27,6 +27,7 @@ If you want to stay anonymous, you can try the first 10 samples without logging 
 ## Run it yourself
 
 Requirements: Python 3.x, your own Anthropic API key (Claude), Gemini API key optional as fallback.
+Check you have it with `python --version` — if that fails, install from python.org first.
 
 ```bash
 git clone https://github.com/vy-phung/OpenBioData
@@ -35,6 +36,8 @@ pip install -r requirements.txt
 cp .env.example .env   # add your ANTHROPIC_API_KEY (and GOOGLE_API_KEY if using Gemini fallback)
 python api.py
 ```
+
+Then open http://localhost:8000 in your browser — paste an accession, submit, and watch the result stream in.
 
 Try it against the sample accessions in `accessions.csv` to confirm it's working before pointing it at your own data.
 
@@ -132,14 +135,16 @@ See `CONTRIBUTING.md` for open issues, labeled by scope.
 
 ## Transparency — where to check the code
 
+For a fuller walkthrough of how each stage works, see [HOW_IT_WORKS.md](./HOW_IT_WORKS.md).
+
 | What | File | Location |
 |---|---|---|
 | Confidence score rules and weights | `confidence_score.py` | `set_rules()` line 44 |
 | Score calculation logic | `confidence_score.py` | `compute_confidence_score_and_tier()` line 192 |
-| NCBI metadata fetch | `mtdna_classifier.py` | `fetch_ncbi_metadata()` line 37 |
+| NCBI metadata fetch | `NCBI.py` | `extract_NCBI_directly()` line 736; calls `mtdna_classifier.fetch_ncbi_metadata()` as one branch |
 | LLM prompt construction | `model.py` | `multi_prompts()` line 1096 |
 | LLM API call with fallback | `model.py` | `call_llm_api()` line 94 |
-| Source text gathering | `pipeline.py` | `extractSources()` line 290 |
+| Source text gathering | `pipeline_legacy_utils.py` | `extractSources()` line 290 |
 | Non-NCBI database support | `non_ncbi_resolver.py` | — |
 | Output row construction | `api.py` | `_rows_from_new_pipeline()` line 289 |
 
