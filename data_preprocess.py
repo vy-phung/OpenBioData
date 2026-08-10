@@ -58,8 +58,20 @@ def _get_filename_from_url(url):
     qs = _parse_qs(parsed.query)
     if 'file' in qs:
         return qs['file'][0]
-    name = os.path.basename(parsed.path)
-    return name if name else 'downloaded_file'
+    name = os.path.basename(parsed.path) or 'downloaded_file'
+    # Some publishers (PLOS confirmed) serve every supplementary item through
+    # the same path (e.g. article/file?type=supplementary&id=...s009), only
+    # distinguished by a query param -- basename alone gives every S1..S7
+    # item the same local filename, so later ones silently reuse the first
+    # download's cached bytes instead of fetching their own (see
+    # extract_url_text's `if not dest.exists()` cache check).
+    id_val = qs.get('id', [''])[0]
+    if id_val:
+        tag = re.sub(r'[^A-Za-z0-9]+', '_', id_val.rsplit('/', 1)[-1]).strip('_')
+        if tag and tag not in name:
+            base, ext = os.path.splitext(name)
+            name = f"{base}_{tag}{ext}"
+    return name
 
 def classify_url(url: str) -> str:
     """Return 'pdf', 'xlsx', 'docx', 'pptx', 'ppt', 'zip', or 'html' for a URL or local path.
@@ -251,6 +263,35 @@ def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = 
     url = url.strip()
     name = _get_filename_from_url(url)
     kind = classify_url(url)
+
+    # Supplementary links discovered by getSupMaterial()'s label-based pass
+    # (e.g. PLOS's article/file?type=supplementary&id=...s009) have no
+    # extension in the URL, so classify_url() falls back to "html" -- which
+    # would run this binary file through HTML text scraping. This only runs
+    # for the recursive supplementary sub-fetch (_follow_sup=False), not the
+    # main article URL, so normal DOI/article fetching is untouched.
+    if kind == "html" and not _follow_sup:
+        try:
+            _head = requests.head(url, headers=_DOWNLOAD_HEADERS, timeout=15, allow_redirects=True)
+            _ct = (_head.headers.get('Content-Type') or '').lower()
+            _cd = (_head.headers.get('Content-Disposition') or '').lower()
+            _sniffed = None
+            if 'wordprocessingml' in _ct or 'msword' in _ct or '.docx' in _cd or '.doc' in _cd:
+                _sniffed = ('docx', '.docx')
+            elif 'spreadsheetml' in _ct or 'ms-excel' in _ct or '.xlsx' in _cd or '.xls' in _cd:
+                _sniffed = ('xlsx', '.xlsx')
+            elif 'pdf' in _ct or '.pdf' in _cd:
+                _sniffed = ('pdf', '.pdf')
+            elif 'zip' in _ct or '.zip' in _cd:
+                _sniffed = ('zip', '.zip')
+            if _sniffed:
+                kind, _ext = _sniffed
+                if not name.lower().endswith(_ext):
+                    name = os.path.splitext(name)[0] + _ext
+        except Exception as _sniff_err:
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[extract_url_text] content-type sniff failed for {url}: {_sniff_err}")
+
     result = {"url": url, "name": name, "kind": kind, "status": "ok", "text": "",
               "error": "", "supplementary": []}
 

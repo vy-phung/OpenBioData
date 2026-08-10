@@ -705,8 +705,8 @@ async function handlePaperFiles(fileList) {
     (data.files || []).forEach((res, i) => {
       const item = row.files.find(f => f.uid === uids[i]);
       if (!item) return;
-      if (res.status === 'ok') { item.status = 'ok'; item.id = res.context_file_id; }
-      else { item.status = 'failed'; item.error = res.error || 'Upload failed'; }
+      if (res.status === 'ok' && (res.chars || 0) > 0) { item.status = 'ok'; item.id = res.context_file_id; }
+      else { item.status = 'failed'; item.error = res.error || 'No readable text extracted from this file'; }
     });
     if (!resp.ok) {
       uids.forEach(uid => { const it = row.files.find(f => f.uid === uid); if (it && it.status === 'uploading') { it.status = 'failed'; it.error = 'Upload failed'; } });

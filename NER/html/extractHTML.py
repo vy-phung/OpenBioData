@@ -476,6 +476,29 @@ class HTML():
     if global_links:
         json.setdefault("Supplementary Files", []).extend(global_links)
 
+    # ── Pass 3: label-based (S1 Table, Table S1, S2 Fig, ...) ──────────────
+    # Some publishers (confirmed on PLOS) link supplementary items through
+    # extensionless action URLs (e.g. article/file?type=supplementary&id=...)
+    # with no keyword-matching heading nearby -- the item's own label text
+    # ("S1 Table.") is the only signal a static-HTML pass has to go on.
+    import re as _re
+    _SUPP_LABEL_RE = _re.compile(
+        r'^(S\d+\s+(Table|Fig|Figure|Text|File|Data)|(Table|Fig|Figure)\s+S\d+)',
+        _re.IGNORECASE
+    )
+    label_links = []
+    for a in soup.find_all("a", href=True):
+        label = a.get_text(strip=True)
+        if not _SUPP_LABEL_RE.match(label):
+            continue
+        full = _resolve(a["href"])
+        if full in seen:
+            continue
+        seen.add(full)
+        label_links.append(full)
+    if label_links:
+        json.setdefault("Supplementary Files", []).extend(label_links)
+
     return json
   def extractTable(self):
     soup = self.openHTMLFile()

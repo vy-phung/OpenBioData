@@ -822,6 +822,22 @@ def _process_one_upload(filename: str, raw: bytes) -> dict:
         except Exception as _sup_scan_exc:
             print(f"[upload-context] supplementary link scan failed for {filename}: {_sup_scan_exc}")
 
+    # Extraction "succeeded" without raising but produced nothing usable --
+    # e.g. both PDF backends failed (text is just the "[... failed: ...]"
+    # marker) or a scanned/image-only PDF yielded no text. Report this as a
+    # real failure instead of silently writing an empty/marker context file
+    # and telling the caller "ok" (see terminal_report.txt Q1).
+    _usable_text = text.strip()
+    if not _usable_text or _usable_text.startswith("[PDF text extraction failed") \
+            or _usable_text.startswith("[ZIP text extraction failed") \
+            or _usable_text.startswith("[Excel text extraction failed") \
+            or _usable_text.startswith("[DOCX text extraction failed"):
+        return {
+            "filename": filename,
+            "status": "failed",
+            "error": "No readable text could be extracted from this file (it may be a scanned/image-only PDF).",
+        }
+
     tmp_dir = tempfile.mkdtemp(dir=UPLOAD_DIR)
     ctx_path = os.path.join(tmp_dir, "user_context.txt")
     with open(ctx_path, "w", encoding="utf-8") as fh:
