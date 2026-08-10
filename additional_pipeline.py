@@ -1431,6 +1431,17 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           llm_api_function=model.call_llm_api,
           prompts={_a: acc_prompts[_a] for _a in _chunk},
           standardization_schema=_schema_for_model)
+      except model.LLMKeysExhaustedError as _qdi_err:
+        # Every configured key is dead -- every remaining chunk would fail
+        # identically, so stop grinding through them instead of continuing
+        # to accumulate more empty/confidence-0 rows.
+        print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
+        await _progress({"__fatal_error__": {"type": "llm_keys_exhausted", "message": str(_qdi_err)}})
+        for _acc in _chunk:
+          _done_count += 1
+          if progress_cb:
+            await progress_cb({"__partial_acc__": _acc, "__partial_data__": {_acc: accs_output[_acc]}})
+        break
       except Exception as _qdi_err:
         print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
         await _progress(f"⚠ LLM inference failed for batch {_chunk_idx + 1}/{len(_chunks)} "

@@ -1,8 +1,6 @@
 # OpenBioData - NCBI Metadata Recovery Tool
 
-Open-source tool for recovering missing NCBI metadata (BioSample, SRA, GenBank, GEO) by tracing accessions back to their source publications and supplementary tables.
-
-MIT licensed — self-hostable — see [Run it yourself](https://app.openbiodata.it.com/) below.
+Open source tool that traces NCBI accessions back to their source papers to recover metadata the database record is missing.
 
 ---
 
@@ -26,15 +24,53 @@ If you want to stay anonymous, you can try the first 10 samples without logging 
 
 ## Run it yourself
 
-Requirements: Python 3.x, your own Anthropic API key (Claude), Gemini API key optional as fallback.
+Requirements: Python 3.x, and an LLM API key — either an Anthropic API key (Claude,
+recommended for extraction quality) or a Gemini API key (cheaper, works standalone too).
 Check you have it with `python --version` — if that fails, install from python.org first.
 
 ```bash
 git clone https://github.com/vy-phung/OpenBioData
 cd OpenBioData
 pip install -r requirements.txt
-cp .env.example .env   # add your ANTHROPIC_API_KEY (and GOOGLE_API_KEY if using Gemini fallback)
-python api.py
+cp .env.example .env   # add ANTHROPIC_API_KEY and/or GOOGLE_API_KEY
+python api.py # (optional)
+```
+Example: 
+
+```
+$ python openbiodata.py MN908947
+> Loading backend…
+> Parsing accession input…
+> Resolving accession via NCBI…
+> Processing 1 sample(s)…
+> [1/1] Fetching NCBI data for SAMN50212654…
+> [1/1] Searching literature for SAMN50212654…
+> ⚠ Cannot access paper(s) — they may require a subscription or block server access. Upload the PDF(s) directly to improve accuracy.
+> [1/1] Data gathered for SAMN50212654, queued for batched LLM inference…
+> Running batched LLM inference for 1 sample(s) (batch 1/1)…
+> [1/1] ✓ SAMN50212654 done (41.800 seconds)
+
+==================================================================================
+SAMN50212654   BioProject: PRJNA1295507   SRA: SRR34737024   GenBank: MN908947
+==================================================================================
+Confidence: 30 (🔴 Low) — weakest field: collected_by (30)
+
+• organism: BioSample Organism field and NCBI_experiment SCIENTIFIC_NAME both consistently identify the organism as Severe acute respiratory syndrome coronavirus 2 (taxonomy ID 2697049).
+• host: BioSample attribute host and NCBI_experiment SAMPLE_ATTRIBUTE both specify the host as Homo sapiens.
+• host_disease: BioSample attribute host_disease and NCBI_experiment SAMPLE_ATTRIBUTE both specify COVID-19 as the host disease.
+• isolation_source: BioSample attribute isolation_source and NCBI_experiment SAMPLE_ATTRIBUTE both specify Nasal/Oral as the isolation source.
+… (12 more fields — collection_device, collection_date, geo_loc_name, isolate, collected_by, library_strategy, library_source, library_selection, instrument_model, gisaid_accession, sequenced_by, sample_name, dna_extraction_kit — each with its own citation back to the exact NCBI record field it came from)
+
+All linked sources:
+https://doi.org/10.3390/v17101313
+NCBI_bioproject
+NCBI_biosample
+NCBI_experiment
+
+Time cost: 41.800 seconds
+==================================================================================
+
+1 sample(s) processed.
 ```
 
 Then open http://localhost:8000 in your browser — paste an accession, submit, and watch the result stream in.

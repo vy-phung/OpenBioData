@@ -112,6 +112,13 @@ def _estimate_tokens(text: str) -> int:
 from dev_llm_cache import dev_cache_wrap
 
 
+class LLMKeysExhaustedError(RuntimeError):
+    """Raised by call_llm_api() when every configured Anthropic/Gemini key has
+    been tried and none worked. Callers can catch this specifically (instead
+    of the generic Exception every other call_llm_api failure raises) to
+    treat it as fatal rather than a per-batch transient error."""
+
+
 @dev_cache_wrap
 def call_llm_api(prompt, model_name=None):
     """Call LLM — tries Anthropic first (routing between Haiku and Sonnet 5
@@ -219,7 +226,7 @@ def call_llm_api(prompt, model_name=None):
                 raise  # rate limit — let safe_call_llm retry with backoff
             print(f"Gemini error with {key_name}: {e} — trying next key.")
 
-    raise RuntimeError(f"All LLM API keys exhausted. Last error: {last_error}")
+    raise LLMKeysExhaustedError(f"All LLM API keys exhausted. Last error: {last_error}")
 
 
 # --- Core Document Processing Functions (All previously provided and fixed) ---
