@@ -135,6 +135,7 @@ A reasonable workflow: use fetchngs/pysradb/ffq to get your accession list, then
 
 ## Known issues
 
+- Command line option hasn't kept up with the User Interface option
 - Confidence score has not fully works at the confidence score rule and still gives the low confidence score for every input
 - Accession can occasionally misattribute when trying to access NCBI records
 - Accession-type detection is implemented three separate times.
