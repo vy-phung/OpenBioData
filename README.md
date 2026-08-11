@@ -31,6 +31,8 @@ git clone https://github.com/vy-phung/OpenBioData
 cd OpenBioData
 pip install -r requirements.txt
 cp .env.example .env   # add ANTHROPIC_API_KEY and/or GOOGLE_API_KEY
+echo 'ANTHROPIC_API_KEY=<input-your-anthropic-key>' > .env
+echo 'NEW_GEMINI_API=<input-your-gemini-key>' > .env
 ```
 
 **Option 1: same UI as the hosted version:**
