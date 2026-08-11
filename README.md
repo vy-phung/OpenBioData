@@ -2,7 +2,7 @@
 
 A metadata recovery tool that traces missing BioSample and SRA metadata on NCBI (disease status, isolation source, location, host, etc.) back to the source publication where the information actually appears. Give it an accession (BioProject, BioSample, SRR, GEO, or GenBank) or a paper link, and it finds the associated NCBI records and publications, including supplementary tables, cross-checks and expands the metadata, and returns each recovered value with a **confidence score and direct citation (PMID + table/section)**, so you can verify where it came from in seconds instead of digging manually.
 
-[![OpenBioData demo](https://screenity-assets.b-cdn.net/project-thumbnails/6a7a31f8b85e1c1def417e60/6a7a3dc5b85e1c1def417e8b.webp)](https://app.screenity.io/view/6a7a3dc5b85e1c1def417e8b)
+<img width="800" height="450" alt="OpenBioData demo" src="https://github.com/user-attachments/assets/5218ab97-b47e-4074-a5ba-a582ad1266d8" />
 
 ---
 
