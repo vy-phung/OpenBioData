@@ -88,10 +88,12 @@ def find_drive_file(filename, parent_id):
         ).execute()
         files = results.get('files', [])
         if files:
-            print(f"✅ Found file: {files[0]['name']} with ID: {files[0]['id']}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"✅ Found file: {files[0]['name']} with ID: {files[0]['id']}")
             return files[0]["id"]
         else:
-            print("⚠️ File not found.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ File not found.")
             return None
     except Exception as e:
         print(f"❌ Error during find_drive_file: {e}")
@@ -327,7 +329,8 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
             # try crossAPI
             metadata_text = html.fetch_crossref_metadata(link)
             if metadata_text:
-              print(f"✅ CrossRef metadata fetched for {link}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"✅ CrossRef metadata fetched for {link}")
               #other_explain = "Because full-text is restricted by the publisher, our system uses abstracts and metadata to remain compliant while still supporting exploratory analysis, search, and literature linking."
               article_text = html.mergeTextInJson(metadata_text)
             # also try searching pubmed with the title and extract abstract and add to article text
@@ -498,7 +501,8 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
       all_id = find_drive_file(all_filename, sample_folder_id)
     
       if all_id:
-        print("✅ Files already exist in Google Drive. Downloading them...")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("✅ Files already exist in Google Drive. Downloading them...")
         all_exists = download_file_from_drive(all_filename, sample_folder_id, file_all_path)
         acc_score["file_all_output"] = str(all_filename)  
         print("all_id: ")

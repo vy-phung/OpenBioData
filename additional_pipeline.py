@@ -639,7 +639,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               if len(article_text) == 0:
                 metadata_text = html.fetch_crossref_metadata(link)
                 if metadata_text:
-                  print(f"✅ CrossRef metadata fetched for {link}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"✅ CrossRef metadata fetched for {link}")
                   article_text = html.mergeTextInJson(metadata_text)
                 # Try PubMed abstract
                 print("search the paper's abstract on pubmed")
