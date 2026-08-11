@@ -78,7 +78,8 @@ def find_drive_file(filename, parent_id):
     """
     #drive = build_fresh_drive()
     try:
-        print(f"🔍 Searching for '{filename}' in folder: {parent_id}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🔍 Searching for '{filename}' in folder: {parent_id}")
         query = f"'{parent_id}' in parents and name = '{filename}' and trashed = false"
         results = drive_service.files().list(
             q=query,
@@ -96,7 +97,8 @@ def find_drive_file(filename, parent_id):
                 print("⚠️ File not found.")
             return None
     except Exception as e:
-        print(f"❌ Error during find_drive_file: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Error during find_drive_file: {e}")
         return None
 def upload_file_to_drive(local_path, remote_name, folder_id):
     try:
@@ -111,7 +113,8 @@ def upload_file_to_drive(local_path, remote_name, folder_id):
 
         if existing:
             drive_service.files().delete(fileId=existing[0]["id"]).execute()
-            print(f"🗑️ Deleted existing '{remote_name}' in Drive folder {folder_id}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"🗑️ Deleted existing '{remote_name}' in Drive folder {folder_id}")
 
         file_metadata = {"name": remote_name, "parents": [folder_id]}
         media = MediaFileUpload(local_path, resumable=True)
@@ -121,11 +124,13 @@ def upload_file_to_drive(local_path, remote_name, folder_id):
             fields="id"
         ).execute()
 
-        print(f"✅ Uploaded '{remote_name}' to Google Drive folder ID: {folder_id}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"✅ Uploaded '{remote_name}' to Google Drive folder ID: {folder_id}")
         return file["id"]
 
     except Exception as e:
-        print(f"❌ Error during upload: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Error during upload: {e}")
         return None
 
 def download_file_from_drive(remote_name, folder_id, local_path):
@@ -159,7 +164,8 @@ def run_with_timeout(func, args=(), kwargs={}, timeout=30):
     if p.is_alive():
         p.terminate()
         p.join()
-        print(f"⏱️ Timeout exceeded ({timeout} sec) — function killed.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"⏱️ Timeout exceeded ({timeout} sec) — function killed.")
         return False, None
 
     if not q.empty():
@@ -179,7 +185,8 @@ def time_it(func, *args, **kwargs):
     result = func(*args, **kwargs)
     end = time.time()
     elapsed = end - start
-    print(f"⏱️ '{func.__name__}' took {elapsed:.3f} seconds")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"⏱️ '{func.__name__}' took {elapsed:.3f} seconds")
     return result, elapsed
 # --- Define Pricing Constants (for Gemini 1.5 Flash & text-embedding-004) ---    
 
@@ -256,27 +263,32 @@ async def fetch_all(links, timeout=15):
         return await asyncio.gather(*tasks)
 
 async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts, all_output):
-    print(link)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(link)
     # Guard: if data_preprocess is unavailable, skip link processing gracefully
     if data_preprocess is None:
-        print(f"[process_link_allOutput] data_preprocess not available — skipping {link}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[process_link_allOutput] data_preprocess not available — skipping {link}")
         return str(all_output) if all_output else ""
 
     if len(data_preprocess.normalize_for_overlap(str(all_output))) > 600000:
-        print("break here")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("break here")
         return all_output   # nothing more for this link
 
     query_kw = iso if iso != "unknown" else acc
 
     # --- text extraction ---
     if linksWithTexts and link in linksWithTexts and linksWithTexts[link]!="":
-        print("yeah art_text available")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("yeah art_text available")
         text_link = linksWithTexts[link]
         if isinstance(text_link, dict):
             text_link = text_link.get("all_output", "") or str(text_link)
     else:
         try:
-            print("start preprocess and extract text")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("start preprocess and extract text")
             text_link = await data_preprocess.async_extract_text(link, saveLinkFolder)
         except Exception:
             text_link = ""
@@ -287,18 +299,21 @@ async def process_link_allOutput(link, iso, acc, saveLinkFolder, linksWithTexts,
             asyncio.to_thread(data_preprocess.extract_table, link, saveLinkFolder),
             timeout=10
         )
-        print("this is len of table link: ", len(str(tables_link)))
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("this is len of table link: ", len(str(tables_link)))
     except Exception:
         tables_link = []
 
     # --- merge ---
     try:
-        print("just merge text and tables")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("just merge text and tables")
         text_link_str = str(text_link) if text_link else ""
         tables_str = ", ".join(str(t) for t in tables_link) if tables_link else ""
         final_input_link = text_link_str + tables_str
     except Exception:
-        print("no succeed here in preprocess docu")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("no succeed here in preprocess docu")
         final_input_link = ""
     # --- normalize output ---
     if len(final_input_link) > 1000000:
@@ -320,7 +335,8 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
     if doi != "unknown":
         link = 'https://doi.org/' + doi
         # get the file to create listOfFile for each id
-        print("link of doi: ", link)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("link of doi: ", link)  
         # html = extractHTML.HTML("",link)
         html = extractHTML.HTML(htmlContent=None, htmlLink=link, htmlFile="")
         jsonSM = html.getSupMaterial()
@@ -335,13 +351,15 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
               article_text = html.mergeTextInJson(metadata_text)
             # also try searching pubmed with the title and extract abstract and add to article text
             # Step 1: Search for the paper
-            print("search the paper's abstract on pubmed")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("search the paper's abstract on pubmed")
             handle = Entrez.esearch(db="pubmed", term=title, retmax=1)
             record = Entrez.read(handle)
             id_list = record.get("IdList", [])
 
             if not id_list:
-                print("No PubMed results found.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("No PubMed results found.")
             else:
                 pubmed_id = id_list[0]
                 fetch_handle = Entrez.efetch(db="pubmed", id=pubmed_id, rettype="xml", retmode="xml")
@@ -350,7 +368,8 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
                 # Safe extraction
                 article = fetch_record.get("PubmedArticle", [])
                 if not article:
-                    print("No PubmedArticle entry returned.")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print("No PubmedArticle entry returned.")
                 else:
                     article = article[0]  # the real payload
                     try:
@@ -362,14 +381,17 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
                         full_abstract = " ".join(str(s) for s in abstract_sections)
 
                         if full_abstract.strip():
-                            print("Abstract found (len={}):".format(len(full_abstract)))
+                            if os.environ.get("OPENBIODATA_VERBOSE"):
+                                print("Abstract found (len={}):".format(len(full_abstract)))
                             #print(full_abstract)
                             article_text += full_abstract
                         else:
-                            print("This article has **no abstract available on PubMed**.")
+                            if os.environ.get("OPENBIODATA_VERBOSE"):
+                                print("This article has **no abstract available on PubMed**.")
 
                     except KeyError:
-                        print("Abstract field missing in this PubMed record.")    
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print("Abstract field missing in this PubMed record.")    
         
         if article_text:
           if "Just a moment...Enable JavaScript and cookies to continue".lower() not in article_text.lower() or "403 Forbidden Request".lower() not in article_text.lower():
@@ -386,7 +408,8 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
                 all_output += more_all_output
                 if len(all_output) > 10000000:
                   all_output = data_preprocess.normalize_for_overlap(all_output)
-                  print("reduce context for llm")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print("reduce context for llm")
                   reduce_context_for_llm = ""
                   if len(all_output)>1000000:
                     texts_reduce = []
@@ -397,17 +420,22 @@ async def extractSources(meta, linksWithTexts, links, all_output, acc, saveLinkF
                     if niche_cases: input_prompt += niche_cases 
                     reduce_context_for_llm = data_preprocess.build_context_for_llm(texts_reduce, acc, input_prompt, 500000)
                     if reduce_context_for_llm:
-                      print("reduce context for llm")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print("reduce context for llm")
                       all_output = reduce_context_for_llm
                     else:
-                      print("reduce context no succeed")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print("reduce context no succeed")
                       all_output = all_output[:500000]  
-                  print("length of context after reducing: ", len(all_output))   
-                print("len new all output after sup link: ", len(all_output))
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print("length of context after reducing: ", len(all_output))   
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("len new all output after sup link: ", len(all_output))
           # no doi then google custom search api
     # Always run smart search to find sources beyond the DOI paper
     # (culture collections, citing papers, institutional repos, etc.)
-    print("running smart search to augment sources")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("running smart search to augment sources")
     more_all_output, more_linksWithTexts, more_links = await model.getMoreInfoForAcc(iso, acc, saveLinkFolder, niche_cases)
     if more_all_output: all_output += more_all_output
     if more_links: links += more_links
@@ -420,7 +448,8 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
   # Prices are per 1,000 tokens
   # Before each big step:
   if stop_flag is not None and stop_flag.value:
-    print(f"🛑 Stop detected before starting {accession}, aborting early...")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"🛑 Stop detected before starting {accession}, aborting early...")
     return {}
   # Gemini 2.5 Flash-Lite pricing per 1,000 tokens
   PRICE_PER_1K_INPUT_LLM = 0.00010      # $0.10 per 1M input tokens
@@ -429,13 +458,15 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
   # Embedding-001 pricing per 1,000 input tokens
   PRICE_PER_1K_EMBEDDING_INPUT = 0.00015  # $0.15 per 1M input tokens  
   if not accessions:
-    print("no input")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("no input")
     return None
   else:  
     accs_output = {}
     genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY"))  
     for acc in accessions:
-      print("start gemini: ", acc)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start gemini: ", acc)  
       start = time.time()
       total_cost_title = 0
       jsonSM, links, article_text = {},[], ""
@@ -464,9 +495,11 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
       meta = mtdna_classifier.fetch_ncbi_metadata(acc)
       country, spe_loc, ethnic, sample_type, col_date, iso, title, doi, pudID, features = meta["country"], meta["specific_location"], meta["ethnicity"], meta["sample_type"], meta["collection_date"], meta["isolate"], meta["title"], meta["doi"], meta["pubmed_id"], meta["all_features"]
       acc_score["isolate"] = iso
-      print("meta: ",meta)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("meta: ",meta)  
       meta_expand = smart_fallback.fetch_ncbi(acc)
-      print("meta expand: ", meta_expand)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("meta expand: ", meta_expand)  
       # set up step: create the folder to save document
       all_output, linksWithTexts = "", {}
       if pudID: 
@@ -485,19 +518,23 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
         id = "DirectSubmission"
       data_folder_id = GDRIVE_DATA_FOLDER_NAME  # Use the shared folder directly
       sample_folder_id = get_or_create_drive_folder(str(id), parent_id=data_folder_id)
-      print("sample folder id: ", sample_folder_id)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("sample folder id: ", sample_folder_id)
       
       safe_title = sanitize_filename(saveTitle, 50)
       all_filename = f"{safe_title}_all_merged_document.docx"  
-      print("all filename: ", all_filename)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("all filename: ", all_filename)  
       # Define local temp paths for reading/writing
       LOCAL_TEMP_DIR = "/mnt/data/generated_docs"
       os.makedirs(LOCAL_TEMP_DIR, exist_ok=True)
       file_all_path = os.path.join(LOCAL_TEMP_DIR, all_filename)
       if stop_flag is not None and stop_flag.value:
-        print(f"🛑 Stop processing {accession}, aborting early...")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🛑 Stop processing {accession}, aborting early...")
         return {}
-      print("this is file all path: ", file_all_path)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("this is file all path: ", file_all_path)
       all_id = find_drive_file(all_filename, sample_folder_id)
     
       if all_id:
@@ -505,26 +542,36 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
             print("✅ Files already exist in Google Drive. Downloading them...")
         all_exists = download_file_from_drive(all_filename, sample_folder_id, file_all_path)
         acc_score["file_all_output"] = str(all_filename)  
-        print("all_id: ")
-        print(all_id)  
-        print("file all output saved in acc score: ", acc_score["file_all_output"])  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("all_id: ")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(all_id)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("file all output saved in acc score: ", acc_score["file_all_output"])  
         file = drive_service.files().get(fileId="1LUJRTrq8yt4S4lLwCvTmlxaKqpr0nvEn", fields="id, name, parents, webViewLink").execute()
-        print("📄 Name:", file["name"])
-        print("📁 Parent folder ID:", file["parents"][0])
-        print("🔗 View link:", file["webViewLink"])
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("📄 Name:", file["name"])
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("📁 Parent folder ID:", file["parents"][0])
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("🔗 View link:", file["webViewLink"])
       else:
         # 🔥 Remove any stale local copies
         if os.path.exists(file_all_path):
             os.remove(file_all_path)
-            print(f"🗑️ Removed stale: {file_all_path}")  
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"🗑️ Removed stale: {file_all_path}")  
       # Try to download if already exists on Drive
         all_exists = download_file_from_drive(all_filename, sample_folder_id, file_all_path)
-      print("all exist: ", all_exists)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("all exist: ", all_exists)  
       # first way: ncbi method
-      print("country.lower: ",country.lower())  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("country.lower: ",country.lower())  
       if country.lower() != "unknown":
         stand_country = standardize_location.smart_country_lookup(country.lower())
-        print("stand_country: ", stand_country)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("stand_country: ", stand_country)  
         if stand_country.lower() != "not found":
           acc_score["country"][stand_country.lower()] = ["ncbi"]
         else: acc_score["country"][country.lower()] = ["ncbi"]   
@@ -536,80 +583,105 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
         acc_score["sample_type"][sample_type.lower()] = ["ncbi"]
       # second way: LLM model
       # Preprocess the input token
-      print(acc_score)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(acc_score)  
       if stop_flag is not None and stop_flag.value:
-        print(f"🛑 Stop processing {accession}, aborting early...")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🛑 Stop processing {accession}, aborting early...")
         return {}    
       # check doi first
       if all_exists:
-        print("File all output exists!")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("File all output exists!")
         if not all_output:
             text_all, table_all, document_title_all = model.read_docx_text(file_all_path)
             all_output = data_preprocess.normalize_for_overlap(text_all) + "\n" + data_preprocess.normalize_for_overlap(". ".join(table_all))
         if str(all_filename) != "":
-            print("first time have all path at all exist: ", str(all_filename))
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("first time have all path at all exist: ", str(all_filename))
             acc_score["file_all_output"] = str(all_filename)    
-      print("acc sscore for file all output: ", acc_score["file_all_output"])  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("acc sscore for file all output: ", acc_score["file_all_output"])  
       if len(acc_score["file_all_output"]) == 0 or doi!="unknown":  
           linksWithTexts, links, all_output = await extractSources(meta, linksWithTexts, links, all_output, acc, sample_folder_id, niche_cases)
           links = unique_preserve_order(links)
-          print("this is links: ",links)
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("this is links: ",links)
           acc_score["source"] = links
       else:
-        print("inside the try of reusing chunk or all output")  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("inside the try of reusing chunk or all output")  
         #print("chunk filename: ", str(chunks_filename))       
         try:
             temp_source = False
             if save_df is not None and not save_df.empty:
-                print("save df not none")  
-                print("all filename: ",str(all_filename))
-                print("acc score for file all output: ", acc_score["file_all_output"])
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("save df not none")  
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("all filename: ",str(all_filename))
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("acc score for file all output: ", acc_score["file_all_output"])
                 if acc_score["file_all_output"]:
                   link = save_df.loc[save_df["file_all_output"]==acc_score["file_all_output"],"Sources"].iloc[0]
                   #link = row["Sources"].iloc[0]
-                  print(link)
-                  print("list of link")
-                  print([x for x in link.split("\n") if x.strip()])
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(link)
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print("list of link")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print([x for x in link.split("\n") if x.strip()])
                   if "http" in link:    
-                    print("yeah http in save df source")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print("yeah http in save df source")
                     acc_score["source"] = [x for x in link.split("\n") if x.strip()]#row["Sources"].tolist()   
                   else:  # temporary  
-                    print("tempo source") 
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print("tempo source") 
                     #acc_score["source"] = [str(all_filename), str(chunks_filename)]
                     temp_source = True      
                 else:  # temporary  
-                  print("tempo source") 
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print("tempo source") 
                   #acc_score["source"] = [str(file_all_path), str(file_chunk_path)]  
                   temp_source = True
             else:  # temporary  
-                print("tempo source") 
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("tempo source") 
                   #acc_score["source"] = [str(file_all_path), str(file_chunk_path)]  
                 temp_source = True      
             if temp_source:
-                print("temp source is true so have to try again search link")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("temp source is true so have to try again search link")
                 linksWithTexts, links, all_output = await extractSources(meta, linksWithTexts, links, all_output, acc, sample_folder_id, niche_cases)
                 links = unique_preserve_order(links)
-                print("links: ", links)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("links: ", links)
                 acc_score["source"] = links
         except:
             try:
-                print("in the exception and start to get link")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("in the exception and start to get link")
                 linksWithTexts, links, all_output = await extractSources(meta, linksWithTexts, links, all_output, acc, sample_folder_id, niche_cases)
                 links = unique_preserve_order(links)
-                print("this is links: ",links)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("this is links: ",links)
                 acc_score["source"] = links
             except:
-                print("except of except for source")  
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("except of except for source")  
                 acc_score["source"] = []
       if stop_flag is not None and stop_flag.value:
-        print(f"🛑 Stop processing {accession}, aborting early...")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🛑 Stop processing {accession}, aborting early...")
         return {}
       all_output += "Collection_date: " + col_date +". Isolate: " + iso + ". Title: " + title + ". Features: " + features
-      print("all output length: ", len(all_output))
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("all output length: ", len(all_output))
       if len(all_output) > 750000: 
         all_output = data_preprocess.normalize_for_overlap(all_output)
         # use build context for llm function to reduce token
-        print("reduce context for llm")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("reduce context for llm")
         reduce_context_for_llm = ""
         if len(all_output)>500000:
           texts_reduce = []
@@ -620,26 +692,33 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
           if niche_cases: input_prompt += niche_cases 
           reduce_context_for_llm = data_preprocess.build_context_for_llm(texts_reduce, acc, input_prompt, 250000)
           if reduce_context_for_llm:
-            print("reduce context for llm")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("reduce context for llm")
             all_output = reduce_context_for_llm
           else:
-            print("reduce context no succeed")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("reduce context no succeed")
             all_output = all_output[:250000]  
-        print("length of context after reducing: ", len(all_output)) 
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("length of context after reducing: ", len(all_output)) 
       text = ""
       for key in meta_expand:
         text += str(key) + ": " + meta_expand[key] + "\n"    
       if len(data_preprocess.normalize_for_overlap(all_output)) > 0:
         text += data_preprocess.normalize_for_overlap(all_output)          
       text += ". NCBI Features: " + features   
-      print("start to save the all output and its length: ", len(text))
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start to save the all output and its length: ", len(text))
       data_preprocess.save_text_to_docx(all_output, file_all_path)
       result_all_upload = upload_file_to_drive(file_all_path, all_filename, sample_folder_id)
-      print("UPLOAD RESULT FOR all_output: ", result_all_upload)
-      print(f"🔗 Uploaded file: https://drive.google.com/file/d/{result_all_upload}/view")  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("UPLOAD RESULT FOR all_output: ", result_all_upload)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(f"🔗 Uploaded file: https://drive.google.com/file/d/{result_all_upload}/view")  
 
       acc_prompts = {acc: text}
-      print("start model")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start model")
       predicted_output_info = await model.query_document_info(
         niche_cases=niche_cases,
         saveLinkFolder=sample_folder_id,
@@ -727,11 +806,13 @@ async def pipeline_with_gemini(accessions,stop_flag=None, save_df=None, niche_ca
         acc_score["signals"]["num_publications"] += len(acc_score["source"])
         # propagate Pass 2 additional fields from model output
         acc_score["_additional_fields"] = predicted_output_info[output_acc].get("_additional_fields", {})
-        print(f"end of this acc {acc}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"end of this acc {acc}")
         
       end = time.time()
       elapsed = (end - start)
       acc_score["time_cost"] = f"{elapsed:.3f} seconds"
       accs_output[acc] = acc_score
-    print(accs_output)  
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(accs_output)  
     return accs_output

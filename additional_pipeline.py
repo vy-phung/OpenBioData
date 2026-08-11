@@ -121,7 +121,8 @@ def fetch_standardization_schema(urls) -> dict:
     for url in urls:
         if _is_ontology_url(url):
             ontology_urls_found.append(url)
-            print(f"[standardization] Detected ontology URL (will use LLM annotation): {url}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[standardization] Detected ontology URL (will use LLM annotation): {url}")
         else:
             csv_urls.append(url)
 
@@ -141,8 +142,9 @@ def fetch_standardization_schema(urls) -> dict:
                        or first_bytes.startswith('<!doctype')
                        or first_bytes.startswith('<html'))
             if is_html:
-                print(f"[standardization] '{raw_url}' returned an HTML page (not a CSV). "
-                      f"Checking for known protocol schemas; also passing as LLM context.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[standardization] '{raw_url}' returned an HTML page (not a CSV). "
+                          f"Checking for known protocol schemas; also passing as LLM context.")
                 schema.setdefault('__web_context_urls__', []).append(url)
 
                 # ── Known protocol → hard-coded OHE field set ─────────────────
@@ -174,7 +176,8 @@ def fetch_standardization_schema(urls) -> dict:
                             schema[_f] = _fmeta
                             _added += 1
                     if _added:
-                        print(f"[standardization] Injected {_added} OHE field(s) from known protocol: {list(_OHE_FIELDS)[:10]}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[standardization] Injected {_added} OHE field(s) from known protocol: {list(_OHE_FIELDS)[:10]}")
                 else:
                     # Generic HTML: try regex on raw text (works if page is SSR)
                     _STOP_WORDS = {
@@ -195,7 +198,8 @@ def fetch_standardization_schema(urls) -> dict:
                         schema[_f] = {"description": f"Field from {url}", "allowed_values": []}
                         _added += 1
                     if _added:
-                        print(f"[standardization] Extracted {_added} field(s) from HTML page text")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[standardization] Extracted {_added} field(s) from HTML page text")
                 continue
 
             lines   = resp.text.splitlines()
@@ -280,10 +284,12 @@ def fetch_standardization_schema(urls) -> dict:
                 (existing + f"\n\n--- Schema from {url} ---\n{_raw_snippet}").strip()
                 if existing else f"--- Schema from {url} ---\n{_raw_snippet}"
             )
-            print(f"[standardization] Loaded {rows_read} rows / {len(schema)} fields from {raw_url}"
-                  f"{' (codebook)' if is_codebook else ' (dictionary)'}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[standardization] Loaded {rows_read} rows / {len(schema)} fields from {raw_url}"
+                      f"{' (codebook)' if is_codebook else ' (dictionary)'}")
         except Exception as e:
-            print(f"[standardization] Could not fetch {raw_url}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[standardization] Could not fetch {raw_url}: {e}")
 
     # Mark ontology mode so the pipeline can run ontology annotation
     if ontology_urls_found:
@@ -312,7 +318,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
   # Embedding-001 pricing per 1,000 input tokens
   PRICE_PER_1K_EMBEDDING_INPUT = 0.00015  # $0.15 per 1M input tokens
   if not accessions:
-    print("no input")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("no input")
     return None
   else:
     from Bio import Entrez
@@ -354,7 +361,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             prioritized = [f for f in _schema_fields if standardization_schema.get(f, {}).get("required")]
             others = [f for f in _schema_fields if f not in prioritized]
             niche_cases = (prioritized + others)[:30]
-            print(f"[auto-niche] Using {len(niche_cases)} schema fields as niche_cases: {niche_cases}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[auto-niche] Using {len(niche_cases)} schema fields as niche_cases: {niche_cases}")
 
     async def _progress(msg: str):
         if progress_cb:
@@ -375,7 +383,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
     bioproject_info = {}
     accs_output = {}
     _total_accs = len(accessions)
-    print("accessions: ", accessions)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("accessions: ", accessions)
     for _acc_idx, acc in enumerate(accessions):
       if cancel_event is not None and cancel_event.is_set():
           await _progress("⏹ Cancelled — stopping pipeline.")
@@ -390,7 +399,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           from ncbi_resolver import resolve_lazy_entry
           await _progress(f"[{_acc_idx + 1}/{_total_accs}] Resolving {acc}…")
           accessions[acc] = await asyncio.to_thread(resolve_lazy_entry, acc, accessions[acc])
-      print("start gemini: ", acc)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start gemini: ", acc)
       await _progress(f"[{_acc_idx + 1}/{_total_accs}] Fetching NCBI data for {acc}…")
       start = time.time()
       total_query_cost = 0
@@ -426,7 +436,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         known_failure_pattern: bool"""
       if niche_cases:
         for niche in niche_cases:
-          print("add niche: ", niche)
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("add niche: ", niche)
           acc_score[niche] = {}
 
       # Detect non-NCBI samples — skip NCBI fetch entirely for these
@@ -448,18 +459,21 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         try:
           ncbi_texts = NCBI.extract_NCBI_directly(acc)
         except Exception as _e:
-          print(f"[DB fetch] direct NCBI fetch for {acc} failed: {_e}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[DB fetch] direct NCBI fetch for {acc} failed: {_e}")
 
       if not _is_non_ncbi and accessions[acc].get("bioproject"):
         bioproject_id = accessions[acc]["bioproject"]
-        print("get bioproject from acc input: ", bioproject_id)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("get bioproject from acc input: ", bioproject_id)
 
       if not _is_non_ncbi and NCBI is not None:
         for ncbi_source in accessions[acc]:
           try:
             if ncbi_source == "bioproject" and accessions[acc].get("bioproject"):
               if not bioproject_info:
-                print("get bioproject info")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("get bioproject info")
                 bioproject_info = NCBI.extract_NCBI_directly(bioproject_id)
               else:
                 if bioproject_id not in bioproject_info:
@@ -477,15 +491,18 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     if _umbrella_info:
                       acc_score["source_texts"][f"NCBI_umbrella_{_umbrella_acc}"] = _umbrella_info
                       acc_score["source_texts_origin"][f"NCBI_umbrella_{_umbrella_acc}"] = "record"
-                      print(f"[umbrella] Fetched umbrella project {_umbrella_acc}")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print(f"[umbrella] Fetched umbrella project {_umbrella_acc}")
                   except Exception as _ue:
-                    print(f"[umbrella] fetch failed for {_umbrella_acc}: {_ue}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[umbrella] fetch failed for {_umbrella_acc}: {_ue}")
                 # ── Queue external/related-resource URLs for link fetching ──────
                 for _ext_url in (_bp_data_now.get("external_links") or []):
                   if _ext_url and _ext_url not in links:
                     links.append(_ext_url)
                     _bioproject_extra_links.append(_ext_url)
-                    print(f"[external_link] Queued related resource: {_ext_url}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[external_link] Queued related resource: {_ext_url}")
             elif ncbi_source == "biosample" and accessions[acc].get("biosample"):
               biosample_id = accessions[acc]["biosample"]
               ncbi_texts = NCBI.extract_NCBI_directly(biosample_id)
@@ -509,7 +526,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               acc_score["source_texts"]["NCBI_experiment"] = ncbi_texts
               acc_score["source_texts_origin"]["NCBI_experiment"] = "record"
           except Exception as _e:
-            print(f"[DB fetch] {ncbi_source} fetch failed for {acc}: {_e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[DB fetch] {ncbi_source} fetch failed for {acc}: {_e}")
 
       # ── Step 1b: ENA-specific fetch for PRJEB/SAMEA samples ─────────────────
       # Fetch study-level and biosample-level metadata directly from EBI APIs.
@@ -524,9 +542,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               acc_score["source_texts"][f"ENA_biosample_{_biosample_id}"] = _ena_bs_text
               acc_score["source_texts_origin"][f"ENA_biosample_{_biosample_id}"] = "record"
               acc_score["signals"]["in_NCBI"] = True
-              print(f"[ENA] Fetched biosample text for {_biosample_id} ({len(_ena_bs_text)} chars)")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[ENA] Fetched biosample text for {_biosample_id} ({len(_ena_bs_text)} chars)")
           except Exception as _e:
-            print(f"[ENA] biosample fetch failed for {_biosample_id}: {_e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[ENA] biosample fetch failed for {_biosample_id}: {_e}")
 
         if _bp_id and _bp_id.upper().startswith("PRJEB"):
           try:
@@ -535,9 +555,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               acc_score["source_texts"][f"ENA_study_{_bp_id}"] = _ena_study_text
               acc_score["source_texts_origin"][f"ENA_study_{_bp_id}"] = "record"
               acc_score["signals"]["in_NCBI"] = True
-              print(f"[ENA] Fetched study text for {_bp_id} ({len(_ena_study_text)} chars)")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[ENA] Fetched study text for {_bp_id} ({len(_ena_study_text)} chars)")
           except Exception as _e:
-            print(f"[ENA] study fetch failed for {_bp_id}: {_e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[ENA] study fetch failed for {_bp_id}: {_e}")
 
       if acc_score["source_texts"]:
         source_kws = list(acc_score["source_texts"].keys())
@@ -545,7 +567,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           if "NCBI" in s or "ENA" in s:
             acc_score["signals"]["in_NCBI"] = True
             break
-      print("source text after ncbi: ", list(acc_score["source_texts"].keys()))
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("source text after ncbi: ", list(acc_score["source_texts"].keys()))
       # set up step: create the folder to save document
       # firstly get the doi url from pubmed id which is from bioproject
       if pubmeds:
@@ -602,11 +625,14 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               _schema_file = os.path.join(saveLinkFolder, "schema_reference.txt")
               with open(_schema_file, "w", encoding="utf-8") as _sf:
                   _sf.write(_global_schema_text)
-              print(f"[schema] Saved schema reference text to {_schema_file}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[schema] Saved schema reference text to {_schema_file}")
           except Exception as _ste:
-              print(f"[schema] Could not save schema text: {_ste}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[schema] Could not save schema text: {_ste}")
       all_links = copy.deepcopy(links)
-      print("all_links: ", all_links)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("all_links: ", all_links)
       # Pre-register user-pasted "add link" sources (each keyed by its own
       # URL, not lumped into one blob) BEFORE any of steps 2/3/3b run -- so
       # if web search or supplementary discovery rediscovers the exact same
@@ -629,7 +655,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       if links:
         for link in links:
           if 'https://doi.org/' in link:
-            print("link of doi: ", link)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("link of doi: ", link)
             try:
               if extractHTML is None:
                 continue  # HTML extractor unavailable — skip
@@ -643,7 +670,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                       print(f"✅ CrossRef metadata fetched for {link}")
                   article_text = html.mergeTextInJson(metadata_text)
                 # Try PubMed abstract
-                print("search the paper's abstract on pubmed")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("search the paper's abstract on pubmed")
                 _link_doi = link.replace('https://doi.org/', '') if 'https://doi.org/' in link else doi
                 try:
                   handle = Entrez.esearch(db="pubmed", term=f"{_link_doi}[doi]", retmax=1)
@@ -664,10 +692,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                       ) or []
                       full_abstract = " ".join(str(s) for s in abstract_sections)
                       if full_abstract.strip():
-                        print(f"Abstract found (len={len(full_abstract)}):")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"Abstract found (len={len(full_abstract)}):")
                         article_text += full_abstract
                 except Exception as _pme:
-                  print(f"PubMed search failed for DOI {link}: {_pme}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"PubMed search failed for DOI {link}: {_pme}")
 
               _blocked = not article_text or (
                   "just a moment" in article_text.lower()
@@ -684,13 +714,15 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     if _pmc_data["text"]:
                       article_text = _pmc_data["text"]
                       _blocked = False
-                      print(f"[doi_pmc_fallback] PMC text: {len(article_text)} chars for {link}")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print(f"[doi_pmc_fallback] PMC text: {len(article_text)} chars for {link}")
                     for _pmc_sl in _pmc_data.get("sup_links", []):
                       if _pmc_sl not in all_links:
                         all_links.append(_pmc_sl)
                         jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
                 except Exception as _pmc_fb_err:
-                  print(f"[doi_pmc_fallback] failed for {link}: {_pmc_fb_err}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[doi_pmc_fallback] failed for {link}: {_pmc_fb_err}")
               if _blocked:
                 # Still blocked after PMC -- try rendering the ORIGINAL URL
                 # with a real headless browser. Unlike Unpaywall (next
@@ -708,7 +740,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     if not _pw_blocked and _pw_text:
                       article_text = _pw_text
                       _blocked = False
-                      print(f"[doi_playwright_fallback] rendered text: {len(article_text)} chars for {link}")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print(f"[doi_playwright_fallback] rendered text: {len(article_text)} chars for {link}")
                       try:
                         _pw_sup = _pw_html.getSupMaterial()
                         if _pw_sup:
@@ -717,7 +750,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                       except Exception:
                         pass
                 except Exception as _pw_err:
-                  print(f"[doi_playwright_fallback] failed for {link}: {_pw_err}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[doi_playwright_fallback] failed for {link}: {_pw_err}")
               if _blocked:
                 # Still blocked after PMC + Playwright -- try Unpaywall: many open-access
                 # papers are blocked on the publisher's own page by bot
@@ -735,7 +769,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     if not _oa_blocked and _oa_text:
                       article_text = _oa_text
                       _blocked = False
-                      print(f"[doi_unpaywall_fallback] OA text: {len(article_text)} chars for {link} via {_oa_url}")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print(f"[doi_unpaywall_fallback] OA text: {len(article_text)} chars for {link} via {_oa_url}")
                       if _oa_url not in all_links:
                         all_links.append(_oa_url)
                       try:
@@ -746,7 +781,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                       except Exception:
                         pass
                 except Exception as _oa_err:
-                  print(f"[doi_unpaywall_fallback] failed for {link}: {_oa_err}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[doi_unpaywall_fallback] failed for {link}: {_oa_err}")
               if not _blocked and article_text:
                 acc_score["source_texts"][link] = article_text
                 acc_score["source_texts_origin"][link] = "record"
@@ -767,13 +803,17 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                         if more_all_output:
                           acc_score["source_texts"][l] = more_all_output
                           acc_score["source_texts_origin"][l] = "record"
-                        print(f"len new output of sup_link {l}: {len(more_all_output or '')}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"len new output of sup_link {l}: {len(more_all_output or '')}")
                       except Exception as _sl_err:
-                        print(f"[sup_link] {l} failed: {_sl_err}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[sup_link] {l} failed: {_sl_err}")
                 except Exception as _sm_err:
-                  print(f"[supplementary] processing failed for {link}: {_sm_err}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[supplementary] processing failed for {link}: {_sm_err}")
             except Exception as _doi_err:
-              print(f"[DOI fetch] {link} failed: {_doi_err}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[DOI fetch] {link} failed: {_doi_err}")
 
           elif re.search(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)', link):
             # PubMed URL in initial links — queue its DOI for processing in Step 3b
@@ -797,9 +837,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   _link_label = f"external_{link}" if link in _bioproject_extra_links else link
                   acc_score["source_texts"][_link_label] = more_all_output
                   acc_score["source_texts_origin"][_link_label] = "record"
-                print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"len new all output after extra link {link}: {len(more_all_output or '')}")
               except Exception as _el_err:
-                print(f"[extra_link] {link} failed: {_el_err}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[extra_link] {link} failed: {_el_err}")
       await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "supplementary", "user_file": user_file_label}})
       # ── Step 3: Build keyword context for web search ─────────────────────────
       # Determine the best search term and any extra metadata, regardless of
@@ -836,7 +878,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             if _api_meta:
                 _db_hint_text += "\n" + _api_meta
         except Exception as _meta_err:
-            print(f"[non_ncbi fetch_dataset_metadata] {_meta_err}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[non_ncbi fetch_dataset_metadata] {_meta_err}")
         acc_score["source_texts"]["_db_hint"] = _db_hint_text
         acc_score["source_texts_origin"]["_db_hint"] = "search"
       else:
@@ -878,7 +921,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           all_links = list(all_links) + [l for l in more_links if l not in all_links]
         await _progress({"__links_update__": {"acc": acc, "links": list(all_links), "stage": "web_search", "user_file": user_file_label}})
       except Exception as _ws_err:
-        print(f"[web search] failed for {acc}: {_ws_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[web search] failed for {acc}: {_ws_err}")
 
       # ── Step 3b: Follow PubMed links → DOI → full text + supplementary ────
       # Web search often discovers pubmed.ncbi.nlm.nih.gov URLs and adds them to
@@ -896,14 +940,16 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         # Resolve PMID → DOI
         _pub_doi = NCBI.get_doi_via_europepmc(_pmid)
         if not _pub_doi:
-          print(f"[pubmed_follow] no DOI found for PMID {_pmid}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[pubmed_follow] no DOI found for PMID {_pmid}")
           continue
         _doi_url = f"https://doi.org/{_pub_doi}"
         if _doi_url not in all_links:
           all_links.append(_doi_url)
         if _doi_url in _processed_source_keys:
           continue  # DOI already extracted in Step 2
-        print(f"[pubmed_follow] PMID {_pmid} → {_doi_url}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[pubmed_follow] PMID {_pmid} → {_doi_url}")
         await _progress({"__links_update__": {"acc": acc, "links": list(all_links),
                                               "stage": "pubmed_doi", "user_file": user_file_label}})
         try:
@@ -945,14 +991,16 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
               if _pmc_data["text"]:
                 _pm_article_text = _pmc_data["text"]
                 _blocked_pm = False
-                print(f"[pubmed_follow] PMC fallback: {len(_pm_article_text)} chars for PMID {_pmid}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[pubmed_follow] PMC fallback: {len(_pm_article_text)} chars for PMID {_pmid}")
               # Add PMC supplementary file links to the queue
               for _pmc_sl in _pmc_data.get("sup_links", []):
                 if _pmc_sl not in all_links:
                   all_links.append(_pmc_sl)
                   _pm_jsonSM.setdefault("PMC Supplementary Files", []).append(_pmc_sl)
             except Exception as _pmc_err:
-              print(f"[pubmed_follow] PMC fallback failed for PMID {_pmid}: {_pmc_err}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[pubmed_follow] PMC fallback failed for PMID {_pmid}: {_pmc_err}")
           if _blocked_pm:
             # Still blocked after PMC -- try rendering the original DOI URL
             # with a real headless browser (see Step 2's identical fallback).
@@ -967,7 +1015,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 if not _pw_blocked_pm and _pw_text_pm:
                   _pm_article_text = _pw_text_pm
                   _blocked_pm = False
-                  print(f"[pubmed_follow_playwright] rendered text: {len(_pm_article_text)} chars for PMID {_pmid}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[pubmed_follow_playwright] rendered text: {len(_pm_article_text)} chars for PMID {_pmid}")
                   try:
                     _pw_sup_pm = _pw_html_pm.getSupMaterial()
                     if _pw_sup_pm:
@@ -976,7 +1025,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   except Exception:
                     pass
             except Exception as _pw_pm_err:
-              print(f"[pubmed_follow_playwright] failed for PMID {_pmid}: {_pw_pm_err}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[pubmed_follow_playwright] failed for PMID {_pmid}: {_pw_pm_err}")
           if _blocked_pm:
             # Still blocked after PMC + Playwright -- try Unpaywall (see
             # Step 2's identical fallback for why: bot protection blocks
@@ -992,7 +1042,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 if not _oa_blocked_pm and _oa_text_pm:
                   _pm_article_text = _oa_text_pm
                   _blocked_pm = False
-                  print(f"[pubmed_follow_unpaywall] OA text: {len(_pm_article_text)} chars for PMID {_pmid} via {_oa_url_pm}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[pubmed_follow_unpaywall] OA text: {len(_pm_article_text)} chars for PMID {_pmid} via {_oa_url_pm}")
                   if _oa_url_pm not in all_links:
                     all_links.append(_oa_url_pm)
                   try:
@@ -1003,7 +1054,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   except Exception:
                     pass
             except Exception as _oa_pm_err:
-              print(f"[pubmed_follow_unpaywall] failed for PMID {_pmid}: {_oa_pm_err}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[pubmed_follow_unpaywall] failed for PMID {_pmid}: {_oa_pm_err}")
           if not _blocked_pm and _pm_article_text:
               acc_score["source_texts"][_doi_url] = _pm_article_text
               acc_score["source_texts_origin"][_doi_url] = "search"
@@ -1029,13 +1081,17 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     if _psl_text:
                       acc_score["source_texts"][_psl] = _psl_text
                       acc_score["source_texts_origin"][_psl] = "search"
-                    print(f"[pubmed_sup] {_psl}: {len(_psl_text or '')} chars")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[pubmed_sup] {_psl}: {len(_psl_text or '')} chars")
                   except Exception as _psle:
-                    print(f"[pubmed_sup_link] {_psl}: {_psle}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[pubmed_sup_link] {_psl}: {_psle}")
             except Exception as _psme:
-              print(f"[pubmed_supplementary] {_doi_url}: {_psme}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[pubmed_supplementary] {_doi_url}: {_psme}")
         except Exception as _pde:
-          print(f"[pubmed_doi_follow] {_doi_url}: {_pde}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[pubmed_doi_follow] {_doi_url}: {_pde}")
 
       # Prefer context scoped to this specific accession (e.g. the PDF/supplementary
       # files the user attached to the one paper this accession was discovered from)
@@ -1100,11 +1156,13 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             source_text = str(source_text)
           else:
             source_text = str(source_text)
-          print(f"len of {source}: {len(source_text)}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"len of {source}: {len(source_text)}")
           if data_preprocess is not None and len(source_text) > 1000000:
             source_text = data_preprocess.normalize_for_overlap(source_text)
             if len(source_text) > 1000000:
-              print("REDUCE CONTEXT FOR LLM MODEL")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print("REDUCE CONTEXT FOR LLM MODEL")
               reduce_context_for_llm = data_preprocess.build_context_for_llm(
                   [source_text], acc, niche_cases, 500000)
               if reduce_context_for_llm:
@@ -1113,10 +1171,12 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 source_text = source_text[:500000]
           elif len(source_text) > 1000000:
             source_text = source_text[:500000]
-          print(f"add text of {source} into big text")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"add text of {source} into big text")
           text += f'The source - {source}: {source_text}' + f"-----END OF THIS SOURCE {source} ----\n"
         except Exception as _st_err:
-          print(f"[source text] failed to process {source}: {_st_err}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[source text] failed to process {source}: {_st_err}")
 
       # 800 000 chars ≈ 170 K tokens — safely under Anthropic's 200 K token limit.
       # Gemini handles up to 1 M tokens, but keeping this limit avoids Anthropic 400s
@@ -1129,22 +1189,33 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             text = text[:_CTX_CHAR_LIMIT]
         else:
           text = text[:_CTX_CHAR_LIMIT]
-      print("length of final all_text: ", len(text))
-      print("start to save the all output and its length: ", len(text))
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("length of final all_text: ", len(text))
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start to save the all output and its length: ", len(text))
       file_all_path = saveLinkFolder + "/extracted_text_" + acc + ".docx"
+      # DOCX save + Drive upload are internal evidence-archival steps, not
+      # part of the metadata result a CLI user is after -- keep the actual
+      # save/upload logic unconditional (still writes to disk / Drive in the
+      # background), but only print about it under --verbose, same as the
+      # other internal noise gated by OPENBIODATA_VERBOSE elsewhere in this
+      # file.
       try:
         if data_preprocess is not None:
           data_preprocess.save_text_to_docx(text, file_all_path)
-          print(f"✅ Saved DOCX locally: {file_all_path}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"✅ Saved DOCX locally: {file_all_path}")
         else:
           # Fallback: write plain text if docx library unavailable
           txt_path = file_all_path.replace(".docx", ".txt")
           with open(txt_path, "w", encoding="utf-8") as _f:
             _f.write(text)
           file_all_path = txt_path
-          print(f"✅ Saved TXT locally (docx unavailable): {file_all_path}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"✅ Saved TXT locally (docx unavailable): {file_all_path}")
       except Exception as _save_err:
-        print(f"⚠ Save failed (non-critical): {_save_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"⚠ Save failed (non-critical): {_save_err}")
       acc_score["file_all_output"] = file_all_path
 
       # ── Upload extracted text DOCX to Google Drive ────────────────────────────
@@ -1167,16 +1238,20 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           if _data_folder_id:
             _sub_id = pipeline.get_or_create_drive_folder(str(id_folder), parent_id=_data_folder_id)
             _upload_result = pipeline.upload_file_to_drive(file_all_path, _safe_doc_name, _sub_id)
-            if _upload_result:
-              print(f"✅ Saved DOCX to Google Drive: data/{id_folder}/{_safe_doc_name}")
-            else:
-              print("⚠ Google Drive upload returned no file ID")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                if _upload_result:
+                  print(f"✅ Saved DOCX to Google Drive: data/{id_folder}/{_safe_doc_name}")
+                else:
+                  print("⚠ Google Drive upload returned no file ID")
           else:
-            print("⚠ Google Drive folder 'mtDNA-Location-Classifer/data' not found — skipping Drive upload")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠ Google Drive folder 'mtDNA-Location-Classifer/data' not found — skipping Drive upload")
         else:
-          print("⚠ Google Drive service not configured (GCP_CREDS_JSON not set) — DOCX saved locally only")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("⚠ Google Drive service not configured (GCP_CREDS_JSON not set) — DOCX saved locally only")
       except Exception as _gdrive_err:
-        print(f"⚠ Google Drive upload failed (non-critical): {_gdrive_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"⚠ Google Drive upload failed (non-critical): {_gdrive_err}")
 
       # ── Phase A end: stash this accession's data; LLM inference now runs
       # batched by paper AFTER every accession's data-gathering is done (see
@@ -1203,7 +1278,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
       predicted_outputs = predicted_data["predicted_output"]
       method_used = predicted_data["method_used"]
       for pred_out in predicted_outputs:
-        print("the pred out: ", pred_out)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("the pred out: ", pred_out)
         # only for country, we have to standardize (match "country" or "country_name")
         if pred_out.lower() in ("country", "country_name"):
           # Normalize: always store under whichever key exists in acc_score
@@ -1250,7 +1326,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         # for niche cases
         else:
           if pred_out in acc_score:
-            print("pred out again: ", pred_out)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("pred out again: ", pred_out)
             answer = predicted_outputs[pred_out]["answer"]
             answer_explanation = predicted_outputs[pred_out][pred_out+"_explanation"]
             if answer_explanation: answer_explanation = "-" + answer_explanation
@@ -1264,7 +1341,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                     "sra_accession":       accessions[acc].get("experiment"),
                     "genbank_accession":   accessions[acc].get("accession"),
                 }):
-              print(f"[niche-dup-check] Rejected {pred_out}={answer!r} for {acc}: duplicates an identifier value")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[niche-dup-check] Rejected {pred_out}={answer!r} for {acc}: duplicates an identifier value")
               answer = "unknown"
             if answer.lower() != "unknown":
               acc_score["signals"]["predicted_output"] = True
@@ -1325,9 +1403,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                 },
             )
           if aligned:
-            print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[schema-align] {acc}: mapped {len(aligned)} field(s) to schema")
         except Exception as _sa_err:
-          print(f"[schema-align] WARNING for {acc}: {_sa_err}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[schema-align] WARNING for {acc}: {_sa_err}")
 
       # ── Ontology annotation pass (only when GO/OBO URLs were provided) ────────
       if _is_ontology_mode:
@@ -1351,9 +1431,11 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
                   _joined = "\n".join(items) if isinstance(items, list) else str(items)
                   acc_score.setdefault("_additional_fields", {})[f"ontology_{cat}"] = \
                       {'value': _joined, 'explanation': ''}
-              print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[ontology] {acc}: annotated {sum(len(v) for v in ontology_result.values() if isinstance(v, list))} ontology terms")
         except Exception as _ont_err:
-          print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[ontology-annotation] WARNING for {acc}: {_ont_err}")
 
       # ── ID-linkage confidence signal ──────────────────────────────────────
       # Flag (row-level, not per-field) if any categorical/group-type field's
@@ -1378,7 +1460,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             _lacked_id_linkage = True
       acc_score["signals"]["any_key_field_lacked_id_linkage"] = _lacked_id_linkage
 
-      print(f"end of this acc {acc}")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(f"end of this acc {acc}")
       end = time.time()
       elapsed = (end - start_time)
       acc_score["time_cost"] = f"{elapsed:.3f} seconds"
@@ -1424,7 +1507,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
           break
       await _progress(f"Running batched LLM inference for {len(_chunk)} sample(s) "
                        f"(batch {_chunk_idx + 1}/{len(_chunks)})…")
-      print("start model")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("start model")
       try:
         predicted_output_info = await model.query_document_info(
           niche_cases=niche_cases,
@@ -1436,7 +1520,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
         # Every configured key is dead -- every remaining chunk would fail
         # identically, so stop grinding through them instead of continuing
         # to accumulate more empty/confidence-0 rows.
-        print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
         await _progress({"__fatal_error__": {"type": "llm_keys_exhausted", "message": str(_qdi_err)}})
         for _acc in _chunk:
           _done_count += 1
@@ -1444,7 +1529,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
             await progress_cb({"__partial_acc__": _acc, "__partial_data__": {_acc: accs_output[_acc]}})
         break
       except Exception as _qdi_err:
-        print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[LLM] query_document_info failed for batch {_chunk_idx + 1} ({_chunk}): {_qdi_err}")
         await _progress(f"⚠ LLM inference failed for batch {_chunk_idx + 1}/{len(_chunks)} "
                          f"({len(_chunk)} sample(s)) — saving partial results.")
         for _acc in _chunk:
@@ -1455,7 +1541,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
 
       for _acc in _chunk:
         if _acc not in predicted_output_info:
-          print(f"[LLM] no output for {_acc} in batch {_chunk_idx + 1} response -- saving partial result.")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"[LLM] no output for {_acc} in batch {_chunk_idx + 1} response -- saving partial result.")
         else:
           await _apply_predicted_output(
               _acc, accs_output[_acc], acc_prompts[_acc],
@@ -1468,7 +1555,8 @@ async def pipeline_with_gemini(accessions, bioproject_id=None, ncbi_urls=None, o
     # Store the final auto-detected niche_cases so api.py can pass them to
     # _rows_from_new_pipeline for proper per-field citation display.
     accs_output["__niche_cases__"] = niche_cases or []
-    print(accs_output)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(accs_output)
     return accs_output, acc_score["source_texts"], text
 
 # accessions = ["SAMN35361955", "SAMN35361966"]

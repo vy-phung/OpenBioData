@@ -1,4 +1,5 @@
 # reference: https://www.crummy.com/software/BeautifulSoup/bs4/doc/#for-html-documents
+import os
 from bs4 import BeautifulSoup
 import requests
 def openFile(path, mode="r"):
@@ -27,7 +28,8 @@ async def async_fetch_html_playwright(url: str, timeout_ms: int = 20000) -> str:
     try:
         from playwright.async_api import async_playwright
     except Exception as e:
-        print(f"[playwright] not available: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[playwright] not available: {e}")
         return ""
     try:
         async with async_playwright() as p:
@@ -45,7 +47,8 @@ async def async_fetch_html_playwright(url: str, timeout_ms: int = 20000) -> str:
             finally:
                 await browser.close()
     except Exception as e:
-        print(f"[playwright] fetch failed for {url}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[playwright] fetch failed for {url}: {e}")
         return ""
 
 
@@ -72,7 +75,8 @@ class HTML():
             print(f"⚠️ CrossRef fetch failed ({r.status_code}) for DOI: {doi}")
             return {}
     except Exception as e:
-        print(f"❌ CrossRef exception: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ CrossRef exception: {e}")
         return {}
   # def openHTMLFile(self):
   #   headers = {
@@ -135,7 +139,8 @@ class HTML():
           if self.htmlLink and self.htmlLink != "None":
               r = session.get(self.htmlLink, allow_redirects=True, timeout=15)
               if r.status_code != 200 or not r.text.strip():
-                  print(f"❌ HTML GET failed ({r.status_code}) or empty page: {self.htmlLink}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"❌ HTML GET failed ({r.status_code}) or empty page: {self.htmlLink}")
                   return BeautifulSoup("", 'html.parser')
               # Update to the final redirected URL (e.g. doi.org -> nature.com) so
               # getSupMaterial()'s relative-link resolution uses the real page's
@@ -149,10 +154,12 @@ class HTML():
               with open(self.htmlFile, encoding='utf-8') as fp:
                   soup = BeautifulSoup(fp, 'html.parser')
       except (ParserError, XMLSyntaxError, OSError) as e:
-          print(f"🚫 HTML parse error for {self.htmlLink}: {type(e).__name__}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"🚫 HTML parse error for {self.htmlLink}: {type(e).__name__}")
           return BeautifulSoup("", 'html.parser')
       except Exception as e:
-          print(f"❌ General exception for {self.htmlLink}: {e}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"❌ General exception for {self.htmlLink}: {e}")
           return BeautifulSoup("", 'html.parser')
 
       return soup
@@ -184,11 +191,13 @@ class HTML():
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(self.htmlLink, timeout=15) as resp:
                 if resp.status != 200:
-                    print(f"❌ HTML GET failed ({resp.status}) — {self.htmlLink}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"❌ HTML GET failed ({resp.status}) — {self.htmlLink}")
                     return ""
                 return await resp.text()
     except Exception as e:
-        print(f"❌ Async fetch failed for {self.htmlLink}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Async fetch failed for {self.htmlLink}: {e}")
         return ""
 
   @classmethod
@@ -200,7 +209,8 @@ class HTML():
       out = []
       for link, content in zip(links, results):
           if isinstance(content, Exception):
-              print(f"⚠️ Exception while fetching {link}: {content}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"⚠️ Exception while fetching {link}: {content}")
               out.append(cls("", link, htmlContent=""))
           else:
               out.append(cls("", link, htmlContent=content))
@@ -219,7 +229,8 @@ class HTML():
       text = cl.removeExtraSpaceBetweenWords(text)
       return text
     except:
-      print("failed get text from html")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("failed get text from html")
       return "" 
 
   async def async_getListSection(self, scienceDirect=None):
@@ -246,7 +257,8 @@ class HTML():
 
         #if scienceDirect is not None or len(json) == 0:
         if is_sciencedirect_source and (scienceDirect is not None or len(json) == 0):
-            print("async fetching ScienceDirect metadata...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("async fetching ScienceDirect metadata...")
             api_key = os.environ.get("SCIENCE_DIRECT_API")
             doi = self.htmlLink.split("https://doi.org/")[-1]
             base_url = f"https://api.elsevier.com/content/article/doi/{doi}"
@@ -268,13 +280,17 @@ class HTML():
                             if isinstance(data, dict):
                                 json["fullText"] = data
                         else:
-                            print(f"ScienceDirect returned status {resp.status}")
+                            if os.environ.get("OPENBIODATA_VERBOSE"):
+                                print(f"ScienceDirect returned status {resp.status}")
             except asyncio.TimeoutError:
-                print("⚠️ ScienceDirect request timed out (skipped).")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("⚠️ ScienceDirect request timed out (skipped).")
             except aiohttp.ClientError as e:
-                print(f"⚠️ ScienceDirect client error: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"⚠️ ScienceDirect client error: {e}")
             except Exception as e:
-                print(f"⚠️ Unknown ScienceDirect error: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"⚠️ Unknown ScienceDirect error: {e}")
 
 
         # Merge text
@@ -286,11 +302,13 @@ class HTML():
             if tables_text:
                 text += "\n" + tables_text
         except Exception as e:
-            print("⚠️ async_getListSection: table serialization failed:", e)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ async_getListSection: table serialization failed:", e)
         return text
 
     except Exception as e:
-        print("❌ async_getListSection failed:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("❌ async_getListSection failed:", e)
         return ""
   
   def getListSection(self, scienceDirect=None):
@@ -374,10 +392,12 @@ class HTML():
             if tables_text:
                 text += "\n" + tables_text
         except Exception as e:
-            print("⚠️ getListSection: table serialization failed:", e)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ getListSection: table serialization failed:", e)
         return text #json
     except:
-        print("failed all")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("failed all")
         return ""
   def getReference(self):
     # get reference to collect more next data
@@ -508,7 +528,8 @@ class HTML():
         df = pd.read_html(str(soup))
       except ValueError:
         df = []
-        print("No tables found in HTML file")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("No tables found in HTML file")
     return df
 
   def getTablesAsText(self):
@@ -522,7 +543,8 @@ class HTML():
     try:
       tables = self.extractTable()
     except Exception as e:
-      print("❌ getTablesAsText: extractTable failed:", e)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("❌ getTablesAsText: extractTable failed:", e)
       return ""
     out = []
     for t_idx, df in enumerate(tables):
@@ -535,7 +557,8 @@ class HTML():
           if pairs:
             out.append("Row: " + ", ".join(pairs))
       except Exception as e:
-        print(f"❌ getTablesAsText: failed to serialize table {t_idx}:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ getTablesAsText: failed to serialize table {t_idx}:", e)
     return "\n".join(out)
   def mergeTextInJson(self,jsonHTML):
     try:
@@ -568,6 +591,7 @@ class HTML():
         htmlText += str(jsonHTML)
       return htmlText
     except:
-      print("failed merge text in json")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("failed merge text in json")
       return ""  
   

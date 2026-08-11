@@ -28,7 +28,6 @@ import nltk
 
 nltk.download("stopwords")
 nltk.download("punkt")
-nltk.download('punkt_tab')
 # Step 1: Get PubMed ID from Accession using EDirect
 from Bio import Entrez, Medline
 import re
@@ -93,9 +92,11 @@ def fetch_ncbi_metadata(accession_number):
             if isinstance(record[0], dict):
                 gb_seq = record[0]
             else:
-                print(f"Warning: record[0] is not a dictionary for {accession_number}. Type: {type(record[0])}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"Warning: record[0] is not a dictionary for {accession_number}. Type: {type(record[0])}")
         else:
-            print(f"Warning: No valid record or empty record list from NCBI for {accession_number}.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Warning: No valid record or empty record list from NCBI for {accession_number}.")
 
         # If gb_seq is still None, return defaults
         if gb_seq is None:
@@ -257,7 +258,8 @@ def fetch_ncbi_metadata(accession_number):
                 "all_features": features_context}
 
     except:
-        print(f"Error fetching NCBI data for {accession_number}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Error fetching NCBI data for {accession_number}")
         return {"country": "unknown",
                 "specific_location": "unknown",
                 "ethnicity": "unknown",
@@ -328,13 +330,15 @@ def search_serper(query, max_results=3):
             timeout=10
         )
         if response.status_code == 429:
-            print("Serper rate limit hit.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("Serper rate limit hit.")
             return []
         response.raise_for_status()
         items = response.json().get("organic", [])
         return [item["link"] for item in items if item.get("link")]
     except Exception as e:
-        print(f"Serper search error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Serper search error: {e}")
         return []
 
 
@@ -350,7 +354,8 @@ def search_pubmed_free(query, max_results=3):
         ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
         return [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in ids]
     except Exception as e:
-        print(f"PubMed free search error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"PubMed free search error: {e}")
         return []
 
 
@@ -374,7 +379,8 @@ def search_europepmc_free(query, max_results=3):
                 links.append(f"https://doi.org/{doi}")
         return links
     except Exception as e:
-        print(f"EuropePMC free search error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"EuropePMC free search error: {e}")
         return []
 
 
@@ -407,7 +413,8 @@ def search_google_custom(query, max_results=3):
     # Layer 1: Serper API (Google results) — best coverage if key is set
     serper_links = search_serper(query, max_results)
     if serper_links:
-        print(f"  [Serper] {len(serper_links)} results")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [Serper] {len(serper_links)} results")
         for l in serper_links:
             if l not in links:
                 links.append(l)
@@ -416,7 +423,8 @@ def search_google_custom(query, max_results=3):
     # Layer 2: PubMed free search
     pubmed_links = search_pubmed_free(query, max_results)
     if pubmed_links:
-        print(f"  [PubMed] {len(pubmed_links)} results")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [PubMed] {len(pubmed_links)} results")
         for l in pubmed_links:
             if l not in links:
                 links.append(l)
@@ -424,7 +432,8 @@ def search_google_custom(query, max_results=3):
     # Layer 3: EuropePMC free search
     epmc_links = search_europepmc_free(query, max_results)
     if epmc_links:
-        print(f"  [EuropePMC] {len(epmc_links)} results")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [EuropePMC] {len(epmc_links)} results")
         for l in epmc_links:
             if l not in links:
                 links.append(l)
@@ -436,7 +445,8 @@ def search_google_custom(query, max_results=3):
             links.append(l)
 
     if not links:
-        print(f"  [search] No results found for: {query}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [search] No results found for: {query}")
     return links
 
 
@@ -461,7 +471,8 @@ def download_excel_file(url, save_path="temp.xlsx"):
             f.write(response.content)
         return save_path
     else:
-        print("URL must point directly to an .xls or .xlsx file\n or it already downloaded.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("URL must point directly to an .xls or .xlsx file\n or it already downloaded.")
         return url
 def get_paper_text(doi,id,manualLinks=None):
   # create the temporary folder to contain the texts
@@ -469,9 +480,11 @@ def get_paper_text(doi,id,manualLinks=None):
   if not folder_path.exists():
       cmd = f'mkdir data/{id}'
       result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-      print("data/"+str(id) +" created.")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("data/"+str(id) +" created.")
   else:
-      print("data/"+str(id) +" already exists.")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("data/"+str(id) +" already exists.")
   saveLinkFolder = "data/"+id
 
   link = 'https://doi.org/' + doi
@@ -497,7 +510,8 @@ def get_paper_text(doi,id,manualLinks=None):
     elif l.endswith(".pdf"):
       if file_path.is_file():
           l = saveLinkFolder + "/" + name
-          print("File exists.")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("File exists.")
       p = pdf.PDF(l,saveLinkFolder,doi)
       f = p.openPDFFile()
       pdf_path = saveLinkFolder + "/" + l.split("/")[-1]
@@ -636,7 +650,8 @@ def infer_location_fromNCBI(accession):
         return "Not found", "Not found"
 
     except Exception as e:
-        print("❌ Entrez error:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("❌ Entrez error:", e)
         return "Not found", "Not found"
 
 ### ANCIENT/MODERN FLAG
@@ -697,11 +712,13 @@ def flag_ancient_modern(accession, textsToExtract, isolate=None):
             else:
               return "Unknown", "No strong keywords detected"
         else:
-            print("No DOI or PubMed ID available for inference.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("No DOI or PubMed ID available for inference.")
             return "", ""
 
     except Exception as e:
-        print("Error:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("Error:", e)
         return "", ""
 
 

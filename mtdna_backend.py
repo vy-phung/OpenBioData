@@ -30,10 +30,13 @@ import metadata_merge
 
 #@lru_cache(maxsize=3600)
 async def pipeline_classify_sample_location_cached(accession,stop_flag=None, save_df=None, niche_cases=None):
-    print("inside pipeline_classify_sample_location_cached, and [accession] is ", [accession])
-    print("len of save df: ", len(save_df))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("inside pipeline_classify_sample_location_cached, and [accession] is ", [accession])
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("len of save df: ", len(save_df))
     if niche_cases: niche_cases=niche_cases.split(", ")
-    print("niche case in mtdna_backend.pipeline: ", niche_cases)    
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("niche case in mtdna_backend.pipeline: ", niche_cases)    
     return await pipeline.pipeline_with_gemini([accession],stop_flag=stop_flag, save_df=save_df, niche_cases=niche_cases)    
 
 # Count and suggest final location
@@ -90,7 +93,8 @@ def is_valid_accession(acc):
 
 # helper function to extract accessions
 def extract_accessions_from_input(file=None, raw_text=""):
-    print(f"RAW TEXT RECEIVED: {raw_text}")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"RAW TEXT RECEIVED: {raw_text}")
     accessions, invalid_accessions = [], []
     seen = set()
     if file:
@@ -185,14 +189,16 @@ def load_sheet_once():
             SHEET_HEADERS = data[0]
             SHEET_CACHE = pd.DataFrame(data[1:], columns=SHEET_HEADERS)
 
-            print("Loaded known_samples into cache.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("Loaded known_samples into cache.")
         except Exception as e:
             # known_samples is a read cache for the legacy pipeline's cache/log
             # feature only (see mtdna_backend.summarize_results) -- not required
             # for the live pipeline's output, so a self-hoster without GCP
             # credentials should get a warning here, not a crash on import.
-            print(f"⚠️ Could not load 'known_samples' Google Sheet cache ({e}); "
-                  "continuing without it.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"⚠️ Could not load 'known_samples' Google Sheet cache ({e}); "
+                      "continuing without it.")
             SHEET_CACHE = pd.DataFrame()
             SHEET_HEADERS = []
             SHEET_OBJ = None
@@ -202,18 +208,22 @@ def load_sheet_once():
 
 save_df, save_headers, SHEET_OBJ = load_sheet_once()
 if SHEET_OBJ is not None:
-    print("🔒 Google Sheet cache loaded and ready.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("🔒 Google Sheet cache loaded and ready.")
 
 async def summarize_results(accession, stop_flag=None, niche_cases=None):
     # Early bail
     if stop_flag is not None and stop_flag.value:
-        print(f"🛑 Skipping {accession} before starting.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🛑 Skipping {accession} before starting.")
         return []
     # try cache first
-    print("niche case in sum_result: ", niche_cases)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("niche case in sum_result: ", niche_cases)
     cached = check_known_output(accession, niche_cases)
     if cached:
-        print(f"✅ Using cached result for {accession}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"✅ Using cached result for {accession}")
         
         row = {
             "Sample ID": cached.get("Sample ID", "unknown"),
@@ -234,7 +244,8 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
             
     # only run when nothing in the cache  
     try:
-        print("try gemini pipeline: ",accession)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("try gemini pipeline: ",accession)
         # # ✅ Load credentials from Hugging Face secret
         # creds_dict = json.loads(os.environ["GCP_CREDS_JSON"])
         # scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -251,12 +262,15 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
 
         # save_df = pd.DataFrame(data[1:], columns=data[0])
 
-        print("before pipeline, len of save df: ", len(save_df))
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("before pipeline, len of save df: ", len(save_df))
         if niche_cases: 
             niche_cases = ", ".join(niche_cases)
-        print("this is niche case inside summarize result: ", niche_cases)    
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("this is niche case inside summarize result: ", niche_cases)    
         outputs = await pipeline_classify_sample_location_cached(accession, stop_flag, save_df, niche_cases)
-        print("do the dummy output")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("do the dummy output")
         # outputs = {"KY680825":{'isolate': 'NAT107', 
         #            'country': 
         #            {'ecuador': ['ncbi', 
@@ -270,14 +284,16 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         #            'signals': {'has_geo_loc_name': True, 'has_pubmed': True, 'accession_found_in_text': True, 'predicted_country': 'ecuador', 'genbank_country': 'ecuador', 'num_publications': 3, 'missing_key_fields': False, 'known_failure_pattern': False}}
         #           }
         if stop_flag is not None and stop_flag.value:
-            print(f"🛑 Skipped {accession} mid-pipeline.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"🛑 Skipped {accession} mid-pipeline.")
             return []
         
     except Exception as e:
         return []#, f"Error: {e}", f"Error: {e}", f"Error: {e}"
 
     if accession not in outputs:
-        print("no accession in output ", accession)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("no accession in output ", accession)
         return []#, "Accession not found in results.", "Accession not found in results.", "Accession not found in results."
 
     row_score = []
@@ -288,11 +304,13 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         checked_sections = ["country", "sample_type"]
         if niche_cases: niche_cases = niche_cases.split(", ")
         if niche_cases: checked_sections += niche_cases
-        print("checked sections: ", checked_sections)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("checked sections: ", checked_sections)
         for section, results in outputs[key].items():
             pred_output = []#"\n".join(list(results.keys()))
             output_explanation = ""
-            print(section, results)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(section, results)
             if section not in checked_sections: continue
             for result, content in results.items():
               if len(result) == 0:  result = "unknown"
@@ -314,10 +332,12 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         # signals for confidence score
         signals_confidence_score = outputs[key]["signals"]
         rules = confidence_score.set_rules()
-        print("start to compute confidence score")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("start to compute confidence score")
         score, tier, explanations_score = confidence_score.compute_confidence_score_and_tier(signals_confidence_score,rules)
         confidence_values = f"{tier} ({score})" + "\n" + "\n".join(explanations_score)
-        print("confidence_values: ", confidence_values)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("confidence_values: ", confidence_values)  
         # Collect Pass 2 additional fields for this accession
         additional_fields = outputs[key].get("_additional_fields", {}) or {}
 
@@ -386,7 +406,8 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
                 "_additional_fields": additional_fields,
             }
             save_rows.append(save_row)
-        print("the final rows: ", rows)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("the final rows: ", rows)
 
     try:
         # Prepare as DataFrame
@@ -433,13 +454,16 @@ async def summarize_results(accession, stop_flag=None, niche_cases=None):
         #     else:
         #         # ✅ Append new row
         #         sheet.append_row(row_values)
-        print("try new append to sheet function")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("try new append to sheet function")
         append_to_sheet(save_rows)
     
-        print("✅ Match results safely saved to known_samples with dynamic headers.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("✅ Match results safely saved to known_samples with dynamic headers.")
     
     except Exception as e:
-        print(f"❌ Failed to update known_samples: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Failed to update known_samples: {e}")
 
         
     return rows
@@ -468,7 +492,8 @@ def append_to_sheet(rows):
     for _, row in df_new.iterrows():
         SHEET_OBJ.append_row([str(row[h]) for h in SHEET_HEADERS])
 
-    print("✅ Batch saved to Google Sheet.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("✅ Batch saved to Google Sheet.")
 
 
 def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
@@ -501,7 +526,8 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
         rows = list(all_rows or [])
 
     if not rows:
-        print("⚠️ No rows to save.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("⚠️ No rows to save.")
         return
 
     # ── Build Sheet 1 rows (drop _additional_fields key) ─────────────────────
@@ -541,7 +567,8 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
     try:
         sheet2_rows = metadata_merge.normalize_output_table(sheet2_rows)
     except Exception as _norm_err:
-        print(f"⚠️ normalize_output_table failed (non-critical, using unnormalized table): {_norm_err}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"⚠️ normalize_output_table failed (non-critical, using unnormalized table): {_norm_err}")
 
     df_sheet1 = _coerce_df(pd.DataFrame(sheet1_rows))
     df_sheet2 = _coerce_df(pd.DataFrame(sheet2_rows))
@@ -552,7 +579,8 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
             existing1 = pd.read_excel(filename, sheet_name="cMD Metadata", engine="openpyxl")
             existing2 = pd.read_excel(filename, sheet_name="All Attributes", engine="openpyxl")
         except Exception as e:
-            print(f"⚠️ Could not read existing Excel sheets ({e}); starting fresh.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"⚠️ Could not read existing Excel sheets ({e}); starting fresh.")
             existing1 = pd.DataFrame()
             existing2 = pd.DataFrame()
 
@@ -584,11 +612,13 @@ def save_to_excel(all_rows, summary_text, flag_text, filename, is_resume=False):
         with pd.ExcelWriter(filename, engine="openpyxl") as writer:
             df_sheet1.to_excel(writer, sheet_name="cMD Metadata", index=False)
             df_sheet2.to_excel(writer, sheet_name="Full Raw Attributes", index=False)
-        print(f"✅ Excel saved: {filename} "
-              f"(cMD Metadata: {len(df_sheet1)} rows | "
-              f"Full Raw Attributes: {len(df_sheet2)} rows, {len(extra_keys)} extra cols)")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"✅ Excel saved: {filename} "
+                  f"(cMD Metadata: {len(df_sheet1)} rows | "
+                  f"Full Raw Attributes: {len(df_sheet2)} rows, {len(extra_keys)} extra cols)")
     except Exception as e:
-        print(f"❌ Failed to write Excel file {filename}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Failed to write Excel file {filename}: {e}")
 
 
 # save cost by checking the known outputs
@@ -717,25 +747,30 @@ def load_known_samples():
         data = sheet.get_all_values()
 
         if not data:
-            print("⚠️ Google Sheet 'known_samples' is empty.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ Google Sheet 'known_samples' is empty.")
             _known_samples_cache = pd.DataFrame()
         else:
             _known_samples_cache = pd.DataFrame(data[1:], columns=data[0])
-            print(f"✅ Cached {_known_samples_cache.shape[0]} rows from known_samples")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"✅ Cached {_known_samples_cache.shape[0]} rows from known_samples")
 
     except APIError as e:
-        print(f"❌ APIError while loading known_samples: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ APIError while loading known_samples: {e}")
         _known_samples_cache = pd.DataFrame()
     except Exception as e:
         import traceback
-        print("❌ Exception occurred while loading known_samples:")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("❌ Exception occurred while loading known_samples:")
         traceback.print_exc()
         _known_samples_cache = pd.DataFrame()
 
 def check_known_output(accession, niche_cases=None):
     """Check if an accession exists in the cached 'known_samples' sheet."""
     global _known_samples_cache
-    print("inside check known output function")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("inside check known output function")
 
     try:
         # Load cache if not already loaded
@@ -743,7 +778,8 @@ def check_known_output(accession, niche_cases=None):
             load_known_samples()
 
         if _known_samples_cache.empty:
-            print("⚠️ No cached data available.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ No cached data available.")
             return None
 
         # Extract proper accession format (e.g. AB12345)
@@ -762,32 +798,41 @@ def check_known_output(accession, niche_cases=None):
             output_niche = None
             if niche_cases: 
                 niche_col = "Predicted " + niche_cases[0]
-                print("this is niche_col: ", niche_col)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("this is niche_col: ", niche_col)
                 if niche_col not in _known_samples_cache.columns:
-                    print(f"⚠️ Niche column '{niche_col}' not found in known_samples. Skipping cache.")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"⚠️ Niche column '{niche_col}' not found in known_samples. Skipping cache.")
                     return None
                 output_niche = row.get(niche_col, "").strip().lower()
-                print("output niche: ", output_niche)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("output niche: ", output_niche)
                 if country and country.lower() not in ["","unknown"] and sample_type and sample_type.lower() not in ["","unknown"] and output_niche and output_niche.lower() not in ["","unknown"]:
-                    print(f"🎯 Found {accession} in cache")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"🎯 Found {accession} in cache")
                     return row.to_dict()
                 else:
-                    print(f"⚠️ Accession {accession} found but country/sample_type/{niche_cases[0]} unknown or empty.")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"⚠️ Accession {accession} found but country/sample_type/{niche_cases[0]} unknown or empty.")
                     return None
             else:     
                 if country and country.lower() not in ["","unknown"] and sample_type and sample_type.lower() not in ["","unknown"]:
-                    print(f"🎯 Found {accession} in cache")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"🎯 Found {accession} in cache")
                     return row.to_dict()
                 else:
-                    print(f"⚠️ Accession {accession} found but country/sample_type unknown or empty.")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"⚠️ Accession {accession} found but country/sample_type unknown or empty.")
                     return None
         else:
-            print(f"🔍 Accession {accession} not found in cache.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"🔍 Accession {accession} not found in cache.")
             return None
 
     except Exception as e:
         import traceback
-        print("❌ Exception occurred during check_known_output:")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("❌ Exception occurred during check_known_output:")
         traceback.print_exc()
         return None
 
@@ -857,19 +902,25 @@ def load_user_usage():
 
         sheet = client.open("user_usage_log").sheet1
         data = sheet.get_all_values()
-        print("data: ", data)
-        print("🧪 Raw header row from sheet:", data[0])
-        print("🧪 Character codes in each header:")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("data: ", data)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("🧪 Raw header row from sheet:", data[0])
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("🧪 Character codes in each header:")
         for h in data[0]:
-            print([ord(c) for c in h])
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print([ord(c) for c in h])
 
         if not data or len(data) < 2:
-            print("⚠️ Sheet is empty or missing rows.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ Sheet is empty or missing rows.")
             return {}
 
         headers = [h.strip().lower() for h in data[0]]
         if "email" not in headers or "usage_count" not in headers:
-            print("❌ Header format incorrect. Must have 'email' and 'usage_count'.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("❌ Header format incorrect. Must have 'email' and 'usage_count'.")
             return {}
             
         permitted_index = headers.index("permitted_samples") if "permitted_samples" in headers else None
@@ -884,7 +935,8 @@ def load_user_usage():
                 try:
                     count = int(float(row.get("usage_count", 0)))
                 except Exception:
-                    print(f"⚠️ Invalid usage_count for {email}: {row.get('usage_count')}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"⚠️ Invalid usage_count for {email}: {row.get('usage_count')}")
                     count = 0
 
                 if email:
@@ -897,11 +949,13 @@ def load_user_usage():
                             permitted[email] = 50
                         
             except ValueError:
-                print(f"⚠️ Invalid usage_count for {email}: {row.get('usage_count')}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"⚠️ Invalid usage_count for {email}: {row.get('usage_count')}")
         return usage, permitted
 
     except Exception as e:
-        print(f"❌ Error in load_user_usage: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Error in load_user_usage: {e}")
         return {}, {}
 
 
@@ -1018,8 +1072,10 @@ def save_user_usage(usage_dict):
         # Save
         sheet.clear()
         sheet.update([df_old.columns.tolist()] + df_old.astype(str).values.tolist())
-        print("✅ Saved user usage to user_usage_log sheet.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("✅ Saved user usage to user_usage_log sheet.")
 
     except Exception as e:
-        print(f"❌ Failed to save user usage to Google Sheets: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Failed to save user usage to Google Sheets: {e}")
 

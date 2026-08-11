@@ -19,6 +19,7 @@ the other misses:
      number never appears in the rendered text.
 """
 
+import os
 import re
 import json
 import time
@@ -146,7 +147,8 @@ def _scrape_doi_from_page(url: str) -> str:
         m = _CITATION_DOI_META_RE.search(r.text)
         return m.group(1).rstrip('.') if m else ""
     except Exception as e:
-        print(f"[paper_resolver] page-meta DOI scrape failed for {url}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[paper_resolver] page-meta DOI scrape failed for {url}: {e}")
         return ""
 
 
@@ -172,7 +174,8 @@ def resolve_doi_to_pmid(doi: str) -> str:
         ids = record.get("IdList", [])
         return ids[0] if ids else ""
     except Exception as e:
-        print(f"[paper_resolver] resolve_doi_to_pmid failed for {doi}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[paper_resolver] resolve_doi_to_pmid failed for {doi}: {e}")
         return ""
 
 
@@ -194,7 +197,8 @@ def _eutils_elink(dbfrom: str, db: str, uid: str) -> list:
                     uids.extend(lsdb.get("links", []))
         return list(dict.fromkeys(uids))
     except Exception as e:
-        print(f"[paper_resolver] elink {dbfrom}->{db} failed for {uid}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[paper_resolver] elink {dbfrom}->{db} failed for {uid}: {e}")
         return []
 
 
@@ -230,7 +234,8 @@ def check_accessible(doi_or_link: str) -> dict:
         if oa_url:
             return {"open": True, "oa_url": oa_url, "reason": "unpaywall OA copy found"}
     except Exception as e:
-        print(f"[paper_resolver] unpaywall check failed for {doi}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[paper_resolver] unpaywall check failed for {doi}: {e}")
     try:
         pmid = resolve_doi_to_pmid(doi)
         if pmid:
@@ -238,7 +243,8 @@ def check_accessible(doi_or_link: str) -> dict:
             if pmc and pmc.get("text"):
                 return {"open": True, "oa_url": "", "reason": "PMC full text available"}
     except Exception as e:
-        print(f"[paper_resolver] PMC check failed for {doi}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[paper_resolver] PMC check failed for {doi}: {e}")
     return {"open": False, "oa_url": "", "reason": "no OA/PMC copy found -- needs PDF upload"}
 
 
@@ -281,7 +287,8 @@ def resolve_paper(doi_or_link: str, data_dir, pdf_path: str = None,
             if tables_text:
                 combined_text += "\n" + tables_text
         except Exception as e:
-            print(f"[paper_resolver] local PDF extraction failed for {pdf_path}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[paper_resolver] local PDF extraction failed for {pdf_path}: {e}")
         result["pdf_used"] = True
     else:
         # Accessibility is decided purely by whether extract_url_text can actually
@@ -298,7 +305,8 @@ def resolve_paper(doi_or_link: str, data_dir, pdf_path: str = None,
             if oa_url:
                 candidate_links.append(oa_url)
         except Exception as e:
-            print(f"[paper_resolver] OA lookup failed for {doi_or_link}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[paper_resolver] OA lookup failed for {doi_or_link}: {e}")
         candidate_links.append(f"https://doi.org/{doi}" if doi else doi_or_link)
         for link in candidate_links:
             try:
@@ -307,7 +315,8 @@ def resolve_paper(doi_or_link: str, data_dir, pdf_path: str = None,
                     combined_text = fetch.get("text", "")
                     break
             except Exception as e:
-                print(f"[paper_resolver] extract_url_text failed for {link}: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[paper_resolver] extract_url_text failed for {link}: {e}")
         if not combined_text:
             needs_pdf = True
 

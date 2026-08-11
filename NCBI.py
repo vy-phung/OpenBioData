@@ -1,3 +1,4 @@
+import os
 from Bio import Entrez
 import xml.etree.ElementTree as ET
 try:
@@ -107,7 +108,8 @@ def fetch_bioproject(bioproject_id):
     # PRJNA385855 -> 385855, PRJEB12345 -> 12345
     numeric_id = re.sub(r'^PRJ[A-Z]+', '', bioproject_id)
     if not numeric_id.isdigit():
-        print(f"Cannot parse numeric ID from {bioproject_id}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Cannot parse numeric ID from {bioproject_id}")
         return outputs
 
     headers = {"User-Agent": f"research-pipeline/1.0 (mailto:{Entrez.email})"}
@@ -125,10 +127,12 @@ def fetch_bioproject(bioproject_id):
             if r.status_code == 200:
                 xml_data = r.content
                 break
-            print(f"efetch attempt {attempt+1} got HTTP {r.status_code}, retrying...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"efetch attempt {attempt+1} got HTTP {r.status_code}, retrying...")
             time.sleep(2 ** attempt)  # exponential backoff: 1s, 2s, 4s
         except Exception as e:
-            print(f"efetch attempt {attempt+1} error: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"efetch attempt {attempt+1} error: {e}")
             time.sleep(2 ** attempt)
 
     if xml_data:
@@ -189,7 +193,8 @@ def fetch_bioproject(bioproject_id):
                         outputs["external_links"].append(xid)
 
         except ET.ParseError as e:
-            print(f"XML parse error: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"XML parse error: {e}")
 
     # ── Layer 2: EuropePMC search by BioProject accession ──────────────────
     # Works even when NCBI blocks Colab — searches full-text for the accession
@@ -222,9 +227,11 @@ def fetch_bioproject(bioproject_id):
                             "doi": doi,
                             "url": f"https://doi.org/{doi}"
                         })
-                print(f"EuropePMC found {len(results)} results for {bioproject_id}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"EuropePMC found {len(results)} results for {bioproject_id}")
         except Exception as e:
-            print(f"EuropePMC search error: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"EuropePMC search error: {e}")
 
     # ── Layer 3: NCBI elink via SRA db (more stable than bioproject db) ─────
     if not outputs["pubmed"]:
@@ -257,7 +264,8 @@ def fetch_bioproject(bioproject_id):
                                         if str(link) not in outputs["pubmed"]:
                                             outputs["pubmed"].append(str(link))
         except Exception as e:
-            print(f"SRA elink fallback error: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"SRA elink fallback error: {e}")
 
     # ── Resolve DOIs for any PMIDs not already resolved via EuropePMC ───────
     resolved_pmids = {d["pmid"] for d in outputs["pubmed_dois"]}
@@ -294,19 +302,22 @@ def search_sra_by_bioproject(bioproject_id):
         search_handle.close()
 
         # Print the raw results to see what we get
-        print("SRA Search Results:", search_results)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("SRA Search Results:", search_results)
 
         # Extract the list of SRA IDs from the search results
         sra_ids = search_results.get("IdList", [])
 
         if sra_ids:
-            print(f"Found {len(sra_ids)} SRA entries for BioProject {bioproject_id}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Found {len(sra_ids)} SRA entries for BioProject {bioproject_id}")
             return sra_ids
         else:
             return f"No SRA entries found for BioProject {bioproject_id}"
 
     except Exception as e:
-        print(f"Error fetching SRA entries: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Error fetching SRA entries: {e}")
         return {"bioproject_id": bioproject_id, "error": str(e)}
 
 # # Example usage
@@ -327,7 +338,8 @@ def fetch_experiment_metadata(sra_ids):
             fetch_handle.close()
 
             # Print the raw XML data for inspection
-            print(f"Raw XML data for SRA ID {sra_id}:\n{xml_data[:1000]}...\n")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Raw XML data for SRA ID {sra_id}:\n{xml_data[:1000]}...\n")
 
             # Parse XML data using ElementTree
             root = ET.fromstring(xml_data)
@@ -344,7 +356,8 @@ def fetch_experiment_metadata(sra_ids):
             experiment_metadata.append(experiment_data)
 
         except Exception as e:
-            print(f"Error fetching SRA ID {sra_id}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Error fetching SRA ID {sra_id}: {e}")
 
     return experiment_metadata
 
@@ -376,7 +389,8 @@ def get_experiment_xml(accession):
         url = f"https://www.ebi.ac.uk/ena/browser/api/xml/{accession}"
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"ENA error {response.status_code} for {accession}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"ENA error {response.status_code} for {accession}")
             return output
         xml_data = response.text
         root = ET.fromstring(xml_data)
@@ -402,7 +416,8 @@ def get_experiment_xml(accession):
           ids = r.json().get("esearchresult", {}).get("idlist", [])
 
           if not ids:
-              print(f"No SRA entries found for {accession}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"No SRA entries found for {accession}")
               return output
 
           # Step 2: esummary to extract the real SRX/SRR accession strings
@@ -438,7 +453,8 @@ def get_experiment_xml(accession):
               srr_matches = re.findall(r'acc="(SRR\d+)"', runs_xml)
               srr_accessions.extend(srr_matches)
 
-          print(f"Found SRX: {srx_accessions}, SRR: {srr_accessions}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"Found SRX: {srx_accessions}, SRR: {srr_accessions}")
 
           # Step 3: fetch full XML using real accessions (SRX preferred over SRR)
           fetch_accessions = srx_accessions or srr_accessions
@@ -459,7 +475,8 @@ def get_experiment_xml(accession):
                   for elem in root.iter():
                       output += f"{elem.tag}: {elem.text}\n"
                   return output
-              print(f"efetch with accessions got {r3.status_code}, trying ENA fallback...")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"efetch with accessions got {r3.status_code}, trying ENA fallback...")
 
           # Step 4: ENA fallback — accepts SRS natively, no numeric ID needed
           r4 = requests.get(
@@ -483,10 +500,12 @@ def get_experiment_xml(accession):
                   for k, v in row.items():
                       output += f"{k}: {v}\n"
           else:
-              print(f"ENA fallback also failed with {r4.status_code}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"ENA fallback also failed with {r4.status_code}")
 
       except Exception as e:
-          print(f"NCBI error for {accession}: {e}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"NCBI error for {accession}: {e}")
 
     else:
         # SRR, SRX, SAMN — direct efetch via requests
@@ -508,7 +527,8 @@ def get_experiment_xml(accession):
             for elem in root.iter():
                 output += f"{elem.tag}: {elem.text}\n"
         except Exception as e:
-            print(f"NCBI error for {accession}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"NCBI error for {accession}: {e}")
 
     return output
 
@@ -528,7 +548,8 @@ def fetch_biosample_raw_metadata(biosample_id):
       handle.close()
       output = record 
     except Exception as e:
-      print(f"Error fetching raw data for biosample {biosample_id}: {e}")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(f"Error fetching raw data for biosample {biosample_id}: {e}")
     return output
 
 import requests
@@ -541,7 +562,8 @@ def fetch_ena_biosample_metadata(biosample_id):
     if response.status_code == 200:
         return response.json()
     else:
-        print(f"Error {response.status_code}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Error {response.status_code}")
         return ""
 def fetch_ena_biosample_xml(biosample_id):
     url = f"https://www.ebi.ac.uk/biosamples/samples/{biosample_id}.xml"
@@ -550,7 +572,8 @@ def fetch_ena_biosample_xml(biosample_id):
     if response.status_code == 200:
         return response.content  # raw XML bytes, like Entrez returns
     else:
-        print(f"Error {response.status_code}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Error {response.status_code}")
         return ""
 
 def fetch_biosample(biosample_id):
@@ -603,7 +626,8 @@ def get_biosamples_from_bioproject(bioproject_id):
         return accessions
 
     except Exception as e:
-        print(f"Error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Error: {e}")
         return []
 
 # # --- Test ---
@@ -762,11 +786,13 @@ def get_doi_via_europepmc(pmid):
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         if not response.text.strip():
-            print(f"EuropePMC returned empty response for PMID {pmid}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"EuropePMC returned empty response for PMID {pmid}")
             return None
         data = response.json()
     except Exception as e:
-        print(f"EuropePMC request failed for PMID {pmid}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"EuropePMC request failed for PMID {pmid}: {e}")
         return None
 
     results = data.get('resultList', {}).get('result', [])
@@ -795,7 +821,8 @@ def get_unpaywall_oa_url(doi: str, email: str = "vyphung1901@gmail.com") -> str:
             return ""
         data = response.json()
     except Exception as e:
-        print(f"Unpaywall request failed for DOI {doi}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Unpaywall request failed for DOI {doi}: {e}")
         return ""
 
     if not data.get("is_oa"):
@@ -834,10 +861,12 @@ def fetch_pmc_fulltext(pmid: str) -> dict:
                 # pmcid comes as "PMC11228841" — strip prefix for eFetch
                 pmc_id = raw_pmcid.replace("PMC", "").strip()
     except Exception as _e:
-        print(f"[fetch_pmc_fulltext] EuropePMC lookup failed for PMID {pmid}: {_e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_pmc_fulltext] EuropePMC lookup failed for PMID {pmid}: {_e}")
 
     if not pmc_id:
-        print(f"[fetch_pmc_fulltext] no PMC record for PMID {pmid}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_pmc_fulltext] no PMC record for PMID {pmid}")
         return result
     result["pmc_id"] = pmc_id
 
@@ -853,7 +882,8 @@ def fetch_pmc_fulltext(pmid: str) -> dict:
             return result
         xml_root = ET.fromstring(r2.content)
     except Exception as e:
-        print(f"[fetch_pmc_fulltext] efetch failed for PMC {pmc_id}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_pmc_fulltext] efetch failed for PMC {pmc_id}: {e}")
         return result
 
     # Step 3: extract body text
@@ -884,8 +914,9 @@ def fetch_pmc_fulltext(pmid: str) -> dict:
             if href.startswith("http") and href not in result["sup_links"]:
                 result["sup_links"].append(href)
 
-    print(f"[fetch_pmc_fulltext] PMC{pmc_id}: {len(result['text'])} chars body, "
-          f"{len(result['sup_links'])} sup files")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"[fetch_pmc_fulltext] PMC{pmc_id}: {len(result['text'])} chars body, "
+              f"{len(result['sup_links'])} sup files")
     return result
 
 
@@ -939,7 +970,8 @@ def fetch_ena_study_text(study_id: str) -> str:
                     if sec.text:
                         lines.append(f"  Secondary ID: {sec.text.strip()}")
     except Exception as exc:
-        print(f"[fetch_ena_study_text] XML fetch failed for {study_id}: {exc}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_ena_study_text] XML fetch failed for {study_id}: {exc}")
 
     # Secondary: ENA Portal API (returns tabular JSON)
     if not lines:
@@ -965,7 +997,8 @@ def fetch_ena_study_text(study_id: str) -> str:
                         if val:
                             lines.append(f"  {field}: {val}")
         except Exception as exc:
-            print(f"[fetch_ena_study_text] portal API failed for {study_id}: {exc}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[fetch_ena_study_text] portal API failed for {study_id}: {exc}")
 
     return '\n'.join(lines) if lines else ''
 
@@ -998,6 +1031,7 @@ def fetch_ena_biosample_text(biosample_id: str) -> str:
                 lines.append(f"  External reference: {url}")
         return '\n'.join(lines)
     except Exception as exc:
-        print(f"[fetch_ena_biosample_text] {biosample_id}: {exc}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_ena_biosample_text] {biosample_id}: {exc}")
         return ''
       

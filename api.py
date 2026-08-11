@@ -149,11 +149,13 @@ def _cache_reload() -> None:
         _cache_mem.clear()
         _cache_mem.update(new_mem)
         _cache_load_time[0] = time.time()
-        print(f"[cache] Loaded {len(_cache_mem)} cached samples.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[cache] Loaded {len(_cache_mem)} cached samples.")
     except Exception as e:
         _cache_last_failure_time[0] = time.time()
-        print(f"[cache] Reload failed: {e} -- backing off for {_CACHE_FAILURE_BACKOFF_SECS}s before retrying "
-              f"(was retrying on every sample before this fix).")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[cache] Reload failed: {e} -- backing off for {_CACHE_FAILURE_BACKOFF_SECS}s before retrying "
+                  f"(was retrying on every sample before this fix).")
 
 
 def _cache_ensure_fresh() -> None:
@@ -219,9 +221,11 @@ def _cache_save(sample_id: str, bioproject: str, fields: dict) -> None:
             ws.update(f"C{row_idx}:D{row_idx}", [[ts, fj]])
         else:
             ws.append_row([sample_id, bioproject or "", ts, fj])
-        print(f"[cache] Saved {sample_id} / {bioproject}.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[cache] Saved {sample_id} / {bioproject}.")
     except Exception as e:
-        print(f"[cache] Save failed for {sample_id}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[cache] Save failed for {sample_id}: {e}")
 
 
 def _log_analytics(event: str, session_id: str, email: str, properties: dict, user_agent: str) -> None:
@@ -818,9 +822,11 @@ def _process_one_upload(filename: str, raw: bytes) -> dict:
                                 f"{sup_result['name']} ({sup_url}) --\n{sup_result['text']}"
                             )
                     except Exception as _sup_exc:
-                        print(f"[upload-context] supplementary auto-fetch failed for {sup_url}: {_sup_exc}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[upload-context] supplementary auto-fetch failed for {sup_url}: {_sup_exc}")
         except Exception as _sup_scan_exc:
-            print(f"[upload-context] supplementary link scan failed for {filename}: {_sup_scan_exc}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[upload-context] supplementary link scan failed for {filename}: {_sup_scan_exc}")
 
     # Extraction "succeeded" without raising but produced nothing usable --
     # e.g. both PDF backends failed (text is just the "[... failed: ...]"

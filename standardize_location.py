@@ -10,7 +10,8 @@ def normalize_key(text):
 def get_country_from_geonames(city_name):
     url = os.environ["URL_SEARCHJSON"]  
     username = os.environ["USERNAME_GEO"]
-    print("geoname: ", cityname)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("geoname: ", cityname)
     params = {
         "q": city_name,
         "maxRows": 1,
@@ -22,14 +23,16 @@ def get_country_from_geonames(city_name):
         if data.get("geonames"):
             return data["geonames"][0]["countryName"]
     except Exception as e:
-        print("GeoNames searchJSON error:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("GeoNames searchJSON error:", e)
     return None
 
 # Search for country info using alpha-2/3 codes or name
 def get_country_from_countryinfo(input_code):
     url = os.environ["URL_COUNTRYJSON"] 
     username = os.environ["USERNAME_GEO"]
-    print("countryINFO: ", input_code)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("countryINFO: ", input_code)
     params = {
         "username": username
     }
@@ -47,7 +50,8 @@ def get_country_from_countryinfo(input_code):
                 ]:
                     return country["countryName"]
     except Exception as e:
-        print("GeoNames countryInfoJSON error:", e)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("GeoNames countryInfoJSON error:", e)
     return None
 
 # Combined smart lookup
@@ -55,7 +59,8 @@ def smart_country_lookup(user_input):
     try: 
         raw_input = user_input.strip()
         normalized = re.sub(r"[^a-zA-Z0-9]", "", user_input).upper()  # normalize for codes (no strip spaces!)
-        print("raw input for smart country lookup: ",raw_input, ". Normalized country: ", normalized)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("raw input for smart country lookup: ",raw_input, ". Normalized country: ", normalized)
         # Special case: if user writes "UK: London" → split and take main country part
         if ":" in raw_input:
             raw_input = raw_input.split(":")[0].strip()  # only take "UK"
@@ -63,22 +68,27 @@ def smart_country_lookup(user_input):
         if len(normalized) <= 3:
           if normalized.upper() in ["UK","U.K","U.K."]:
             country = get_country_from_geonames(normalized.upper())
-            print("get_country_from_geonames(normalized.upper()) ", country)  
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("get_country_from_geonames(normalized.upper()) ", country)  
             if country:
               return country
           else:  
             country = get_country_from_countryinfo(raw_input)
-            print("get_country_from_countryinfo(raw_input) ", country)  
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("get_country_from_countryinfo(raw_input) ", country)  
             if country:
                 return country
-        print(raw_input)        
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(raw_input)        
         country = get_country_from_countryinfo(raw_input)  # try full names
-        print("get_country_from_countryinfo(raw_input) ", country)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("get_country_from_countryinfo(raw_input) ", country)
         if country:
             return country
         # Otherwise, treat as city/place
         country = get_country_from_geonames(raw_input)
-        print("get_country_from_geonames(raw_input) ", country)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("get_country_from_geonames(raw_input) ", country)
         if country:
             return country
     

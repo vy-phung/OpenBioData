@@ -42,13 +42,6 @@ import google.generativeai as genai
 #genai.configure(api_key=os.getenv("GOOGLE_API_KEY_BACKUP"))
 genai.configure(api_key=os.getenv("NEW_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("NEW_GEMINI_API"))
 
-import nltk
-from nltk.corpus import stopwords
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
-nltk.download('punkt_tab')    
 # # --- Define Pricing Constants (for Gemini 1.5 Flash & text-embedding-004) ---
 # # Prices are per 1,000 tokens
 # PRICE_PER_1K_INPUT_LLM = 0.000075  # $0.075 per 1M tokens
@@ -88,7 +81,8 @@ def get_embedding(text, task_type="RETRIEVAL_DOCUMENT"):
         )
         return np.array(result['embedding'], dtype='float32')
     except Exception as e:
-        print(f"❌ Embedding error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Embedding error: {e}")
         return np.zeros(768, dtype='float32')
 
 
@@ -128,7 +122,8 @@ def call_llm_api(prompt, model_name=None):
     for testing NCBI resolution without consuming API credits).
     """
     if os.getenv('SKIP_LLM_API', '').lower() in ('1', 'true', 'yes'):
-        print('[SKIP_LLM_API] LLM call skipped (test mode) — returning unknown placeholders')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print('[SKIP_LLM_API] LLM call skipped (test mode) — returning unknown placeholders')
         return 'unknown, unknown', None
 
     last_error = None
@@ -148,7 +143,8 @@ def call_llm_api(prompt, model_name=None):
             chosen_model = None  # too large even for Sonnet 5 -- skip Anthropic, try Gemini
 
         if chosen_model:
-            print(f"[call_llm_api] routing: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[call_llm_api] routing: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
             try:
                 import anthropic as _anthropic
                 client = _anthropic.Anthropic(api_key=anthropic_key)
@@ -178,9 +174,10 @@ def call_llm_api(prompt, model_name=None):
                     # giving up -- never let this fall through to the Gemini
                     # branch below, which would silently swap providers for a
                     # response Anthropic never actually finished producing.
-                    print(f"[call_llm_api] {chosen_model} returned no text block "
-                          f"(block types: {[getattr(b, 'type', None) for b in msg.content]}) "
-                          f"-- retrying on {chosen_model} with max_tokens={_ANTHROPIC_MAX_TOKENS * 2}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[call_llm_api] {chosen_model} returned no text block "
+                              f"(block types: {[getattr(b, 'type', None) for b in msg.content]}) "
+                              f"-- retrying on {chosen_model} with max_tokens={_ANTHROPIC_MAX_TOKENS * 2}")
                     retry_kwargs = dict(create_kwargs, max_tokens=_ANTHROPIC_MAX_TOKENS * 2)
                     msg = client.messages.create(**retry_kwargs)
                     text_block = next((b for b in msg.content if getattr(b, "type", None) == "text"), None)
@@ -190,7 +187,8 @@ def call_llm_api(prompt, model_name=None):
                             f"after retry with doubled max_tokens "
                             f"(block types: {[getattr(b, 'type', None) for b in msg.content]})"
                         )
-                print(f"[call_llm_api] used: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[call_llm_api] used: model={chosen_model} estimated_input_tokens={estimated_input_tokens}")
                 return text_block.text, None
             except Exception as e:
                 last_error = e
@@ -199,10 +197,12 @@ def call_llm_api(prompt, model_name=None):
                     raise  # let safe_call_llm retry
                 if "no text content block" in err_str:
                     raise  # exhausted retries on Claude itself -- do not fall through to Gemini
-                print(f"Anthropic API error ({chosen_model}): {e} — trying Gemini keys.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"Anthropic API error ({chosen_model}): {e} — trying Gemini keys.")
         else:
-            print(f"[call_llm_api] routing: estimated_input_tokens={estimated_input_tokens} exceeds "
-                  f"Sonnet 5's context window — skipping Anthropic, trying Gemini.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[call_llm_api] routing: estimated_input_tokens={estimated_input_tokens} exceeds "
+                      f"Sonnet 5's context window — skipping Anthropic, trying Gemini.")
 
     # --- 2. Gemini — try each key in order ---
     gemini_model = model_name or "gemini-2.5-flash-lite"
@@ -224,7 +224,8 @@ def call_llm_api(prompt, model_name=None):
             err_str = str(e).lower()
             if "429" in str(e) or "rate" in err_str:
                 raise  # rate limit — let safe_call_llm retry with backoff
-            print(f"Gemini error with {key_name}: {e} — trying next key.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Gemini error with {key_name}: {e} — trying next key.")
 
     raise LLMKeysExhaustedError(f"All LLM API keys exhausted. Last error: {last_error}")
 
@@ -303,7 +304,8 @@ def parse_literal_python_list(table_str):
             #print("Debug: Matched string for literal_eval:", matched_string)
             return ast.literal_eval(matched_string)
         except (ValueError, SyntaxError) as e:
-            print(f"Error evaluating literal: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Error evaluating literal: {e}")
             return []
     return []
 
@@ -333,7 +335,8 @@ def parse_sample_id_to_population_code(plain_text_content):
         break
       
     if not relevant_text_search:
-        print("Warning: 'Sample ID Population Code' section start marker not found or block empty.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("Warning: 'Sample ID Population Code' section start marker not found or block empty.")
         return sample_id_map, contiguous_ranges_data
 
     relevant_text_block = relevant_text_search.group(1).strip()
@@ -386,7 +389,8 @@ def parse_sample_id_to_population_code(plain_text_content):
                         (start_num, end_num, pop_code_upper)
                     )
                 except ValueError:
-                    print(f"        DEBUG_PARSING: ValueError in range conversion for {id1_num_str}-{id2_num_str_opt}. Adding endpoints only.")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"        DEBUG_PARSING: ValueError in range conversion for {id1_num_str}-{id2_num_str_opt}. Adding endpoints only.")
                     sample_id_map[f"{id1_prefix.upper()}{id1_num_str}"] = pop_code_upper
                     sample_id_map[f"{id2_prefix_opt.upper()}{id2_num_str_opt}"] = pop_code_upper
                     direct_id_count += 2
@@ -450,9 +454,6 @@ def get_country_from_text(text):
         return "unknown"
 
     return "unknown"
-
-# Get the list of English stop words from NLTK
-non_meaningful_pop_names = set(stopwords.words('english'))
 
 def parse_population_code_to_country(plain_text_content, table_strings):
     pop_code_country_map = {}
@@ -661,7 +662,8 @@ def build_vector_index_and_data(doc_path, index_path="faiss_index.bin", chunks_p
     Reads document, builds structured lookup, chunks remaining text, embeds chunks,
     and builds/saves a FAISS index.
     """
-    print("Step 1: Reading document and extracting structured data...")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("Step 1: Reading document and extracting structured data...")
     # plain_text_content, table_strings, document_title = read_docx_text(doc_path) # Get document_title here
 
     # sample_id_map, contiguous_ranges_data = parse_sample_id_to_population_code(plain_text_content)
@@ -756,13 +758,16 @@ def build_vector_index_and_data(doc_path, index_path="faiss_index.bin", chunks_p
         'sample_id_map': sample_id_map,
         'final_structured_entries': final_structured_entries
     }
-    print(f"Structured lookup built with {len(final_structured_entries)} entries in 'final_structured_entries'.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"Structured lookup built with {len(final_structured_entries)} entries in 'final_structured_entries'.")
 
     with open(structured_path, 'w') as f:
         json.dump(master_lookup, f, indent=4)
-    print(f"Structured lookup saved to {structured_path}.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"Structured lookup saved to {structured_path}.")
 
-    print("Step 2: Chunking document for RAG vector index...")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("Step 2: Chunking document for RAG vector index...")
     # replace the chunk here with the all_output from process_inputToken and fallback to this traditional chunk
     clean_text, clean_table = "", ""
     if plain_text_content:
@@ -771,9 +776,11 @@ def build_vector_index_and_data(doc_path, index_path="faiss_index.bin", chunks_p
       clean_table = data_preprocess.normalize_for_overlap(". ".join(table_strings))
     all_clean_chunk = clean_text + clean_table
     document_chunks = chunk_text(all_clean_chunk)
-    print(f"Document chunked into {len(document_chunks)} chunks.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"Document chunked into {len(document_chunks)} chunks.")
     
-    print("Step 3: Generating embeddings for chunks (this might take time and cost API calls)...")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("Step 3: Generating embeddings for chunks (this might take time and cost API calls)...")
 
     embedding_model_for_chunks = genai.GenerativeModel('models/text-embedding-004')
 
@@ -783,7 +790,8 @@ def build_vector_index_and_data(doc_path, index_path="faiss_index.bin", chunks_p
         if embedding is not None and embedding.shape[0] > 0:
             chunk_embeddings.append(embedding)
         else:
-            print(f"Warning: Failed to get valid embedding for chunk {i}. Skipping.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Warning: Failed to get valid embedding for chunk {i}. Skipping.")
             chunk_embeddings.append(np.zeros(768, dtype='float32'))
 
     if not chunk_embeddings:
@@ -797,21 +805,26 @@ def build_vector_index_and_data(doc_path, index_path="faiss_index.bin", chunks_p
     with open(chunks_path, "w") as f:
         json.dump(document_chunks, f)
 
-    print(f"FAISS index built and saved to {index_path}.")
-    print(f"Document chunks saved to {chunks_path}.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"FAISS index built and saved to {index_path}.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"Document chunks saved to {chunks_path}.")
     return master_lookup, index, document_chunks, all_clean_chunk
 
 
 def load_rag_assets(index_path="faiss_index.bin", chunks_path="document_chunks.json", structured_path="structured_lookup.json"):
     """Loads pre-built RAG assets (FAISS index, chunks, structured lookup)."""
-    print("Loading RAG assets...")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("Loading RAG assets...")
     master_structured_lookup = {}
     if os.path.exists(structured_path):
         with open(structured_path, 'r') as f:
             master_structured_lookup = json.load(f)
-        print("Structured lookup loaded.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("Structured lookup loaded.")
     else:
-        print("Structured lookup file not found. Rebuilding is likely needed.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("Structured lookup file not found. Rebuilding is likely needed.")
 
     index = None
     chunks = []
@@ -820,13 +833,16 @@ def load_rag_assets(index_path="faiss_index.bin", chunks_path="document_chunks.j
             index = faiss.read_index(index_path)
             with open(chunks_path, "r") as f:
                 chunks = json.load(f)
-            print("FAISS index and chunks loaded.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("FAISS index and chunks loaded.")
         except Exception as e:
-            print(f"Error loading FAISS index or chunks: {e}. Will rebuild.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Error loading FAISS index or chunks: {e}. Will rebuild.")
             index = None
             chunks = []
     else:
-        print("FAISS index or chunks files not found.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("FAISS index or chunks files not found.")
 
     return master_structured_lookup, index, chunks
 # Helper function for query_document_info
@@ -878,7 +894,8 @@ def clean_llm_output(llm_response_text, output_format_str):
                 extracted_ethnicity = parsed_output.group(1).strip()
                 extracted_specific_location = parsed_output.group(2).strip()
             else:
-                print("  DEBUG: LLM did not follow expected 2-field format for targeted RAG. Defaulting to unknown for ethnicity/specific_location.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("  DEBUG: LLM did not follow expected 2-field format for targeted RAG. Defaulting to unknown for ethnicity/specific_location.")
                 extracted_ethnicity = 'unknown'
                 extracted_specific_location = 'unknown'
         elif output_format_str == "modern/ancient/unknown, ethnicity, specific_location/unknown":
@@ -902,7 +919,8 @@ def clean_llm_output(llm_response_text, output_format_str):
                       extracted_ethnicity = 'unknown'
                       extracted_specific_location = 'unknown'
                   else:
-                      print("  DEBUG: LLM did not follow any expected simplified format. Attempting verbose parsing fallback.")
+                      if os.environ.get("OPENBIODATA_VERBOSE"):
+                          print("  DEBUG: LLM did not follow any expected simplified format. Attempting verbose parsing fallback.")
                       type_match_fallback = re.search(r'Type:\s*([A-Za-z\s-]+)', llm_response_text)
                       extracted_type = type_match_fallback.group(1).strip() if type_match_fallback else 'unknown'
                       extracted_ethnicity = 'unknown'
@@ -915,7 +933,8 @@ def clean_llm_output(llm_response_text, output_format_str):
               extracted_ethnicity = parsed_output.group(3).strip()
               extracted_specific_location = parsed_output.group(4).strip()
           else:
-              print(f"  DEBUG: Line did not follow expected 4-field format: {line}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"  DEBUG: Line did not follow expected 4-field format: {line}")
               parsed_output_2_fields = re.search(r'^\s*([^,]+?),\s*([^,]+?)\s*$', line)
               if parsed_output_2_fields:
                   extracted_country = parsed_output_2_fields.group(1).strip()
@@ -923,7 +942,8 @@ def clean_llm_output(llm_response_text, output_format_str):
                   extracted_ethnicity = 'unknown'
                   extracted_specific_location = 'unknown'
               else:
-                  print(f"  DEBUG: Fallback to verbose-style parsing: {line}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"  DEBUG: Fallback to verbose-style parsing: {line}")
                   country_match_fallback = re.search(r'Country:\s*([A-Za-z\s-]+)', line)
                   type_match_fallback = re.search(r'Type:\s*([A-Za-z\s-]+)', line)
                   extracted_country = country_match_fallback.group(1).strip() if country_match_fallback else 'unknown'
@@ -1068,7 +1088,8 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
                 metadata_list[output]["answer"] = answer
                 metadata_list[output][output + "_explanation"] = reasoning
 
-        print("parsed metadata_list keys (block format):", list(metadata_list.keys()))
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("parsed metadata_list keys (block format):", list(metadata_list.keys()))
         return metadata_list
 
     # ── Fallback: older "Line 1 summary + explanation lines" layout ────────────
@@ -1138,7 +1159,8 @@ def parse_multi_sample_llm_output(raw_response: str, output_format_str):
         else:
             metadata_list[output][output + "_explanation"] = "unknown"
 
-    print("parsed metadata_list keys (fallback format):", list(metadata_list.keys()))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("parsed metadata_list keys (fallback format):", list(metadata_list.keys()))
     return metadata_list
 
 
@@ -1195,22 +1217,26 @@ def split_batched_llm_response(raw_response: str, accs: list) -> dict:
         if acc is None:
             if i < len(accs):
                 acc = accs[i]
-                print(f"[split_batched_llm_response] header #{i+1} has missing/invalid/"
-                      f"out-of-range prompt number ({m.group(1)!r}) -- falling back to "
-                      f"positional match: {acc}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[split_batched_llm_response] header #{i+1} has missing/invalid/"
+                          f"out-of-range prompt number ({m.group(1)!r}) -- falling back to "
+                          f"positional match: {acc}")
             else:
-                print(f"[split_batched_llm_response] header #{i+1} unmatchable "
-                      f"(number {m.group(1)!r} invalid, no positional slot left) -- dropped")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"[split_batched_llm_response] header #{i+1} unmatchable "
+                          f"(number {m.group(1)!r} invalid, no positional slot left) -- dropped")
                 continue
         elif acc != m.group(2).strip() and acc.split('.')[0] != m.group(2).strip().split('.')[0]:
-            print(f"[split_batched_llm_response] header says accession "
-                  f"{m.group(2)!r} but prompt number {m.group(1)} maps to {acc!r} "
-                  f"-- using the number (source of truth)")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[split_batched_llm_response] header says accession "
+                      f"{m.group(2)!r} but prompt number {m.group(1)} maps to {acc!r} "
+                      f"-- using the number (source of truth)")
 
         if acc in segments:
-            print(f"[split_batched_llm_response] header #{i+1} resolved to {acc!r}, "
-                  f"which already has a segment from an earlier header -- overwriting "
-                  f"(duplicate/colliding prompt number; last write wins)")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[split_batched_llm_response] header #{i+1} resolved to {acc!r}, "
+                      f"which already has a segment from an earlier header -- overwriting "
+                      f"(duplicate/colliding prompt number; last write wins)")
         segments[acc] = raw_response[seg_start:seg_end]
     return segments
 
@@ -1250,7 +1276,8 @@ def safe_call_llm(prompt, model="gemini-2.5-flash-lite", max_retries=5):
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "quota" in error_msg.lower() or "rate" in error_msg.lower() or "overloaded" in error_msg.lower():
-                print(f"\n⚠️ Rate limit hit (attempt {attempt+1}/{max_retries}).")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"\n⚠️ Rate limit hit (attempt {attempt+1}/{max_retries}).")
 
                 retry_after = None
                 for word in error_msg.split():
@@ -1261,7 +1288,8 @@ def safe_call_llm(prompt, model="gemini-2.5-flash-lite", max_retries=5):
                             pass
 
                 wait_time = retry_after if retry_after else retry_delay
-                print(f"⏳ Waiting {wait_time:.1f} seconds before retrying...")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"⏳ Waiting {wait_time:.1f} seconds before retrying...")
                 time.sleep(wait_time)
 
                 retry_delay *= 2
@@ -1747,7 +1775,8 @@ def standardize_with_llm(extracted_values: dict, schema: dict, acc: str) -> dict
                 standardized[k] = str(v).strip()
         return standardized
     except Exception as e:
-        print(f"[standardize_with_llm] WARNING: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[standardize_with_llm] WARNING: {e}")
         return extracted_values
 
 
@@ -1836,7 +1865,8 @@ def align_to_schema(extracted_dict: dict, schema: dict, acc: str) -> dict:
                 out[k] = {'value': val, 'from_field': from_field}
         return out
     except Exception as e:
-        print(f"[align_to_schema] WARNING: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[align_to_schema] WARNING: {e}")
         return {}
 
 
@@ -1908,7 +1938,8 @@ def annotate_with_ontologies(extracted_dict: dict, context_text: str, acc: str) 
                     'experimental_conditions', 'contextual_study'}
         return {k: v for k, v in result.items() if k in expected}
     except Exception as e:
-        print(f"[annotate_with_ontologies] WARNING: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[annotate_with_ontologies] WARNING: {e}")
         return {}
 
 
@@ -1921,34 +1952,44 @@ async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases
         meta_expand[k] = v
   raw_tem_links = smart_fallback.smart_google_search(acc, meta_expand)
   tem_links = pipeline.unique_preserve_order(raw_tem_links)
-  print("this is tem links with acc: ", tem_links)
+  if os.environ.get("OPENBIODATA_VERBOSE"):
+      print("this is tem links with acc: ", tem_links)
   # filter the quality link
-  print("start the smart filter link")
+  if os.environ.get("OPENBIODATA_VERBOSE"):
+      print("start the smart filter link")
   #success_process, output_process = run_with_timeout(smart_fallback.filter_links_by_metadata,args=(tem_links,saveLinkFolder),kwargs={"accession":acc},timeout=90)
   output_process = await smart_fallback.async_filter_links_by_metadata(
       tem_links, saveLinkFolder, accession=acc
   )
-  print('inside getMoreInfoForAcc and here is outputProcess: ', output_process)
+  if os.environ.get("OPENBIODATA_VERBOSE"):
+      print('inside getMoreInfoForAcc and here is outputProcess: ', output_process)
   if output_process:
     linksWithTexts.update(output_process)
-    print("yeah we have linksWithTexts and len: ", len(linksWithTexts))
-    print("yes succeed for smart filter link")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("yeah we have linksWithTexts and len: ", len(linksWithTexts))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("yes succeed for smart filter link")
     links += list(linksWithTexts.keys())
-    print("link keys: ", links)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("link keys: ", links)
   else: 
-    print("not have output_process")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("not have output_process")
     links += tem_links      
   if links:
     # use build context for llm function to reduce token
     texts_reduce = []
     linksWithTexts_reduce = {}
     reduce_context_for_llm = ""
-    print("links:", links)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("links:", links)
     for link in links:
-      print("link: ", link)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("link: ", link)
       new_all_output = await pipeline.process_link_allOutput(link, 
                 iso, acc, saveLinkFolder, linksWithTexts_reduce, context_for_llm)
-      print("done all output")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("done all output")
       context_for_llm += new_all_output
       texts_reduce.append(new_all_output)
       linksWithTexts_reduce[link] = {"all_output": new_all_output}
@@ -1961,7 +2002,8 @@ async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases
     # # combine results
     # for new_all_output in results:
     #   context_for_llm += new_all_output
-    print("len of context after merge all: ", len(context_for_llm))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("len of context after merge all: ", len(context_for_llm))
 
   if len(context_for_llm) > 500000: 
     context_for_llm = data_preprocess.normalize_for_overlap(context_for_llm)
@@ -1971,10 +2013,12 @@ async def getMoreInfoForAcc(iso=None, acc=None, saveLinkFolder=None, niche_cases
         if niche_cases: input_prompt += niche_cases 
         reduce_context_for_llm = data_preprocess.build_context_for_llm(texts_reduce, acc, input_prompt, limit_context)
       if reduce_context_for_llm:
-        print("reduce context for llm")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("reduce context for llm")
         context_for_llm = reduce_context_for_llm
       else:
-        print("no reduce context for llm despite>1M")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("no reduce context for llm despite>1M")
         context_for_llm = context_for_llm[:limit_context]
   return context_for_llm, linksWithTexts, links
 
@@ -2223,7 +2267,8 @@ def _extract_additional_fields(context_text: str, niche_cases: list, standardiza
         return _normalize_pass2_json(result)
 
     except Exception as e:
-        print(f'[_extract_additional_fields] WARNING: generalized extraction failed: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'[_extract_additional_fields] WARNING: generalized extraction failed: {e}')
         return {}
 
 
@@ -2296,10 +2341,11 @@ def _extract_additional_fields_batch(contexts: dict, niche_cases: list,
 
     sub_batches = _split_oversized_batch(contexts)
     if len(sub_batches) > 1:
-        print(f"[_extract_additional_fields_batch] {len(contexts)} accession(s) "
-              f"({sum(len(v) for v in contexts.values())} chars) exceed the "
-              f"{BATCH_PROMPT_CHAR_LIMIT}-char threshold -- splitting into "
-              f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[_extract_additional_fields_batch] {len(contexts)} accession(s) "
+                  f"({sum(len(v) for v in contexts.values())} chars) exceed the "
+                  f"{BATCH_PROMPT_CHAR_LIMIT}-char threshold -- splitting into "
+                  f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
         merged: dict = {}
         for sub in sub_batches:
             merged.update(_extract_additional_fields_batch(sub, niche_cases, standardization_schema))
@@ -2434,7 +2480,8 @@ def _extract_additional_fields_batch(contexts: dict, niche_cases: list,
             break
         except Exception as e:
             if _attempt == 0:
-                print(f'[_extract_additional_fields_batch] attempt 1 failed ({e}) -- retrying once')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'[_extract_additional_fields_batch] attempt 1 failed ({e}) -- retrying once')
                 continue
             # Both identical attempts failed. A repeat failure at
             # (near-)identical output position across both attempts (as seen
@@ -2449,16 +2496,18 @@ def _extract_additional_fields_batch(contexts: dict, niche_cases: list,
             if len(accs) > 1:
                 mid = len(accs) // 2
                 left_accs, right_accs = accs[:mid], accs[mid:]
-                print(f'[_extract_additional_fields_batch] both attempts failed ({e}) -- '
-                      f'output likely too large for {len(accs)} accession(s); splitting into '
-                      f'{len(left_accs)} + {len(right_accs)} and retrying each half')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'[_extract_additional_fields_batch] both attempts failed ({e}) -- '
+                          f'output likely too large for {len(accs)} accession(s); splitting into '
+                          f'{len(left_accs)} + {len(right_accs)} and retrying each half')
                 left  = _extract_additional_fields_batch(
                     {a: contexts[a] for a in left_accs}, niche_cases, standardization_schema)
                 right = _extract_additional_fields_batch(
                     {a: contexts[a] for a in right_accs}, niche_cases, standardization_schema)
                 return {**left, **right}
-            print(f'[_extract_additional_fields_batch] WARNING: both attempts failed for the '
-                  f'single remaining accession {accs[0]!r}, last error: {e}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'[_extract_additional_fields_batch] WARNING: both attempts failed for the '
+                      f'single remaining accession {accs[0]!r}, last error: {e}')
             return {acc: {} for acc in accs}
 
     # Tolerant accession matching (model may not echo the key byte-identical --
@@ -2471,8 +2520,9 @@ def _extract_additional_fields_batch(contexts: dict, niche_cases: list,
             (rk for rk in result if rk == acc or rk.split('.')[0] == acc_cleaned), None
         )
         if match_key is None:
-            print(f"[_extract_additional_fields_batch] no result object for {acc!r} in batch "
-                  f"response (model returned keys: {list(result.keys())}) -- treating as empty")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[_extract_additional_fields_batch] no result object for {acc!r} in batch "
+                      f"response (model returned keys: {list(result.keys())}) -- treating as empty")
             out[acc] = {}
             continue
         raw_fields = result[match_key] if isinstance(result[match_key], dict) else {}
@@ -2487,7 +2537,8 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     1. Local structured lookup (fast, cheap, accurate for known patterns).
     2. RAG with semantic search and LLM (general, flexible, cost-optimized).
     """
-    print("inside the model.query_doc_info")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("inside the model.query_doc_info")
 
     # ── Pre-flight size check ───────────────────────────────────────────────
     # Hard threshold, not adaptive sizing: batching doesn't currently dedupe
@@ -2498,10 +2549,11 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     # fail/degrade unpredictably.
     sub_batches = _split_oversized_batch(prompts)
     if len(sub_batches) > 1:
-        print(f"[query_document_info] batch of {len(prompts)} accession(s) "
-              f"({sum(len(v) for v in prompts.values())} chars) exceeds "
-              f"{BATCH_PROMPT_CHAR_LIMIT}-char safety threshold -- splitting into "
-              f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[query_document_info] batch of {len(prompts)} accession(s) "
+                  f"({sum(len(v) for v in prompts.values())} chars) exceeds "
+                  f"{BATCH_PROMPT_CHAR_LIMIT}-char safety threshold -- splitting into "
+                  f"{len(sub_batches)} sub-batch(es) of sizes {[len(b) for b in sub_batches]}")
         merged_outputs = {}
         for sub in sub_batches:
             merged_outputs.update(await query_document_info(
@@ -2545,7 +2597,8 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
     created_prompts = multi_prompts(prompts, output_format_str, niche_cases=niche_cases,
                                     prompt_template="default",
                                     standardization_schema=standardization_schema)
-    print("done create prompt and length: ", len(created_prompts))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("done create prompt and length: ", len(created_prompts))
     prompt_for_llm = []
     for acc in created_prompts:
       outputs[acc] = {"predicted_output":"",
@@ -2557,38 +2610,52 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       prompt_for_llm.append(created_prompts[acc][0])  
     
     prompt_for_llm = "\n".join(prompt_for_llm) #there is only 1 prompt created #+ "\n" + "Give answer for each prompt"
-    print("length of prompt: ", len(prompt_for_llm))
-    print("use 2.5 flash gemini")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("length of prompt: ", len(prompt_for_llm))
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("use 2.5 flash gemini")
     llm_response_text, model_instance = call_llm_api(prompt_for_llm)
-    print("\n--- DEBUG INFO FOR RAG ---")
-    print("Retrieved Context Sent to LLM (first 500 chars):")
-    print(prompt_for_llm[:500] + "..." if len(prompt_for_llm) > 500 else prompt_for_llm)
-    print("\nRaw LLM Response:")
-    print(llm_response_text)
-    print("--- END DEBUG INFO ---")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("\n--- DEBUG INFO FOR RAG ---")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("Retrieved Context Sent to LLM (first 500 chars):")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(prompt_for_llm[:500] + "..." if len(prompt_for_llm) > 500 else prompt_for_llm)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("\nRaw LLM Response:")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(llm_response_text)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("--- END DEBUG INFO ---")
         
     llm_cost = 0
     if model_instance:
         try:
             input_llm_tokens = global_llm_model_for_counting_tokens.count_tokens(prompt_for_llm).total_tokens
             output_llm_tokens = global_llm_model_for_counting_tokens.count_tokens(llm_response_text).total_tokens
-            print(f"  DEBUG: LLM Input tokens: {input_llm_tokens}")
-            print(f"  DEBUG: LLM Output tokens: {output_llm_tokens}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"  DEBUG: LLM Input tokens: {input_llm_tokens}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"  DEBUG: LLM Output tokens: {output_llm_tokens}")
             llm_cost = (input_llm_tokens / 1000) * PRICE_PER_1K_INPUT_LLM + \
                        (output_llm_tokens / 1000) * PRICE_PER_1K_OUTPUT_LLM
-            print(f"  DEBUG: Estimated LLM cost: ${llm_cost:.6f}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"  DEBUG: Estimated LLM cost: ${llm_cost:.6f}")
         except Exception as e:
-            print(f"  DEBUG: Error counting LLM tokens: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"  DEBUG: Error counting LLM tokens: {e}")
             llm_cost = 0
 
     total_query_cost += current_embedding_cost + llm_cost
-    print(f"  DEBUG: Total estimated cost for this RAG query: ${total_query_cost:.6f}")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"  DEBUG: Total estimated cost for this RAG query: ${total_query_cost:.6f}")
     
     list_accs = list(prompts.keys())
     segments = split_batched_llm_response(llm_response_text, list_accs)
     for acc in list_accs:
       metadata_list = parse_multi_sample_llm_output(segments.get(acc, ""), output_format_str)
-      print(metadata_list)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(metadata_list)
       again_output_format, general_knowledge_prompt = "", ""
       output_acc = {}
       # NOTE: an unknown-field retry used to re-run getMoreInfoForAcc() here,
@@ -2610,7 +2677,8 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
       # Re-running the same niche fields against the same context rarely recovers new info
       # and costs an extra LLM call per sample.
       if unknown_fields:
-        print(f"{len(unknown_fields)} field(s) returned unknown — keeping as-is: {unknown_fields}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"{len(unknown_fields)} field(s) returned unknown — keeping as-is: {unknown_fields}")
         for uf in unknown_fields:
           output_acc[uf] = {"answer": "unknown", f"{uf}_explanation": "unknown"}
       # ── LLM-based standardization pass ───────────────────────────────────
@@ -2627,14 +2695,17 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
                   for field, std_val in standardized.items():
                       if field in output_acc and std_val:
                           output_acc[field]["answer"] = std_val
-                  print(f"[Standardization] {acc}: {standardized}")
+                  if os.environ.get("OPENBIODATA_VERBOSE"):
+                      print(f"[Standardization] {acc}: {standardized}")
           except Exception as _std_err:
-              print(f"[Standardization] WARNING: {_std_err}")
+              if os.environ.get("OPENBIODATA_VERBOSE"):
+                  print(f"[Standardization] WARNING: {_std_err}")
 
       outputs[acc]["predicted_output"] = output_acc
       outputs[acc]["total_query_cost"] = total_query_cost
 
-      print("total cost: ", total_query_cost)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("total cost: ", total_query_cost)
 
     # ── PASS 2: generalized extraction of ALL additional metadata ───────────
     # Batched across every accession in this call (one LLM call for the whole
@@ -2654,14 +2725,17 @@ async def query_document_info(niche_cases, saveLinkFolder, llm_api_function, pro
                 if k not in predefined_keys
             }
             outputs[acc]['_additional_fields'] = additional_only
-            print(f'[Pass 2] {acc}: {len(additional_only)} additional fields -> '
-                  f'{list(additional_only.keys())}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'[Pass 2] {acc}: {len(additional_only)} additional fields -> '
+                      f'{list(additional_only.keys())}')
     except Exception as _pass2_err:
-        print(f'[Pass 2] WARNING: batch failed: {_pass2_err}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'[Pass 2] WARNING: batch failed: {_pass2_err}')
         for acc in list_accs:
             outputs[acc]['_additional_fields'] = {}
     # ── END PASS 2 ────────────────────────────────────────────────────────
 
     for acc in list_accs:
-      print(f"total output of {acc}: {outputs[acc]}")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(f"total output of {acc}: {outputs[acc]}")
     return outputs

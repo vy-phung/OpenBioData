@@ -2,7 +2,6 @@ import re
 import spacy
 from nltk.tokenize import sent_tokenize, word_tokenize
 import nltk
-nltk.download('punkt_tab')
 #import coreferee
 import copy
 from sentence_transformers import SentenceTransformer, util

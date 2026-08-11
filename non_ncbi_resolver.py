@@ -19,6 +19,7 @@ build_non_ncbi_entry(acc_id, database, is_project) -> {acc_id: entry_dict}
 get_search_keywords(acc_id, database)   -> list[str]
 """
 
+import os
 import re
 import json
 
@@ -168,7 +169,8 @@ def fetch_dataset_metadata(project_id: str, database: str = '') -> str:
             return ''
         data = resp.json()
     except Exception as exc:
-        print(f"[fetch_dataset_metadata] {url}: {exc}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[fetch_dataset_metadata] {url}: {exc}")
         return ''
 
     lines = [f"MassIVE Dataset Metadata for {msv_id}:"]
@@ -286,7 +288,8 @@ def _scrape_massive(url: str, msv_id: str, max_samples: int) -> list:
                 return [{'name': n, 'source': api_url}
                         for n in combined[:max_samples]]
         except Exception as exc:
-            print(f"[scrape_massive] {api_url}: {exc}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[scrape_massive] {api_url}: {exc}")
 
     return []
 
@@ -329,6 +332,7 @@ def scrape_project_samples(url: str, database: str = '', acc_id: str = '',
                 return [{'name': n, 'source': url}
                         for n in combined[:max_samples]]
     except Exception as exc:
-        print(f"[scrape_project_samples] {url}: {exc}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[scrape_project_samples] {url}: {exc}")
 
     return []

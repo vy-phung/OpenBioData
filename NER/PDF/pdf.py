@@ -45,12 +45,16 @@ class PDF():
     if pdfLink != '':
       response = requests.get(pdfLink)
       name = pdfLink.split("/")[-1]
-      print("inside download PDF and name and link are: ", pdfLink, name)  
-      print("saveFolder is: ", saveFolder)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("inside download PDF and name and link are: ", pdfLink, name)  
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("saveFolder is: ", saveFolder)  
       with open(os.path.join(saveFolder, name), 'wb') as pdf:
-        print("len of response content: ", len(response.content))  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("len of response content: ", len(response.content))  
         pdf.write(response.content)
-      print("pdf downloaded")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("pdf downloaded")
       return name
     else:
       return "no pdfLink to download"
@@ -66,11 +70,13 @@ class PDF():
           doc.close()
     
           if len(text.strip()) < 100:
-            print("Fallback to PDFReader due to weak text extraction.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("Fallback to PDFReader due to weak text extraction.")
             text = self.extractTextWithPDFReader()
           return text
         except Exception as e:
-          print("Failed with PyMuPDF, fallback to PDFReader:", e)
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("Failed with PyMuPDF, fallback to PDFReader:", e)
           return self.extractTextWithPDFReader()
     except:
         return ""
@@ -94,11 +100,13 @@ class PDF():
                             text += " ".join(span["text"] for span in line["spans"]) + "\n"
         doc.close()
         if len(text.strip()) < 100:
-          print("Fallback to PDFReader due to weak text extraction.")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("Fallback to PDFReader due to weak text extraction.")
           text = self.extractTextWithPDFReader()
         return text
     except Exception as e:
-      print("Failed with PyMuPDF, fallback to PDFReader:", e)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("Failed with PyMuPDF, fallback to PDFReader:", e)
       return self.extractTextWithPDFReader()
 
   def extractTextWithPDFReader(self):
@@ -106,12 +114,15 @@ class PDF():
     try:
         from pdfreader import PDFDocument, SimplePDFViewer
     except ImportError:
-        print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
         return jsonPage
     try:
         pdf = self.openPDFFile()
-        print("open pdf file")  
-        print(pdf)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("open pdf file")  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(pdf)  
         doc = PDFDocument(pdf)
         viewer = SimplePDFViewer(pdf)
         all_pages = [p for p in doc.pages()]
@@ -154,7 +165,8 @@ class PDF():
     #tabula.convert_into(self.pdf, saveFile, output_format=outputFormat, pages=pages)
     except:# ValueError:
       df = []
-      print("No tables found in PDF file")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("No tables found in PDF file")
     return df
 
   def mergeTextinJson(self, jsonPDF):
@@ -222,7 +234,8 @@ class PDFFast:
                 pdf_link = self._resolve_pdf_link(self.pdf)
                 if not pdf_link:
                     raise FileNotFoundError(f"No PDF link found for {self.pdf}")
-                print(f"⬇ Downloading PDF: {pdf_link}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"⬇ Downloading PDF: {pdf_link}")
                 r = requests.get(pdf_link, headers=self._HEADERS, timeout=30, allow_redirects=True)
                 r.raise_for_status()
                 ct = r.headers.get('Content-Type', '')
@@ -234,7 +247,8 @@ class PDFFast:
                     f.write(r.content)
             return local_path
         except Exception as e:
-            print(f"❌ Could not download PDF {self.pdf}: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"❌ Could not download PDF {self.pdf}: {e}")
             return self.pdf
 
     def _resolve_pdf_link(self, url):
@@ -249,7 +263,8 @@ class PDFFast:
                 if ".pdf" in href and (not self.doi or self.doi in href):
                     return href if href.startswith("http") else f"https://{r.url.split('/')[2]}{href}"
         except Exception as e:
-            print(f"❌ Failed to resolve PDF link: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"❌ Failed to resolve PDF link: {e}")
         return None
 
     def _load_doc(self):
@@ -267,7 +282,8 @@ class PDFFast:
             text = "\n\n".join(page.get_text(flags=1) for page in doc)
             return text.strip() or self.extract_text_pdfreader()
         except Exception as e:
-            print(f"⚠️ PyMuPDF failed: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"⚠️ PyMuPDF failed: {e}")
             return self.extract_text_pdfreader()
 
     def extract_text_excluding_tables(self):
@@ -286,7 +302,8 @@ class PDFFast:
                             text_parts.append(" ".join(span["text"] for span in line["spans"]))
             return "\n".join(text_parts).strip()
         except Exception as e:
-            print(f"⚠️ Table-exclusion failed: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"⚠️ Table-exclusion failed: {e}")
             return self.extract_text_pdfreader()
 
     def extract_text_pdfreader(self):
@@ -294,7 +311,8 @@ class PDFFast:
         try:
             from pdfreader import PDFDocument, SimplePDFViewer
         except ImportError:
-            print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ pdfreader not installed; skipping PDFReader fallback.")
             return ""
         try:
             with open(self.local_path, "rb") as f:
@@ -317,7 +335,8 @@ class PDFFast:
                     }
                 return self._merge_text(jsonPage)
         except Exception as e:
-            print(f"❌ PDFReader failed: {e}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"❌ PDFReader failed: {e}")
             return ""
 
     def _merge_text(self, jsonPDF):
@@ -335,5 +354,6 @@ class PDFFast:
         try:
             return tabula.read_pdf(self.local_path, pages=pages)
         except Exception:
-            print("⚠️ No tables found.")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("⚠️ No tables found.")
             return []

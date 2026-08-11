@@ -132,9 +132,11 @@ def _extract_zip_text(zip_path, saveFolder=None) -> str:
                     if text:
                         parts.append(f"[ZIP entry: {entry_name}]\n{text}")
                 except Exception as _ze:
-                    print(f"❌ ZIP entry '{entry_name}' failed: {_ze}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"❌ ZIP entry '{entry_name}' failed: {_ze}")
     except Exception as e:
-        print(f"❌ ZIP extraction failed for {zip_path}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ ZIP extraction failed for {zip_path}: {e}")
     return "\n\n".join(parts)
 
 
@@ -156,7 +158,8 @@ def _extract_excel_text(xlsx_path) -> str:
                 parts.append(f"[Sheet: {sheet}]\n" + "\n".join(rows))
         return "\n\n".join(parts) if parts else ""
     except Exception as e:
-        print(f"❌ Excel text extraction failed: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ Excel text extraction failed: {e}")
         return ""
 
 
@@ -180,7 +183,8 @@ def _extract_pptx(path) -> str:
                     slides.append(f"[Slide {i}]\n" + " ".join(texts))
         return "\n\n".join(slides) if slides else ""
     except Exception as e:
-        print(f"❌ PPTX extraction failed: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ PPTX extraction failed: {e}")
         return ""
 
 
@@ -200,7 +204,8 @@ def _convert_ppt_to_pptx(ppt_path) -> str:
         if result.returncode == 0 and pptx_path.exists():
             return str(pptx_path)
     except Exception as e:
-        print(f"⚠️ LibreOffice PPT conversion failed: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"⚠️ LibreOffice PPT conversion failed: {e}")
     return None
 
 
@@ -234,7 +239,8 @@ def _extract_docx_text(docx_path) -> str:
                     parts.append(" | ".join(cells))
         return "\n".join(parts)
     except Exception as e:
-        print(f"❌ DOCX text extraction failed: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ DOCX text extraction failed: {e}")
         return ""
 
 
@@ -309,7 +315,8 @@ def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = 
                     try:
                         sup_json = html.getSupMaterial()
                     except Exception as _sup_scan_err:
-                        print(f"[extract_url_text] supplementary scan failed for {url}: {_sup_scan_err}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[extract_url_text] supplementary scan failed for {url}: {_sup_scan_err}")
             else:
                 import requests as _req
                 from bs4 import BeautifulSoup as _BS
@@ -343,7 +350,8 @@ def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = 
                         )
                         result["supplementary"].append(sup_url)
                 except Exception as _sup_err:
-                    print(f"[extract_url_text] supplementary fetch failed for {sup_url}: {_sup_err}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[extract_url_text] supplementary fetch failed for {sup_url}: {_sup_err}")
         except Exception as e:
             result["status"] = "failed"
             result["error"] = str(e)
@@ -363,7 +371,8 @@ def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = 
                     if tables_text:
                         text += "\n" + tables_text
                 except Exception as e:
-                    print(f"[extract_url_text] pdf table extraction failed for {url}: {e}")
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f"[extract_url_text] pdf table extraction failed for {url}: {e}")
             elif kind == "docx":
                 if wordDoc is not None:
                     text = wordDoc.WordDocFast(str(dest), str(data_dir)).extractText()
@@ -373,7 +382,8 @@ def extract_url_text(url: str, data_dir, _seen: set = None, _follow_sup: bool = 
                         if tables_text:
                             text += "\n" + tables_text
                     except Exception as e:
-                        print(f"[extract_url_text] docx table extraction failed for {url}: {e}")
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f"[extract_url_text] docx table extraction failed for {url}: {e}")
                 else:
                     text = _extract_docx_text(dest)
             elif kind == "xlsx":
@@ -406,7 +416,8 @@ def process_sources_to_docx(links: list, output_path, dataset_label: str = "") -
     data_dir = output_path.parent
 
     if Document is None:
-        print("⚠️ python-docx not available — cannot write DOCX")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("⚠️ python-docx not available — cannot write DOCX")
         return [], []
 
     doc = Document()
@@ -444,7 +455,8 @@ def process_sources_to_docx(links: list, output_path, dataset_label: str = "") -
         doc.add_paragraph("─" * 80)
 
     doc.save(str(output_path))
-    print(f"✅ Document saved: {output_path}")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f"✅ Document saved: {output_path}")
     return results, failed_links
 
 
@@ -470,14 +482,14 @@ except Exception:
     pipeline = None
 import tempfile
 import nltk
-nltk.download('punkt_tab')
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
     try: 
         nltk.download('stopwords')
     except:
-        print("have to use our own created stopword")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("have to use our own created stopword")
         STOPWORDS = {
             "the","a","an","in","on","of","and","or","for","with","to","from",
             "is","are","was","were","be","been","by","this","that","these","those",
@@ -500,12 +512,15 @@ def download_excel_file(url, save_path="temp.xlsx"):
                 content = _download_file(url)
                 with open(save_path, "wb") as f:
                     f.write(content)
-                    print(len(content))
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(len(content))
                 return save_path
             except Exception as e:
-                print(f"❌ Excel download failed: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"❌ Excel download failed: {e}")
                 return url
-    print("URL must point directly to an .xls or .xlsx file or it is already downloaded.")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("URL must point directly to an .xls or .xlsx file or it is already downloaded.")
     return url
         
 from pathlib import Path
@@ -542,7 +557,8 @@ async def async_fetch_html(link: str, timeout: int = 15) -> str:
                 _html_cache[link] = html_content
                 return html_content
     except Exception as e:
-        print(f"❌ async_fetch_html error for {link}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ async_fetch_html error for {link}: {e}")
         return ""
 
 async def ensure_local_file(link: str, saveFolder: str) -> str:
@@ -637,7 +653,8 @@ async def async_extract_text(link, saveFolder):
             return article_text
 
     except Exception as e:
-        print(f"❌ async_extract_text failed for {link}: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"❌ async_extract_text failed for {link}: {e}")
         return ""
         
 
@@ -646,35 +663,43 @@ def extract_text(link,saveFolder):
       text = ""
       link = _github_blob_to_raw(link)
       name = _get_filename_from_url(link)
-      print("name: ", name)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("name: ", name)
       local_temp_path = os.path.join(tempfile.gettempdir(), name)
-      print("this is local temp path: ", local_temp_path)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("this is local temp path: ", local_temp_path)
       if os.path.exists(local_temp_path):
         input_to_class = local_temp_path
-        print("exist")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("exist")
       else:
         # 1. Check if file exists in shared Google Drive folder (only for real Drive folder IDs)
         _use_drive = pipeline is not None and not _is_local_path(saveFolder)
         file_id = pipeline.find_drive_file(name, saveFolder) if _use_drive else None
         if file_id:
-            print("📥 Downloading from Google Drive...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("📥 Downloading from Google Drive...")
             pipeline.download_file_from_drive(name, saveFolder, local_temp_path)
         else:
-            print("🌐 Downloading from web link...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("🌐 Downloading from web link...")
             try:
                 content = _download_file(link)
                 with open(local_temp_path, 'wb') as f:
                     f.write(content)
-                print("✅ Saved locally.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("✅ Saved locally.")
                 # 2. Upload to Drive so it's available for later
                 if _use_drive:
                     pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
             except Exception as e:
-                print(f"❌ Download failed: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"❌ Download failed: {e}")
                 return ""
 
         input_to_class = local_temp_path
-        print(input_to_class)  
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(input_to_class)  
       kind = classify_url(link)
       if kind == "pdf" and pdf is not None:
         p = pdf.PDFFast(input_to_class, saveFolder)
@@ -695,8 +720,10 @@ def extract_text(link,saveFolder):
       if name:
           if os.path.exists(local_temp_path):
             os.remove(local_temp_path)
-            print(f"🧹 Deleted local temp file: {local_temp_path}")
-      print("done extract text")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"🧹 Deleted local temp file: {local_temp_path}")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("done extract text")
   except:
       text = ""
   return text
@@ -709,29 +736,35 @@ def extract_table(link,saveFolder):
       local_temp_path = os.path.join(tempfile.gettempdir(), name)
       if os.path.exists(local_temp_path):
         input_to_class = local_temp_path
-        print("exist")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("exist")
       else:
         # 1. Check if file exists in shared Google Drive folder (only for real Drive folder IDs)
         _use_drive = pipeline is not None and not _is_local_path(saveFolder)
         file_id = pipeline.find_drive_file(name, saveFolder) if _use_drive else None
         if file_id:
-            print("📥 Downloading from Google Drive...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("📥 Downloading from Google Drive...")
             pipeline.download_file_from_drive(name, saveFolder, local_temp_path)
         else:
-            print("🌐 Downloading from web link...")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("🌐 Downloading from web link...")
             try:
                 content = _download_file(link)
                 with open(local_temp_path, 'wb') as f:
                     f.write(content)
-                print("✅ Saved locally.")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("✅ Saved locally.")
                 if _use_drive:
                     pipeline.upload_file_to_drive(local_temp_path, name, saveFolder)
             except Exception as e:
-                print(f"❌ Download failed: {e}")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f"❌ Download failed: {e}")
                 return []
 
         input_to_class = local_temp_path
-        print(input_to_class)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(input_to_class)
       kind = classify_url(link)
       if kind == "pdf" and pdf is not None:
         p = pdf.PDF(input_to_class, saveFolder)
@@ -748,7 +781,8 @@ def extract_table(link,saveFolder):
                 table_list.append(df.fillna("").astype(str).values.tolist())
             table = table_list
         except Exception as e:
-            print("❌ Failed to extract tables from Excel:", e)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("❌ Failed to extract tables from Excel:", e)
       elif (link.startswith("http") or "html" in link) and extractHTML is not None:
         html = extractHTML.HTML("", link)
         table = html.extractTable()
@@ -756,7 +790,8 @@ def extract_table(link,saveFolder):
       # Cleanup: delete the local temp file
       if os.path.exists(local_temp_path):
         os.remove(local_temp_path)
-        print(f"🧹 Deleted local temp file: {local_temp_path}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"🧹 Deleted local temp file: {local_temp_path}")
   except:
       table = []
   return table
@@ -917,22 +952,28 @@ def merge_text_and_tables(text, tables, max_tokens=12000, keep_tables=True, toke
 
 def preprocess_document(link, saveFolder, accession=None, isolate=None, article_text=None):
     if article_text:
-      print("article text already available")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("article text already available")
       text = article_text
     else:  
       try:
-        print("start preprocess and extract text")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("start preprocess and extract text")
         text = extract_text(link, saveFolder)
       except: text = ""  
     try: 
-      print("extract table start")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("extract table start")
       success, the_output = pipeline.run_with_timeout(extract_table,args=(link,saveFolder),timeout=10)
-      print("Returned from timeout logic")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("Returned from timeout logic")
       if success:
         tables = the_output#data_preprocess.merge_texts_skipping_overlap(all_output, final_input_link)
-        print("yes succeed for extract table")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("yes succeed for extract table")
       else:
-        print("not suceed etxract table")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("not suceed etxract table")
         tables = []
       #tables = extract_table(link, saveFolder)
     except: tables = [] 
@@ -947,11 +988,13 @@ def preprocess_document(link, saveFolder, accession=None, isolate=None, article_
       #   print("yes succeed")
       # else:
       #   print("not suceed")
-      print("just merge text and tables")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("just merge text and tables")
       final_input = text + ", ".join(tables)  
       #final_input = pipeline.timeout(merge_text_and_tables(text, tables, max_tokens=12000, accession_id=accession, isolate=isolate)
     except: 
-      print("no succeed here in preprocess docu")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("no succeed here in preprocess docu")
       final_input = ""
     return text, tables, final_input
 
@@ -1444,19 +1487,10 @@ def extract_context_reduceToken(text: str, keyword: str, window: int = 1200) -> 
 # =============================
 # 3. Expand question keywords dynamically
 # =============================
-try:
-    from sentence_transformers import SentenceTransformer, util as _st_util
-    _sentence_model = SentenceTransformer("paraphrase-MiniLM-L6-v2")
-except Exception:
-    SentenceTransformer = _st_util = _sentence_model = None
-
 import nltk
 nltk.download('wordnet')
 import re
 from nltk.corpus import wordnet as wn
-from nltk.corpus import stopwords
-
-STOPWORDS = set(stopwords.words("english"))
 
 def synonym_expand(word: str):
     syns = set()
@@ -1520,12 +1554,14 @@ def build_context_for_llm(texts: List[str], accession: str, question_kws: List[s
     # Step 1: Extract contexts for all keywords from all texts
     for text in texts:
         text_l = text.lower()
-        print("this is len text: ", len(text_l))
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("this is len text: ", len(text_l))
         # PRIORITY 1: Accession context
         if accession.lower() in text_l:
             ctx = extract_context_reduceToken(text, accession, window=3000)
             if ctx:
-                print("acc in context")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("acc in context")
                 primary_contexts.append(ctx)
                 primary_found = True
 

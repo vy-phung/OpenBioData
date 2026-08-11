@@ -74,7 +74,8 @@ def dev_cache_wrap(func):
         if not bypass and os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            print(f"[dev-cache] HIT {short_hash} -- skipped real API call")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[dev-cache] HIT {short_hash} -- skipped real API call")
             return cached["response_text"], None
 
         buf = io.StringIO()
@@ -96,7 +97,8 @@ def dev_cache_wrap(func):
                 "cached_at": time.time(),
             }, f, indent=2)
 
-        print(f"[dev-cache] MISS {short_hash} -- cached new response")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"[dev-cache] MISS {short_hash} -- cached new response")
         return response_text, model_instance
 
     return wrapper

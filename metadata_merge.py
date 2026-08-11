@@ -9,6 +9,7 @@ no source-list tracking). This module is the replacement.
 """
 
 import asyncio
+import os
 import re
 
 from field_aliases import field_name_matches, _is_known_field, _canonical_of
@@ -137,8 +138,9 @@ async def cross_check_fields(table: dict, new_fields: dict, source_label: str, i
         value, explanation = _value_and_explanation(new_val)
 
         if is_duplicate_identifier_value(new_key, value, identifier_values):
-            print(f"[cross_check_fields] Rejected {new_key}={value!r} from {source_label}: "
-                  f"duplicates an identifier value, not a distinct fact")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"[cross_check_fields] Rejected {new_key}={value!r} from {source_label}: "
+                      f"duplicates an identifier value, not a distinct fact")
             results[new_key] = {
                 "action": "rejected_duplicate_identifier", "value": "unknown", "explanation": explanation,
                 "matched_existing_key": None, "source_label": source_label, "is_llm": is_llm,

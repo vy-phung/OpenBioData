@@ -109,7 +109,8 @@ def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0)
         except _urllib_err.HTTPError as exc:
             last_exc = exc
             if exc.code in (429, 500, 503) and attempt < max_retries:
-                print(f'  [NCBI] HTTP {exc.code} — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'  [NCBI] HTTP {exc.code} — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
                 time.sleep(delay)
                 delay *= 2
             else:
@@ -118,7 +119,8 @@ def _urlopen_with_retry(url: str, max_retries: int = 3, base_delay: float = 5.0)
                 EOFError, OSError) as exc:
             last_exc = exc
             if attempt < max_retries:
-                print(f'  [NCBI] Network error ({type(exc).__name__}) — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'  [NCBI] Network error ({type(exc).__name__}) — retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})')
                 time.sleep(delay)
                 delay *= 2
             else:
@@ -148,7 +150,8 @@ def _resolve_via_ena(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> dict
         _safe_sleep()
         data = _json.loads(raw.decode('utf-8', errors='replace'))
     except Exception as exc:
-        print(f'  [ENA] {bioproject_id}: {exc}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [ENA] {bioproject_id}: {exc}')
         return {}
 
     sample_to_run: dict = {}
@@ -159,10 +162,12 @@ def _resolve_via_ena(bioproject_id: str, max_samples: int = MAX_SAMPLES) -> dict
             sample_to_run[sam] = run
 
     if not sample_to_run:
-        print(f'  [ENA] No samples found for {bioproject_id} via ENA API')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [ENA] No samples found for {bioproject_id} via ENA API')
         return {}
 
-    print(f'  [ENA] Found {len(sample_to_run)} sample(s) for {bioproject_id} via ENA API')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [ENA] Found {len(sample_to_run)} sample(s) for {bioproject_id} via ENA API')
     result = {}
     for sam_id, run_id in list(sample_to_run.items())[:max_samples]:
         result[sam_id] = {
@@ -236,7 +241,8 @@ def get_bioproject_from_biosample(biosample_id: str) -> str:
                 return project_acc
 
     except Exception as e:
-        print(f'  [get_bioproject] {biosample_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [get_bioproject] {biosample_id}: {e}')
 
     return ''
 
@@ -266,7 +272,8 @@ def get_genbank_from_biosample(biosample_id: str) -> str:
         return accession.split('.')[0]   # strip version suffix
 
     except Exception as e:
-        print(f'  [get_genbank] {biosample_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [get_genbank] {biosample_id}: {e}')
 
     return ''
 
@@ -297,7 +304,8 @@ def get_sra_from_biosample(biosample_id: str) -> str:
         return srr_match.group(0) if srr_match else ''
 
     except Exception as e:
-        print(f'  [get_sra] {biosample_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [get_sra] {biosample_id}: {e}')
 
     return ''
 
@@ -316,7 +324,8 @@ def resolve_from_genbank(accession: str, known_bioproject: str = '') -> dict:
     known_bioproject to skip the redundant bioproject lookup call and to
     still populate 'bioproject' even when no BioSample link is found.
     """
-    print(f'  [GenBank] Resolving {accession}...')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [GenBank] Resolving {accession}...')
     result = _empty_record(accession)
     result['bioproject'] = known_bioproject
     biosample_id = ''
@@ -329,7 +338,8 @@ def resolve_from_genbank(accession: str, known_bioproject: str = '') -> dict:
         _safe_sleep()
 
         if not rec['IdList']:
-            print(f'  [GenBank] WARNING: {accession} not found in nucleotide DB')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [GenBank] WARNING: {accession} not found in nucleotide DB')
             return {accession: result}
 
         nuc_uid = rec['IdList'][0]
@@ -370,17 +380,20 @@ def resolve_from_genbank(accession: str, known_bioproject: str = '') -> dict:
                     biosample_id = candidate
 
     except Exception as e:
-        print(f'  [GenBank] {accession}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GenBank] {accession}: {e}')
 
     if biosample_id:
         result['biosample']  = biosample_id
         result['bioproject'] = known_bioproject or get_bioproject_from_biosample(biosample_id)
         result['experiment'] = get_sra_from_biosample(biosample_id)
-        print(f'  [GenBank] {accession} -> BioSample: {biosample_id}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GenBank] {accession} -> BioSample: {biosample_id}')
         return {biosample_id: result}
 
     # No BioSample link found -- key by accession itself
-    print(f'  [GenBank] WARNING: no BioSample found for {accession}')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [GenBank] WARNING: no BioSample found for {accession}')
     return {accession: result}
 
 
@@ -393,14 +406,16 @@ def resolve_from_biosample(biosample_id: str, known_bioproject: str = '') -> dic
     came from enumerating a BioProject's sample list), pass it as
     known_bioproject to skip the redundant bioproject lookup call.
     """
-    print(f'  [BioSample] Resolving {biosample_id}...')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [BioSample] Resolving {biosample_id}...')
     record = {
         'bioproject': known_bioproject or get_bioproject_from_biosample(biosample_id),
         'biosample':  biosample_id,
         'accession':  get_genbank_from_biosample(biosample_id),
         'experiment': get_sra_from_biosample(biosample_id),
     }
-    print(f'  [BioSample] {biosample_id} -> {record}')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [BioSample] {biosample_id} -> {record}')
     return {biosample_id: record}
 
 
@@ -429,7 +444,8 @@ def _biosample_ids_from_sra(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
             sra_ids = []
         if not sra_ids:
             return entries
-        print(f'  [BioProject-SRA] Found {len(sra_ids)} SRA records for {bioproject_id}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject-SRA] Found {len(sra_ids)} SRA records for {bioproject_id}')
 
         # Batch esummary to get ExpXml which contains BioSample accession
         url2 = (f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi'
@@ -459,7 +475,8 @@ def _biosample_ids_from_sra(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
                     seen.add(run_id)
                     entries.append({'kind': 'experiment', 'id': run_id})
     except Exception as e:
-        print(f'  [BioProject-SRA] {bioproject_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject-SRA] {bioproject_id}: {e}')
     return entries
 
 
@@ -511,7 +528,8 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
       mode == 'empty'       -> data is {} (nothing found for this BioProject).
     """
     import urllib.parse
-    print(f'  [BioProject] Resolving {bioproject_id} (cap={max_samples})...')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [BioProject] Resolving {bioproject_id} (cap={max_samples})...')
     biosample_ids = []
 
     # ── Strategy 1: esearch biosample DB ──────────────────────────────────────
@@ -525,9 +543,11 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
             bs_uids = rec['IdList']
             total = int(rec.get('Count', len(bs_uids)))
             if total > max_samples:
-                print(f'  [BioProject] WARNING: {bioproject_id} has {total} BioSamples. '
-                      f'Processing first {max_samples}.')
-            print(f'  [BioProject] Strategy 1 found {len(bs_uids)} BioSample UIDs')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'  [BioProject] WARNING: {bioproject_id} has {total} BioSamples. '
+                          f'Processing first {max_samples}.')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] Strategy 1 found {len(bs_uids)} BioSample UIDs')
             handle = Entrez.esummary(db='biosample', id=','.join(bs_uids))
             summary = Entrez.read(handle); handle.close()
             _safe_sleep()
@@ -536,7 +556,8 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                 if acc.startswith('SAM'):
                     biosample_ids.append(acc)
     except Exception as e:
-        print(f'  [BioProject] Strategy 1 failed: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] Strategy 1 failed: {e}')
 
     # ── Strategy 1B: raw HTTP biosample esearch fallback (when Biopython fails) ──
     # NCBI sometimes returns "Database is not supported: biosample" to Biopython's
@@ -557,7 +578,8 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
             if not isinstance(s1b_uids, list):
                 s1b_uids = []
             if s1b_uids:
-                print(f'  [BioProject] Strategy 1B found {len(s1b_uids)} UIDs via raw URL')
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(f'  [BioProject] Strategy 1B found {len(s1b_uids)} UIDs via raw URL')
                 try:
                     handle = Entrez.esummary(db='biosample', id=','.join(s1b_uids))
                     summary_1b = Entrez.read(handle); handle.close()
@@ -583,9 +605,11 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                         if acc.startswith('SAM') and acc not in biosample_ids:
                             biosample_ids.append(acc)
                 if biosample_ids:
-                    print(f'  [BioProject] Strategy 1B yielded {len(biosample_ids)} biosample accessions')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 1B yielded {len(biosample_ids)} biosample accessions')
         except Exception as e:
-            print(f'  [BioProject] Strategy 1B failed: {e}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] Strategy 1B failed: {e}')
 
     # ── Strategy 2: raw elink bioproject->biosample ────────────────────────────
     if not biosample_ids:
@@ -620,8 +644,9 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                     all_ids = re.findall(r'<Id>(\d+)</Id>', raw)
                     bs_uids_raw = [u for u in all_ids if u != bp_uid]
                 if bs_uids_raw:
-                    print(f'  [BioProject] Strategy 2 found {len(bs_uids_raw)} raw UIDs via elink '
-                          f'(elink includes SRA/PubMed IDs — filtering for biosample accessions…)')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 2 found {len(bs_uids_raw)} raw UIDs via elink '
+                              f'(elink includes SRA/PubMed IDs — filtering for biosample accessions…)')
                     # Batch esummary: 1 call instead of up to 36 individual calls
                     batch = bs_uids_raw[:max_samples]
                     try:
@@ -632,7 +657,8 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                             acc = doc.get('Accession', '')
                             if acc.startswith('SAM') and acc not in biosample_ids:
                                 biosample_ids.append(acc)
-                        print(f'  [BioProject] Strategy 2 yielded {len(biosample_ids)} valid biosample accessions')
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f'  [BioProject] Strategy 2 yielded {len(biosample_ids)} valid biosample accessions')
                     except Exception:
                         # Fallback: individual queries (slower but handles partial errors)
                         for uid in batch:
@@ -647,11 +673,13 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                             except Exception:
                                 pass
         except Exception as e:
-            print(f'  [BioProject] Strategy 2 failed: {e}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] Strategy 2 failed: {e}')
 
     # ── Strategy 3: SRA fallback (metagenomics / SRA-only projects) ───────────
     if not biosample_ids:
-        print(f'  [BioProject] Trying SRA fallback for {bioproject_id}...')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] Trying SRA fallback for {bioproject_id}...')
         sra_entries = _biosample_ids_from_sra(bioproject_id, max_samples)
         if sra_entries:
             seen_sra: set = set()
@@ -665,25 +693,29 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                     break
             n_bio = sum(1 for e in capped_sra if e['kind'] == 'biosample')
             n_exp = len(capped_sra) - n_bio
-            print(f'  [BioProject] Strategy 3 yielded {n_bio} biosample-linked + '
-                  f'{n_exp} experiment-only sample(s)')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] Strategy 3 yielded {n_bio} biosample-linked + '
+                      f'{n_exp} experiment-only sample(s)')
             return 'mixed_ids', capped_sra
 
     # ── Strategy 4: ENA API fallback (for PRJEB projects not mirrored in NCBI) ──
     # PRJEB projects have SAMEA samples that may not be linked to [BioProject] in
     # NCBI's biosample DB. The ENA Portal API always has the authoritative list.
     if not biosample_ids and bioproject_id.upper().startswith('PRJEB'):
-        print(f'  [BioProject] Trying ENA API fallback for {bioproject_id}...')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] Trying ENA API fallback for {bioproject_id}...')
         ena_result = _resolve_via_ena(bioproject_id, max_samples)
         if ena_result:
-            print(f'  [BioProject] {bioproject_id} -> {len(ena_result)} samples via ENA API')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] {bioproject_id} -> {len(ena_result)} samples via ENA API')
             return 'resolved', ena_result
 
     # ── Strategy 5: nucleotide (GenBank) fallback for WGS / GenBank-only BioProjects ──
     # Used when the BioProject has sequences in the nucleotide DB but no BioSamples
     # registered (e.g. PRJNA1177498 WGS, PRJNA400168 targeted loci).
     if not biosample_ids:
-        print(f'  [BioProject] Trying nucleotide fallback for {bioproject_id}...')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] Trying nucleotide fallback for {bioproject_id}...')
         try:
             nuc_url = (
                 f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi'
@@ -700,10 +732,12 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
 
             if nuc_uids:
                 if total_nuc > max_samples:
-                    print(f'  [BioProject] WARNING: {bioproject_id} has {total_nuc} nucleotide records. '
-                          f'Processing first {len(nuc_uids)}.')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] WARNING: {bioproject_id} has {total_nuc} nucleotide records. '
+                              f'Processing first {len(nuc_uids)}.')
                 else:
-                    print(f'  [BioProject] Strategy 5: {total_nuc} nucleotide record(s) found')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 5: {total_nuc} nucleotide record(s) found')
 
                 # Sub-strategy A: elink nucleotide→biosample to find BioSample UIDs in bulk
                 nuc_bs_uids: list = []
@@ -725,10 +759,12 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                     except ET.ParseError:
                         nuc_bs_uids = re.findall(r'<Id>(\d+)</Id>', elink_raw)
                 except Exception as e:
-                    print(f'  [BioProject] Strategy 5 elink failed: {e}')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 5 elink failed: {e}')
 
                 if nuc_bs_uids:
-                    print(f'  [BioProject] Strategy 5: {len(nuc_bs_uids)} BioSample UIDs via nucleotide elink')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 5: {len(nuc_bs_uids)} BioSample UIDs via nucleotide elink')
                     try:
                         handle = Entrez.esummary(db='biosample',
                                                  id=','.join(nuc_bs_uids[:max_samples]))
@@ -739,13 +775,16 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                             if acc5.startswith('SAM') and acc5 not in biosample_ids:
                                 biosample_ids.append(acc5)
                         if biosample_ids:
-                            print(f'  [BioProject] Strategy 5A yielded {len(biosample_ids)} BioSample accessions')
+                            if os.environ.get("OPENBIODATA_VERBOSE"):
+                                print(f'  [BioProject] Strategy 5A yielded {len(biosample_ids)} BioSample accessions')
                     except Exception as e:
-                        print(f'  [BioProject] Strategy 5 biosample esummary failed: {e}')
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f'  [BioProject] Strategy 5 biosample esummary failed: {e}')
 
                 # Sub-strategy B: no BioSample links — use nucleotide accessions directly
                 if not biosample_ids:
-                    print(f'  [BioProject] Strategy 5: no BioSample links, fetching accession strings')
+                    if os.environ.get("OPENBIODATA_VERBOSE"):
+                        print(f'  [BioProject] Strategy 5: no BioSample links, fetching accession strings')
                     try:
                         acc_url = (
                             f'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi'
@@ -757,19 +796,23 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
                         nuc_accs = [a.split('.')[0] for a in acc_text.strip().splitlines()
                                     if a.strip()]
                     except Exception as e:
-                        print(f'  [BioProject] Strategy 5 acc fetch failed: {e}')
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f'  [BioProject] Strategy 5 acc fetch failed: {e}')
                         nuc_accs = []
 
                     if nuc_accs:
-                        print(f'  [BioProject] Strategy 5B yielded {len(nuc_accs)} nucleotide accessions '
-                              f'(no BioSample link found in NCBI -- caller can still trace '
-                              f'biosample/experiment per accession via resolve_from_genbank)')
+                        if os.environ.get("OPENBIODATA_VERBOSE"):
+                            print(f'  [BioProject] Strategy 5B yielded {len(nuc_accs)} nucleotide accessions '
+                                  f'(no BioSample link found in NCBI -- caller can still trace '
+                                  f'biosample/experiment per accession via resolve_from_genbank)')
                         return 'genbank_ids', nuc_accs
         except Exception as e:
-            print(f'  [BioProject] Strategy 5 failed: {e}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [BioProject] Strategy 5 failed: {e}')
 
     if not biosample_ids:
-        print(f'  [BioProject] WARNING: no BioSamples found for {bioproject_id}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] WARNING: no BioSamples found for {bioproject_id}')
         return 'empty', {}
 
     # Deduplicate and cap
@@ -781,7 +824,8 @@ def _find_bioproject_samples(bioproject_id: str, max_samples: int = MAX_SAMPLES)
             unique_ids.append(bs)
     biosample_ids = unique_ids[:max_samples]
     if len(unique_ids) > max_samples:
-        print(f'  [BioProject] Capped at {max_samples} of {len(unique_ids)} unique BioSamples.')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [BioProject] Capped at {max_samples} of {len(unique_ids)} unique BioSamples.')
 
     return 'ids', biosample_ids
 
@@ -815,7 +859,8 @@ def resolve_from_bioproject(bioproject_id: str, max_samples: int = MAX_SAMPLES) 
             else:
                 result.update(resolve_from_sra(e['id'], known_bioproject=bioproject_id))
 
-    print(f'  [BioProject] {bioproject_id} -> {len(result)} samples resolved')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [BioProject] {bioproject_id} -> {len(result)} samples resolved')
     return result
 
 
@@ -830,7 +875,8 @@ def resolve_from_sra(sra_id: str, known_bioproject: str = '') -> dict:
     to skip the redundant bioproject lookup and to still populate
     'bioproject' even when no BioSample link is found.
     """
-    print(f'  [SRA] Resolving {sra_id}...')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [SRA] Resolving {sra_id}...')
 
     try:
         # Preferred: search biosample DB with SRA accession
@@ -864,7 +910,8 @@ def resolve_from_sra(sra_id: str, known_bioproject: str = '') -> dict:
                 return resolve_from_biosample(sam_match.group(0), known_bioproject=known_bioproject)
 
     except Exception as e:
-        print(f'  [SRA] {sra_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [SRA] {sra_id}: {e}')
 
     return {sra_id: {**_empty_record(), 'experiment': sra_id, 'bioproject': known_bioproject}}
 
@@ -908,7 +955,8 @@ def _fetch_geo_soft(accession: str) -> str:
         _safe_sleep()
         return raw.decode('utf-8', errors='replace')
     except Exception as e:
-        print(f'  [GEO SOFT] Failed to fetch {accession}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GEO SOFT] Failed to fetch {accession}: {e}')
         return ''
 
 
@@ -968,7 +1016,8 @@ def resolve_from_geo_sample(gsm_id: str) -> dict:
     Extra GEO fields (geo_sample, geo_series, geo_title, etc.) are included
     in the record and pass transparently through the pipeline.
     """
-    print(f'  [GEO] Resolving sample {gsm_id}...')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [GEO] Resolving sample {gsm_id}...')
     record = _empty_record()
     geo_meta = {
         'geo_sample':         gsm_id,
@@ -1013,7 +1062,8 @@ def resolve_from_geo_sample(gsm_id: str) -> dict:
                     if bs.startswith('SAM'):
                         record['biosample'] = bs
     except Exception as e:
-        print(f'  [GEO] GDS esummary failed for {gsm_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GEO] GDS esummary failed for {gsm_id}: {e}')
 
     # 3. SRA fallback — find run accession if still missing
     if not record['experiment']:
@@ -1046,12 +1096,14 @@ def resolve_from_geo_sample(gsm_id: str) -> dict:
                     if run_m:
                         break
         except Exception as e:
-            print(f'  [GEO] SRA fallback failed for {gsm_id}: {e}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [GEO] SRA fallback failed for {gsm_id}: {e}')
 
     key = record['biosample'] if record['biosample'] else gsm_id
-    print(f'  [GEO] {gsm_id} -> key={key}, '
-          f'bioproject={record["bioproject"]}, biosample={record["biosample"]}, '
-          f'experiment={record["experiment"]}')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [GEO] {gsm_id} -> key={key}, '
+              f'bioproject={record["bioproject"]}, biosample={record["biosample"]}, '
+              f'experiment={record["experiment"]}')
     return {key: {**record, **geo_meta}}
 
 
@@ -1070,16 +1122,19 @@ def _find_geo_series_samples(gse_id: str, max_samples: int = MAX_SAMPLES) -> lis
         if not uids:
             uids = _geo_esearch(f'{gse_id}[Accession]')
         if not uids:
-            print(f'  [GEO] No UID found for series {gse_id}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [GEO] No UID found for series {gse_id}')
             return []
 
         summary = _geo_esummary(uids[0])
         if not summary:
-            print(f'  [GEO] Empty esummary for {gse_id}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [GEO] Empty esummary for {gse_id}')
             return []
 
         series_title = str(summary.get('title', '') or '')
-        print(f'  [GEO] Series: {series_title!r}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GEO] Series: {series_title!r}')
 
         samples = summary.get('samples') or []
         gsm_accessions = [
@@ -1089,15 +1144,18 @@ def _find_geo_series_samples(gse_id: str, max_samples: int = MAX_SAMPLES) -> lis
         ]
 
         if not gsm_accessions:
-            print(f'  [GEO] No GSM samples in esummary for {gse_id}')
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f'  [GEO] No GSM samples in esummary for {gse_id}')
             return []
 
-        print(f'  [GEO] {gse_id}: {len(gsm_accessions)} samples found; '
-              f'capping at {max_samples}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GEO] {gse_id}: {len(gsm_accessions)} samples found; '
+                  f'capping at {max_samples}')
         return gsm_accessions[:max_samples]
 
     except Exception as e:
-        print(f'  [GEO] _find_geo_series_samples {gse_id}: {e}')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'  [GEO] _find_geo_series_samples {gse_id}: {e}')
         return []
 
 
@@ -1119,7 +1177,8 @@ def resolve_from_geo_series(gse_id: str, max_samples: int = MAX_SAMPLES) -> dict
                 v['geo_series'] = gse_id
         all_results.update(sample_result)
 
-    print(f'  [GEO] {gse_id} -> {len(all_results)} samples resolved')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'  [GEO] {gse_id} -> {len(all_results)} samples resolved')
     return all_results
 
 
@@ -1136,7 +1195,8 @@ def resolve_accessions(user_input: str, max_samples: int = MAX_SAMPLES) -> dict:
     """
     user_input = user_input.strip()
     acc_type = detect_accession_type(user_input)
-    print(f'[resolve_accessions] Input: {user_input!r} -> detected type: {acc_type}')
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print(f'[resolve_accessions] Input: {user_input!r} -> detected type: {acc_type}')
 
     if acc_type == 'bioproject':
         return resolve_from_bioproject(user_input, max_samples=max_samples)
@@ -1151,8 +1211,9 @@ def resolve_accessions(user_input: str, max_samples: int = MAX_SAMPLES) -> dict:
     elif acc_type in ('sra_run', 'sra_experiment'):
         return resolve_from_sra(user_input)
     else:
-        print(f'[resolve_accessions] WARNING: Unknown type for {user_input!r}. '
-              f'Trying as GenBank.')
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f'[resolve_accessions] WARNING: Unknown type for {user_input!r}. '
+                  f'Trying as GenBank.')
         return resolve_from_genbank(user_input)
 
 

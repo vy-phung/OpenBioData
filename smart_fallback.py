@@ -87,10 +87,12 @@ def search_ncbi_elink(accession_id):
                 for link in linksetdb.get("Link", []):
                     pmids.append(link["Id"])
         links = [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in pmids]
-        print(f"  [NCBI elink] {len(links)} linked papers for {accession_id}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [NCBI elink] {len(links)} linked papers for {accession_id}")
         return links
     except Exception as e:
-        print(f"NCBI elink error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"NCBI elink error: {e}")
         return []
 
 def search_europepmc_fulltext(accession_id, max_results=5):
@@ -120,10 +122,12 @@ def search_europepmc_fulltext(accession_id, max_results=5):
                 links.append(f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
             elif doi:
                 links.append(f"https://doi.org/{doi}")
-        print(f"  [EuropePMC fulltext] {len(links)} results for {accession_id}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"  [EuropePMC fulltext] {len(links)} results for {accession_id}")
         return links
     except Exception as e:
-        print(f"EuropePMC fulltext search error: {e}")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"EuropePMC fulltext search error: {e}")
         return []
 try:
     import mtdna_classifier
@@ -161,7 +165,8 @@ def fetch_ncbi(accession_number):
         if isinstance(record[0], dict):
             gb_seq = record[0]
         else:
-            print(f"Warning: record[0] is not a dictionary for {accession_number}. Type: {type(record[0])}")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(f"Warning: record[0] is not a dictionary for {accession_number}. Type: {type(record[0])}")
         # extract collection date  
         if "GBSeq_create-date" in gb_seq and outputs["collection_date"]=="unknown":
           outputs["collection_date"] = gb_seq["GBSeq_create-date"]
@@ -193,7 +198,8 @@ def fetch_ncbi(accession_number):
               if ref['GBQualifier_name'] == "isolate" and outputs["isolate"]=="unknown":
                 outputs["isolate"] = ref["GBQualifier_value"]
     else:
-        print(f"Warning: No valid record or empty record list from NCBI for {accession_number}.")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print(f"Warning: No valid record or empty record list from NCBI for {accession_number}.")
 
     # If gb_seq is still None, return defaults
     if gb_seq is None:
@@ -206,7 +212,8 @@ def fetch_ncbi(accession_number):
               "collection_date":"unknown" }
     return outputs   
   except:
-    print("error in fetching ncbi data")   
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("error in fetching ncbi data")   
     return {"authors":"unknown",
               "institution":"unknown",
               "isolate":"unknown",
@@ -244,7 +251,8 @@ def google_accession_search(accession_id):
              
 # Method 1: Smarter Google
 def smart_google_queries(accession_id, metadata: dict):
-    print("inside smart google queries")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("inside smart google queries")
     queries = [
         f'"{accession_id}"',
         f'"{accession_id}" site:ncbi.nlm.nih.gov',
@@ -262,23 +270,29 @@ def smart_google_queries(accession_id, metadata: dict):
     definition = metadata.get("definition")
     date = metadata.get("collection_date")
     combined = []
-    print("yeah get info")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("yeah get info")
     # Construct queries
     # if isolate and isolate!="unknown" and isolate!="Unpublished":
     #     queries.append(f'"{isolate}" mitochondrial DNA')
     #     queries.append(f'"{isolate}" site:ncbi.nlm.nih.gov')
         
     organism = None
-    print("this is definition: ", definition)
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("this is definition: ", definition)
     if definition and definition != "unknown":
-        print("inside definition")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("inside definition")
         match = re.match(r"([A-Z][a-z]+ [a-z]+)", definition)
-        print("match: ", match)
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("match: ", match)
         if match:
             organism = match.group(1)
-            print("organism: ", organism)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("organism: ", organism)
             queries.append(f'"{accession_id}" "{organism}" mitochondrial')
-    print("done definition")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("done definition")
     if author and author!="unknown" and author!="Unpublished":
         try:
           author_name = ".".join(author.split(' ')[0].split(".")[:-1])  # Use last name only
@@ -289,7 +303,8 @@ def smart_google_queries(accession_id, metadata: dict):
             author_name = author
         queries.append(f'"{accession_id}" "{author_name}" mitochondrial DNA')
         #queries.append(f'"{author_name}" mtDNA site:researchgate.net')
-    print("done author")    
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("done author")    
     # if institution and institution!="unknown" and institution!="Unpublished":
     #     try:
     #       short_inst = ",".join(institution.split(',')[:2])  # Take first part of institution
@@ -318,10 +333,12 @@ def smart_google_queries(accession_id, metadata: dict):
 
         if year:
             queries.append(f'"{accession_id}" "{year}"')
-    print("done institution")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("done institution")
     if title and title!='unknown' and title not in ["Unpublished","Direct Submission"]:
       queries.append(f'"{title}"')
-    print("done title")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("done title")
 
     # Additional searches for related identifiers (bioproject, experiment, publication titles)
     bioproject_id = metadata.get("bioproject_id", "")
@@ -372,16 +389,20 @@ async def async_filter_links_by_metadata(search_results, saveLinkFolder, accessi
         keywords = [accession] + keywords
 
     filtered, better_filter = {}, {}
-    print("before doing session")
+    if os.environ.get("OPENBIODATA_VERBOSE"):
+        print("before doing session")
     async with aiohttp.ClientSession() as session:
         tasks = []
         for link in search_results:
             if link:
-                print("link: ", link)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("link: ", link)
                 tasks.append(process_link(session, link, saveLinkFolder, keywords, accession))
-                print("done")
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print("done")
         results = await asyncio.gather(*tasks)
-        print("outside session")
+        if os.environ.get("OPENBIODATA_VERBOSE"):
+            print("outside session")
     # merge results
     for output_link in results:
         for out_link in output_link:
@@ -425,7 +446,8 @@ def filter_links_by_metadata(search_results, saveLinkFolder, accession=None):
       title_snippet = link.lower()
       #print("save link folder inside this filter function: ", saveLinkFolder)  
       article_text = data_preprocess.extract_text(link,saveLinkFolder)
-      print("article text done")
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("article text done")
       #print(article_text)  
       try:
         ext = link.split(".")[-1].lower()
@@ -445,27 +467,33 @@ def filter_links_by_metadata(search_results, saveLinkFolder, accession=None):
         if keyword.lower() in title_snippet.lower():
           if link not in output:
             output.append([link,keyword.lower()])
-          print("link and keyword for title: ", link, keyword)    
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("link and keyword for title: ", link, keyword)    
           return output
       return output
     
     filtered = {}
     better_filter = {}
     if len(search_results) > 0:
-      print(search_results)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print(search_results)
       for link in search_results:
           # if is_trusted_link(link):
           #   if link not in filtered:
           #     filtered.append(link)
           # else:
-          print(link)
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(link)
           if link:    
             output_link = is_relevant_title_snippet(link,saveLinkFolder, accession)
-            print("output link: ")
-            print(output_link)
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print("output link: ")
+            if os.environ.get("OPENBIODATA_VERBOSE"):
+                print(output_link)
             for out_link in output_link:
               if isinstance(out_link,list) and len(out_link) > 1:
-                print(out_link)
+                if os.environ.get("OPENBIODATA_VERBOSE"):
+                    print(out_link)
                 kw = out_link[1]
                 if accession and kw == accession.lower():
                   if len(out_link) == 2:
@@ -479,13 +507,15 @@ def filter_links_by_metadata(search_results, saveLinkFolder, accession=None):
                   # save article
                   better_filter[out_link[0]] = out_link[2]
               else: filtered[out_link] = ""
-          print("done with link and here is filter: ",filtered)      
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print("done with link and here is filter: ",filtered)      
     if better_filter:
       filtered = better_filter                  
     return filtered
 
 def smart_google_search(accession_id, metadata):
-  print("doing smart google queries")
+  if os.environ.get("OPENBIODATA_VERBOSE"):
+      print("doing smart google queries")
   queries = smart_google_queries(accession_id, metadata)
   links = []
   _search_fn = (
@@ -494,10 +524,12 @@ def smart_google_search(accession_id, metadata):
       else _search_any
   )
   for q in queries:
-      print("\n🔍 Query:", q)
+      if os.environ.get("OPENBIODATA_VERBOSE"):
+          print("\n🔍 Query:", q)
       results = _search_fn(q, 5)
       for link in results:
-          print(f"- {link}")
+          if os.environ.get("OPENBIODATA_VERBOSE"):
+              print(f"- {link}")
           if link not in links:
               links.append(link)
 
