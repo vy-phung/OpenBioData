@@ -2,6 +2,8 @@
 
 A metadata recovery tool that traces missing BioSample and SRA metadata on NCBI (disease status, isolation source, location, host, etc.) back to the source publication where the information actually appears. Give it an accession (BioProject, BioSample, SRR, GEO, or GenBank) or a paper link, and it finds the associated NCBI records and publications, including supplementary tables, cross-checks and expands the metadata, and returns each recovered value with a **confidence score and direct citation (PMID + table/section)**, so you can verify where it came from in seconds instead of digging manually.
 
+[![OpenBioData demo](https://screenity-assets.b-cdn.net/project-thumbnails/6a7a31f8b85e1c1def417e60/6a7a3dc5b85e1c1def417e8b.webp)](https://app.screenity.io/view/6a7a3dc5b85e1c1def417e8b)
+
 ---
 
 ## What it does
@@ -99,7 +101,7 @@ Time cost: 42.153 seconds
 ==========================================================================================
 ```
 
-A confidence score of 0 means real fields were checked and nothing could be confirmed - different from an outright error, which prints clearly and stops the run.
+A confidence score is still low (see [Known issues](#known-issues)).
 
 Output (DOCX evidence files) saves to a temporary system folder by default, treat it as disposable, not a delivered file, unless you're self-hosting and know where your temp directory lives.
 
@@ -131,10 +133,10 @@ A reasonable workflow: use fetchngs/pysradb/ffq to get your accession list, then
 
 ## Known issues
 
-- Accession resolution can occasionally misattribute.
+- Confidence score has not fully works at the confidence score rule and still gives the low confidence score for every input
+- Accession can occasionally misattribute when trying to access NCBI records
 - Accession-type detection is implemented three separate times.
-- Batching doesn't yet deduplicate shared paper text.
-- A batch that splits due to size can name fields slightly differently.
+- Getting all metadata mentioned in the sources still have not extracted all metadata.
 
 None of these block real use. They're documented so you know what you're looking at. See `ARCHITECTURE.md` for the full technical picture and `CONTRIBUTING.md` for open issues, several tagged `good first issue`.
 
