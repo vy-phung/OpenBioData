@@ -19,6 +19,7 @@ import sys
 import warnings
 
 MAX_SAMPLES = 50
+OUTPUT_FORMATS = ("xlsx", "csv", "json")
 
 
 def _quiet_third_party_setup() -> None:
@@ -50,7 +51,55 @@ def _quiet_import():
         yield
 
 
-async def _run(accession: str, verbose: bool = False) -> int:
+def _default_output_path(accession: str, fmt: str) -> str:
+    return os.path.join(os.getcwd(), f"{accession}.{fmt}")
+
+
+def _resolve_output_path(output_arg: str, accession: str, fmt: str) -> str:
+    """Turn --output (a file, a directory, or unset) into a concrete file path.
+
+    Unset -> deterministic default in cwd (overwritten on rerun, so a
+    downstream script can point at a fixed path). A directory -> default
+    filename inside it. Anything else -> used verbatim as the file path.
+    """
+    if not output_arg:
+        return _default_output_path(accession, fmt)
+    if output_arg.endswith(os.sep) or os.path.isdir(output_arg):
+        os.makedirs(output_arg, exist_ok=True)
+        return os.path.join(output_arg, f"{accession}.{fmt}")
+    parent = os.path.dirname(output_arg)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return output_arg
+
+
+def _save_rows(rows: list, fmt: str, path: str) -> None:
+    """Write rows to disk in the requested format.
+
+    xlsx reuses mtdna_backend.save_to_excel -- the same function api.py's
+    /analyze route uses to build the web UI's "Download Excel" file, so
+    both paths produce identical output. csv/json are CLI-only additions
+    for developers/pipelines that want a machine-readable format instead:
+    csv is a single flat table (drops the nested _additional_fields dict,
+    same predefined columns as the xlsx's Sheet 1); json keeps each row
+    exactly as returned by the pipeline, _additional_fields included.
+    """
+    if fmt == "xlsx":
+        from mtdna_backend import save_to_excel
+        save_to_excel(rows, "", "", path, False)
+    elif fmt == "csv":
+        import pandas as pd
+        flat_rows = [{k: v for k, v in r.items() if k != "_additional_fields"} for r in rows]
+        pd.DataFrame(flat_rows).to_csv(path, index=False)
+    elif fmt == "json":
+        import json
+        with open(path, "w") as f:
+            json.dump(rows, f, indent=2, ensure_ascii=False, default=str)
+    else:
+        raise ValueError(f"Unknown format: {fmt!r}")
+
+
+async def _run(accession: str, verbose: bool = False, output: str = "", fmt: str = "xlsx") -> int:
     # OPENBIODATA_VERBOSE is exported as an env var (not just a local
     # variable) so that other modules -- mtdna_backend, additional_pipeline,
     # input_handler, api -- can check os.environ.get("OPENBIODATA_VERBOSE")
@@ -179,9 +228,47 @@ async def _run(accession: str, verbose: bool = False) -> int:
 
     print(f"✅ Extracted metadata for {len(rows)} sample(s)\n")
     for row in rows:
-        _print_row(row)
+        _print_row(row) if verbose else _print_row_summary(row)
+
+    out_path = _resolve_output_path(output, acc, fmt)
+    try:
+        await asyncio.to_thread(_save_rows, rows, fmt, out_path)
+        print(f"✅ Saved: {os.path.abspath(out_path)}")
+    except Exception as exc:
+        print(f"⚠ Could not save {fmt} output to {out_path}: {exc}", file=sys.stderr)
+        return 1
+
     print(f"{len(rows)} sample(s) processed.")
     return 0
+
+
+def _print_row_summary(row: dict) -> None:
+    """Condensed default (non-verbose) view: header + confidence + field
+    count. Full per-field explanations/conflicts/sources still land in the
+    saved file's data -- this just stops dumping all of it to the terminal
+    on every run. Pass --verbose for the full _print_row() detail.
+    """
+    header_parts = []
+    if row.get("biosample_accession"):
+        header_parts.append(row["biosample_accession"])
+    if row.get("bioproject"):
+        header_parts.append(f"BioProject: {row['bioproject']}")
+    if row.get("sra_accession"):
+        header_parts.append(f"SRA: {row['sra_accession']}")
+    if row.get("genbank_accession"):
+        header_parts.append(f"GenBank: {row['genbank_accession']}")
+    header = "   ".join(header_parts) or "(unknown sample)"
+
+    field_count = sum(
+        1 for line in (row.get("explanation") or "").split("\n")
+        if line.strip().startswith("•")
+    )
+
+    print(f"• {header}")
+    if row.get("confidence_score"):
+        print(f"  Confidence: {row['confidence_score']}   Fields recovered: {field_count}")
+    else:
+        print(f"  Fields recovered: {field_count}")
 
 
 def _print_row(row: dict) -> None:
@@ -242,6 +329,23 @@ def main() -> None:
         help="Anthropic API key for this run only. Overrides ANTHROPIC_API_KEY "
              "from the environment/.env, which remains the primary way to set it.",
     )
+    parser.add_argument(
+        "-o", "--output",
+        default="",
+        help="Where to save the result. A directory saves '<accession>.<format>' "
+             "inside it; anything else is used as the exact file path. Default: "
+             "'<accession>.<format>' in the current directory, overwritten on rerun. "
+             "See docs/CLI.md for details.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=OUTPUT_FORMATS,
+        default="xlsx",
+        help="Output file format. xlsx (default) matches the web UI's Excel "
+             "download (two sheets: metadata + all raw attributes). csv/json "
+             "are flat, machine-readable alternatives for scripting. See "
+             "docs/CLI.md for details.",
+    )
     args = parser.parse_args()
 
     # Applied before load_dotenv() so a value passed here always wins over
@@ -273,7 +377,9 @@ def main() -> None:
         sys.exit(1)
 
     print("> Loading backend…")
-    exit_code = asyncio.run(_run(args.accession, verbose=args.verbose))
+    exit_code = asyncio.run(
+        _run(args.accession, verbose=args.verbose, output=args.output, fmt=args.format)
+    )
     sys.exit(exit_code)
 
 

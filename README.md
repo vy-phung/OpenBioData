@@ -46,6 +46,12 @@ Then open http://localhost:8000, paste an accession, submit, watch the result st
 python openbiodata.py <accession>
 ```
 
+Saves an Excel file (`<accession>.xlsx`) in the current directory by
+default — same two-sheet format as the web UI's "Download Excel" — ready to
+open or feed straight into a workflow. Full flag reference, including
+`--format csv`/`--format json` for scripting and `-o` to control where it's
+saved: **[docs/CLI.md](./docs/CLI.md)** (or `python openbiodata.py --help`).
+
 Example:
 
 ```
@@ -65,45 +71,16 @@ Output:
 > [1/1] ✓ SAMN20283122 done (42.153 seconds)
 ✅ Extracted metadata for 1 sample(s)
 
-==========================================================================================
-SAMN20283122   BioProject: PRJNA514286   SRA: SRS9522164   GenBank: NZ_DBJOSC000000000
-==========================================================================================
-Confidence: 30 (🔴 Low) — weakest field: instrument_model (30)
-
-• organism: Organism name is Listeria monocytogenes.
-• collection_date: NCBI BioSample attribute collection_date is '2012-12'.
-• geo_loc_name: NCBI BioSample attribute geo_loc_name is 'USA:NY'.
-• host: NCBI BioSample attribute host is 'Homo sapiens'.
-• project_name: NCBI BioSample attribute project_name is 'GenomeTrakr; LFFM-FY5'.
-• sequenced_by: NCBI BioSample attribute sequenced_by is 'New York State Department of Health'.
-• purpose_of_sampling: NCBI BioSample attribute purpose_of_sampling is 'baseline surveillance/monitoring'.
-• library_strategy: NCBI experiment attribute library_strategy is 'WGS'.
-• library_source: NCBI experiment attribute library_source is 'GENOMIC'.
-• library_selection: NCBI experiment attribute library_selection is 'other'.
-• instrument_model: NCBI experiment attribute instrument_model is 'PromethION'.
-• collected_by: NCBI BioSample attribute collected_by is 'New York State Department of Health'.
-• strain: NCBI BioSample attribute strain is 'PNUSAL010798'.
-• ifsac_category: NCBI BioSample attribute IFSAC+ Category is 'clinical/research| human'.
-• biosample_accession: NCBI BioSample accession is 'SAMN20283122'.
-• sra_accession: NCBI BioSample links SRA accession is 'SRS9522164'.
-• bioproject_accession: NCBI BioSample links BioProject accession is 'PRJNA514286'.
-• dna_extraction_kit: The paper mentions 'DNA was extracted using the Qiagen DNeasy 96 PowerSoil Pro QIAcube HT Kit'.
-
-------------------------------------------------------------------------------------------
-Each field carries its own citation back to the exact source — e.g.:
-• dna_extraction_kit → https://doi.org/10.1186/s13073-024-01379-4 (Methods, "Qiagen DNeasy 96 PowerSoil Pro QIAcube HT Kit")
-• host → NCBI_biosample (host attribute, "Homo sapiens")
-
-All linked sources:
-https://doi.org/10.1093/ismeco/ycag093
-https://doi.org/10.1186/s13073-024-01379-4
-NCBI_bioproject · NCBI_biosample · NCBI_experiment
-
-Time cost: 42.153 seconds
-==========================================================================================
+• SAMN20283122   BioProject: PRJNA514286   SRA: SRS9522164   GenBank: NZ_DBJOSC000000000
+  Confidence: 30 (🔴 Low) — weakest field: instrument_model (30)   Fields recovered: 17
+✅ Saved: /path/to/SAMN20283122.xlsx
+1 sample(s) processed.
 ```
 
-A confidence score is still low (see [Known issues](#known-issues)).
+Pass `-v`/`--verbose` for the full per-field breakdown (explanations,
+citations, conflicts) printed to the terminal too — that detail is always
+in the saved file either way. A confidence score is still low (see
+[Known issues](#known-issues)).
 
 Output (DOCX evidence files) saves to a temporary system folder by default, treat it as disposable, not a delivered file, unless you're self-hosting and know where your temp directory lives.
 
@@ -121,7 +98,7 @@ One row per accession:
 - Source citation (PMID + table or section)
 - Flags where the NCBI record and the paper disagree
 
-Excel export available.
+Excel (default), CSV, or JSON — see [docs/CLI.md](./docs/CLI.md).
 
 ---
 
